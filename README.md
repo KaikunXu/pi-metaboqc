@@ -1,17 +1,10 @@
 # π-Metabolomics-Quality Control (`pi-metaboqc`)
 
-**pi-metaboqc** is an automated, robust pipeline for LC-MS metabolomics data pre-processing and quality control.
-
 [![Status](https://img.shields.io/badge/status-active--development-orange.svg)](https://github.com/KaikunXu/pi-metaboqc)
 
+**pi-metaboqc** is a comprehensive LC-MS metabolomics data quality control module. This module provides an object-oriented pipeline for preprocessing metabolomics data, including dataset building, invalid feature/sample filtering, quality assessment, signal correction, and data normalization..
+
 ⚠️ Note: This project is currently under active development. The API may change without notice, and some features might be experimental.
-
-
-## Features
-- **Data Matrix Generation**: Merge metadata and intensity seamlessly.
-- **Missing Value Imputation & Filtering**.
-- **Comprehensive Quality Assessment**: PCA, correlation heatmaps, RSD distributions, and Shewhart control charts for internal standards.
-- **Signal Correction**: Pooled QC sample-based intra- and inter-batch correction.
 
 ## Installation
 
@@ -37,48 +30,3 @@ cd pi-metaboqc
 # 3. Install in editable mode
 pip install -e .
 ```
-
-## Quick Start
-
-```Python
-from pimqc.pipeline import piMetaboMain
-
-# Execute the complete QC pipeline
-piMetaboMain(
-    inputFileDir="path/to/input",
-    outputFileDir="path/to/output",
-    jsonFileName="Pipeline_Parameters.json",
-    metaFileName="Project_Meta.csv",
-    intFileName="Project_Intensity.csv"
-)
-```
-
-#### 3. 单元测试文件 (`tests/test_core_classes.py`)
-为了保证代码在开源社区的可靠性，建议使用 `pytest` 编写测试用例。创建 `tests/` 文件夹并编写基础测试：
-
-```python
-import pandas as pd
-import pytest
-from pi_metaboqc.core_classes import MetaboData  # 替换了原来的 MetInt
-
-def test_metabo_data_initialization():
-    # 创建模拟数据
-    data = pd.DataFrame({"Feature1": [10, 20], "Feature2": [15, 25]})
-    
-    # 初始化你的核心类
-    met_data = MetaboData(data, pipePara={})
-    
-    # 断言测试属性是否正确继承
-    assert met_data.shape == (2, 2)
-    assert hasattr(met_data, "attrs")
-```
-
-
-
-## 分析流程示意
-
-![Pipeline Flowchart](assets/pipeline_flowchart.png)
-
- ## 质控结果展示 
-
-![QC Result Demo](assets/result_demo.png)
