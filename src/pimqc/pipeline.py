@@ -16,6 +16,7 @@ from .data_quality_assessment import MetaboIntQA
 from .invalid_feature_sample_filtering import MetaboIntFLTR
 from .data_signal_correction import MetaboIntSC
 from .normalization import MetaboIntNorm
+from .imputation import MetaboIntImputer
 
 
 @iu._exe_time

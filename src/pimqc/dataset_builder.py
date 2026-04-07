@@ -66,6 +66,19 @@ def build_dataset(
             do not match (Jaccard Score != 1.0).
         AssertionError: If required metadata columns are missing.
     """
+    # To prevent the first column (metabolite name) from being mistakenly 
+    # interpreted as the sample name due to the absence of specified 
+    # index_col=[0].
+    if isinstance(int_df.index, pd.RangeIndex):
+        logger.warning(
+            "Intensity dataframe has a RangeIndex. "
+            f"Automatically setting the first column '{int_df.columns[0]}' "
+            "as the feature index."
+        )
+        int_df = int_df.set_index(int_df.columns[0])
+    
+    int_df.index.name = "Metabolite"
+
     # 1. Check duplicate sample names in the intensity dataframe.
     assert (
         int_df.columns.value_counts().max() <= 1

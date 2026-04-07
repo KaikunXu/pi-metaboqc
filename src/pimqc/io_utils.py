@@ -58,57 +58,34 @@ def is_jupyter() -> bool:
         return False
 
 def get_custom_progress(
-    iterable, total, desc="Progress", color="tab:gray", bar_length=80):
+    iterable, total, desc="Progress", color="green", bar_length=80):
     """
-    Unified progress bar adapter supporting both tqdm and rich.
+    Unified progress bar adapter using tqdm for both CLI and Jupyter.
     
     Args:
         iterable: Iterable object (e.g., range or generator).
         total: Total number of iterations.
         desc: Description text on the left of the progress bar.
-        color: Color of the progress bar (e.g., 'green', 'blue').
+        color: Color of the progress bar (matplotlib colors are ignored by tqdm).
         bar_length: Physical length/width of the progress bar.
     """
-    if is_jupyter():
-        # Jupyter environment: use tqdm for HTML rendering
-        from tqdm import tqdm
-        
-        # Customize tqdm format to align visually with rich
-        custom_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} [ETA: {remaining}]"
-        
-        return tqdm(
-            iterable, 
-            total=total,
-            desc=desc, 
-            ncols=bar_length, 
-            colour=color,
-            bar_format=custom_format,
-            leave=True
-        )
-        
-    else:
-        # Terminal environment: use rich for CLI rendering
-        from rich.progress import (
-            Progress, TextColumn, BarColumn, TaskProgressColumn, 
-            TimeRemainingColumn)
-        
-        # Replicate tqdm's layout using rich components
-        progress = Progress(
-            TextColumn(f"[{color}][bold]{desc}:"),
-            BarColumn(bar_width=bar_length, complete_style=color),
-            TaskProgressColumn(),
-            TextColumn("ETA:"),
-            TimeRemainingColumn(),
-        )
-        
-        def rich_generator():
-            with progress:
-                task = progress.add_task("task", total=total)
-                for item in iterable:
-                    yield item
-                    progress.advance(task)
-                    
-        return rich_generator()
+    from tqdm import tqdm
+    
+    tqdm_color = color if color in [
+        "green", "blue", "red", "yellow", "cyan", "magenta", "white", "black"
+    ] else None
+    
+    custom_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} [ETA: {remaining}]"
+    
+    return tqdm(
+        iterable, 
+        total=total,
+        desc=desc, 
+        ncols=bar_length, 
+        colour=tqdm_color,
+        bar_format=custom_format,
+        leave=True
+    )
 
 
 def _load_json_file(input_file_path: str) -> Dict[str, Any]:

@@ -120,4 +120,4 @@ class BaseMetaboVisualizer:
                     bbox_to_anchor=(0.5, 0)
                 )
                 if j < len(s_dict) - 1:
-                    fig.add_artist(a=sub_leg)
+                    fig.add_artist(sub_leg)

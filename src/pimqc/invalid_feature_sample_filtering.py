@@ -470,7 +470,7 @@ class MetaboVisualizerFLTR(visualizer_classes.BaseMetaboVisualizer):
             ratio_valid = qc_mean[mask_valid] / blank_mean[mask_valid]
             df.loc[mask_valid, "Log2_Ratio"] = np.log2(ratio_valid)
             df.loc[mask_valid, "Pass"] = df.loc[mask_valid, "Log2_Ratio"] >= log2_tol
-            max_log2 = np.ceil(a=df["Log2_Ratio"].max())
+            max_log2 = np.ceil(df["Log2_Ratio"].max())
         else:
             max_log2 = 0.0
 

@@ -4,9 +4,6 @@ import copy
 import numpy as np
 import pandas as pd
 from functools import cached_property
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.figure import Figure
 from typing import Dict, List, Any, Optional, Union
 
 from . import plot_utils as pu

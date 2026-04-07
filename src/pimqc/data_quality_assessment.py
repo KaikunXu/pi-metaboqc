@@ -26,6 +26,8 @@ from . import visualizer_classes
 warnings.filterwarnings(action="ignore", category=FutureWarning)
 warnings.filterwarnings(action="ignore", category=RuntimeWarning)
 
+import logging
+logging.getLogger('pca').setLevel(logging.WARNING)
 
 class MetaboIntQA(core_classes.MetaboInt):
     """Data quality assessment computational class for metabolomics.
@@ -144,7 +146,7 @@ class MetaboIntQA(core_classes.MetaboInt):
         )
         
         with iu.HiddenPrints():
-            model = pca(n_components=2)
+            model = pca(n_components=2,verbose=0)
             res = model.fit_transform(scaled_feat)
 
         pca_scatter = res["PC"].set_axis(multi_idx, axis=0)
@@ -275,11 +277,11 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         Args:
             qa_obj: A MetaboIntQA instance with pre-computed statistics.
         """
+        super().__init__(metabo_obj=qa_obj)
         self.qa = qa_obj
-        self.attrs = qa_obj.attrs
 
     def _format_heatmap_ticks(
-        self, hm: mpl.axes.Axes, tick_color_dict: Dict[str, str]
+        self, hm: mpl.axes.Axes, tick_color_dict: Dict[str, str] 
     ) -> None:
         """Format labels and colors for heatmap ticks."""
         def rename_tick(label_text: str) -> str:
@@ -315,6 +317,8 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         n_samples = self.qa.qc_corr_matrix.shape[0]
         fig, ax = plt.subplots(1, 1, figsize=(n_samples * 0.2, n_samples * 0.2))
         
+        # [FIX] Force the background color of the axes to be pure white
+        ax.set_facecolor("white")
         method_title = self.attrs.get("corr_method", "spearman").title()
         
         hm = sns.heatmap(
@@ -379,6 +383,7 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
             ylabel=f"{y} ({100 * pca_var.loc[y]:.1f}%)"
         )
         ax.legend().remove()
+        ax.autoscale()
         plt.close(fig=fig)
         return fig
 
@@ -427,7 +432,7 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
             
         for xlabel in ax2.get_xticklabels():
             if xlabel._text in outlier_samples:
-                xlabel.set_color(c="tab:red")
+                xlabel.set_color("tab:red")
                 
         plt.tight_layout()
         plt.close(fig=fig)
@@ -450,7 +455,7 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
             color="tab:gray", ax=ax)
         
         for i, text in enumerate(iterable=ax.get_xticklabels()):
-            if text._text != ">30%": ax.patches[i].set_facecolor(c="tab:red")
+            if text._text != ">30%": ax.patches[i].set_facecolor("tab:red")
                 
         pu.show_values_on_bars(
             axs=ax, show_percentage=True, fontsize=9, position="outside", 
@@ -469,7 +474,7 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         plot_data = plot_data.sort_values(by=self.st_col, ascending=False)
         
         ncols = 2
-        nrows = int(np.ceil(a=len(self.qa.valid_is) / ncols))
+        nrows = int(np.ceil(len(self.qa.valid_is) / ncols))
         fig = plt.figure(figsize=(7.5 * ncols, 3 * nrows), layout="constrained")
         bound_type = self.attrs.get("boundary", "IQR")
         

@@ -13,6 +13,7 @@ from .invalid_feature_sample_filtering import MetaboIntFLTR
 from .data_quality_assessment import MetaboIntQA
 from .data_signal_correction import MetaboIntSC
 from .normalization import MetaboIntNorm
+from .imputation import MetaboIntImputer
 from .pipeline import run_pipeline
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "MetaboIntQA",
     "MetaboIntSC",
     "MetaboIntNorm",
+    "MetaboIntImputer",
     "run_pipeline"
 ]
 
