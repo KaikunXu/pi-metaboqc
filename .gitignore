@@ -1,0 +1,101 @@
+# ==========================================
+# Python: Compiled source and cache files
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==========================================
+# Jupyter Notebook: Temporary and checkpoints
+# ==========================================
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+# IPython
+.ipython/
+
+# ==========================================
+# Virtual Environments: Local env folders
+# ==========================================
+venv/
+env/
+.env
+.venv
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# Editors: VS Code, PyCharm, and others
+# ==========================================
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm / IntelliJ
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ==========================================
+# Testing: Pytest and coverage
+# ==========================================
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# ==========================================
+# System: OS generated files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Project Specific: Local data or logs
+# ==========================================
+*.log
+
+# Deprecated scripts and WIP functions
+.deprecated/
+
+# # Local data files that should not be public:
+# results/temp/
+

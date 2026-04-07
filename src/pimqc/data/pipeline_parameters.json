@@ -1,0 +1,70 @@
+﻿{
+    "_comment_MetaboInt": "Core dataset construction parameters",
+    "MetaboInt": {
+        "mode": "POS",
+        "sample_name": "Sample Name",
+        "sample_type": "Sample Type",
+        "bio_group": "Bio Group",
+        "batch": "Batch",
+        "inject_order": "Inject Order",
+        "sample_dict": {
+            "Actual sample": "Sample",
+            "Blank sample": "Blank",
+            "QC sample": "QC"
+        },
+        "internal_standard": [
+            "Phenylalanine-d5",
+            "choline-d4",
+            "CA-d4",
+            "CDCA-d4",
+            "cannitine C10:0-d3",
+            "FFA 18:0-d3",
+            "FFA 16:0-d3",
+            "IS-PC",
+            "IS-TG",
+            "IS-CER",
+            "IS-SM",
+            "IS-PE",
+            "IS-LPC",
+            "IS_PC 38:0+AcO",
+            "IS_PE 30:0-H",
+            "IS_LPC 19:0+AcO",
+            "IS_SM 30:1;2+AcO",
+            "IS_FFA C16:0-d3",
+            "IS_FFA C18:0-d3"
+        ],
+        "outlier_marker": []
+    },
+    "_comment_MetaboIntQA": "Quality assessment parameters (PCA & IS Outliers)",
+    "MetaboIntQA": {
+        "corr_method": "spearman",
+        "mask": true,
+        "boundary": "IQR",
+        "stat_outlier": "All"
+    },
+    "_comment_MetaboIntFLTR": "Feature and sample filtering thresholds (MV Warning only)",
+    "MetaboIntFLTR": {
+        "mv_global_tol": 0.7,
+        "mv_group_tol": 0.5,
+        "mv_qc_tol": 0.8,
+        "rsd_qc_tol": 0.7,
+        "qc_blank_ratio": 5.0,
+        "sample_mv_tol": 0.5
+    },
+    "_comment_MetaboIntSC": "Signal correction and baseline fitting parameters",
+    "MetaboIntSC": {
+        "base_est": "QC-RFSC",
+        "span": 0.3,
+        "n_tree": 500,
+        "random_state": 12345,
+        "svr_kernel": "rbf",
+        "svr_c": 1.0,
+        "svr_gamma": "scale"
+    },
+    "_comment_MetaboIntNorm": "Data normalization and scaling parameters",
+    "MetaboIntNorm": {
+        "col_norm": "PQN",
+        "row_norm": "VSN",
+        "quantile_norm": false
+    }
+}
