@@ -1,7 +1,9 @@
 # π-Metabolomics-Quality Control (`pi-metaboqc`)
+
 **pi-metaboqc** is an automated, robust pipeline for LC-MS metabolomics data pre-processing and quality control.
 
 [![Status](https://img.shields.io/badge/status-active--development-orange.svg)](https://github.com/KaikunXu/pi-metaboqc)
+
 ⚠️ Note: This project is currently under active development. The API may change without notice, and some features might be experimental.
 
 
