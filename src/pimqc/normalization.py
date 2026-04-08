@@ -7,22 +7,27 @@ import os
 import copy
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import matplotlib.lines as mlines
+
 from scipy import stats
 from scipy.optimize import minimize
 from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 from . import core_classes
+from . import visualizer_classes
 from . import io_utils as iu
-
+from . import plot_utils as pu
 
 class MetaboIntNorm(core_classes.MetaboInt):
     """Normalization class for metabolomics intensity data.
 
     This class handles three categories of normalization:
     1. Sample-wise (Column) normalization: TIC, Median, and PQN.
-    2. Feature-wise (Row) normalization: VSN, Auto scaling, and Pareto scaling.
-    3. Standalone Quantile normalization: NaN-compatible interpolation logic.
+    2. Feature-wise (Row) normalization: VSN, Auto scaling, and Pareto.
+    3. Standalone Quantile normalization: NaN-compatible interpolation.
     """
 
     # Register custom attributes for pandas metadata propagation
@@ -44,24 +49,20 @@ class MetaboIntNorm(core_classes.MetaboInt):
             pipeline_params: Configuration dictionary for the pipeline.
             col_norm: Method for sample-wise normalization.
             row_norm: Method for feature-wise normalization.
-            quantile_norm: Whether to apply standalone quantile normalization.
+            quantile_norm: Apply standalone quantile normalization.
             **kwargs: Arbitrary keyword arguments for pandas DataFrame.
         """
-        # 1. Initialize parent (loads "MetaboInt" level parameters)
         super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
 
-        # 2. Define subclass-specific default parameters
         norm_configs: Dict[str, Any] = {
             "col_norm": col_norm,
             "row_norm": row_norm,
             "quantile_norm": quantile_norm
         }
 
-        # 3. Incrementally load "MetaboIntNorm" block from pipeline_params
         if pipeline_params and "MetaboIntNorm" in pipeline_params:
             norm_configs.update(pipeline_params["MetaboIntNorm"])
 
-        # 4. Merge child parameters into the existing attrs dictionary
         self.attrs.update(norm_configs)
 
     @property
@@ -90,6 +91,45 @@ class MetaboIntNorm(core_classes.MetaboInt):
         if hasattr(other, "attrs"):
             self.attrs = copy.deepcopy(other.attrs)
         return self
+
+    # ====================================================================
+    # Data Transformation & Assessment Utilities
+    # ====================================================================
+
+    def get_log2_matrix(self) -> pd.DataFrame:
+        """Calculate safely log2-transformed intensity matrix.
+
+        Returns:
+            pd.DataFrame: Log2-transformed matrix with NaNs for 0 values.
+        """
+        df_safe = self.replace({0: np.nan})
+        return np.log2(df_safe)
+
+    def calc_rle(self) -> pd.DataFrame:
+        """Calculate Relative Log Expression (RLE) matrix.
+
+        Returns:
+            pd.DataFrame: RLE matrix with feature medians subtracted.
+        """
+        df_log = self.get_log2_matrix()
+        feat_medians = df_log.median(axis="columns")
+        return df_log.sub(feat_medians, axis="index")
+
+    def calc_ma(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate A (average intensity) and M (fold change) values.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Flattened valid A and M arrays.
+        """
+        df_log = self.get_log2_matrix()
+        a_vals = df_log.mean(axis="columns")
+        m_df = df_log.sub(a_vals, axis="index")
+
+        a_flat = np.repeat(a_vals.values, m_df.shape[1])
+        m_flat = m_df.values.flatten()
+
+        valid = ~np.isnan(a_flat) & ~np.isnan(m_flat)
+        return a_flat[valid], m_flat[valid]
 
     # ====================================================================
     # Category 1: Column (Sample) Dimension Normalization
@@ -121,7 +161,7 @@ class MetaboIntNorm(core_classes.MetaboInt):
         self, 
         data: np.ndarray
     ) -> Tuple[np.ndarray, float]:
-        """Estimate VSN parameters via mathematically exact Profile Likelihood."""
+        """Estimate VSN params via mathematically exact Profile Likelihood."""
         rows, cols = data.shape
 
         def log_likelihood(params: np.ndarray) -> float:
@@ -137,16 +177,16 @@ class MetaboIntNorm(core_classes.MetaboInt):
             residuals_sq = (transformed - row_means) ** 2
             
             valid_mask = ~np.isnan(residuals_sq)
-            N = np.sum(valid_mask)
+            n_valid = np.sum(valid_mask)
             
-            if N == 0:
+            if n_valid == 0:
                 return 1e10
                 
             sigma_sq = np.nanmean(residuals_sq)
             if sigma_sq <= 1e-16:
                 return 1e10
 
-            ll = np.nansum(log_jacobian) - (N / 2.0) * np.log(sigma_sq)
+            ll = np.nansum(log_jacobian) - (n_valid / 2.0) * np.log(sigma_sq)
             
             return -ll
 
@@ -166,19 +206,18 @@ class MetaboIntNorm(core_classes.MetaboInt):
         return res.x[:-1], res.x[-1]
 
     def _row_norm_vsn(self, df: "MetaboIntNorm") -> "MetaboIntNorm":
-        """Apply mathematically pure VSN matching Bioconductor vsn2 behavior."""
+        """Apply pure VSN matching Bioconductor vsn2 behavior."""
         data_arr = df.to_numpy(dtype=np.float64)
         a_vec, b = self._estimate_vsn_params(data_arr)
 
-        # 1. asinh(a + bx) / ln(2) - log2(2b)
         shift_constant = np.log2(2 * b)
         normed_arr = (
             np.arcsinh(a_vec + b * data_arr) / np.log(2)) - shift_constant
 
-        # 2. Pure Anchor Shift
         log2_data = np.log2(np.where(data_arr > 0, data_arr, np.nan))
         valid = ~np.isnan(log2_data) & ~np.isnan(normed_arr)
         
+        pure_shift = 0.0
         if np.any(valid):
             y_val = normed_arr[valid]
             x_val = log2_data[valid]
@@ -214,22 +253,13 @@ class MetaboIntNorm(core_classes.MetaboInt):
     # ====================================================================
 
     def _quantile_norm(self, df: "MetaboIntNorm") -> "MetaboIntNorm":
-        """Quantile normalizes a DataFrame with missing value handling.
-
-        Replicates the methodology of original R preprocessCore using
-        vectorized numpy interpolation to project values to target space.
-        
-        Inspired with: 
-            https://github.com/huosan0123/quantile_normalization_python
-        """
+        """Quantile normalizes a DataFrame with missing value handling."""
         origin_arr = df.to_numpy(dtype=np.float64)
         rows, cols = origin_arr.shape
 
-        # Sort independently. NaNs move to the end.
         sorted_arr = np.sort(origin_arr, axis=0)
         non_nas = rows - np.isnan(sorted_arr).sum(axis=0)
 
-        # Compute reference target distribution
         row_means = np.zeros(rows, dtype=np.float64)
         x_target = np.linspace(0, 1, rows)
 
@@ -243,7 +273,6 @@ class MetaboIntNorm(core_classes.MetaboInt):
 
         row_means /= float(cols)
 
-        # Map original values to the target distribution
         normed_arr = np.full((rows, cols), np.nan, dtype=np.float64)
         for j in range(cols):
             non_na = non_nas[j]
@@ -260,7 +289,6 @@ class MetaboIntNorm(core_classes.MetaboInt):
             interp_vals = np.interp(rank_percentiles, x_target, row_means)
             normed_arr[valid, j] = interp_vals
 
-        # Use copy() and iloc to maintain subclass structure and metadata
         res_df = df.copy()
         res_df.iloc[:, :] = normed_arr
         return res_df
@@ -280,7 +308,6 @@ class MetaboIntNorm(core_classes.MetaboInt):
         if self.attrs.get("quantile_norm", False):
             return self._quantile_norm(result_df)
 
-        # Step 1: Column (Sample) Normalization
         col_norm = self.attrs.get("col_norm")
         if col_norm in ("TIC", "tic"):
             result_df = self._col_norm_tic(result_df)
@@ -289,7 +316,6 @@ class MetaboIntNorm(core_classes.MetaboInt):
         elif col_norm in ("PQN", "pqn"):
             result_df = self._col_norm_pqn(result_df)
 
-        # Step 2: Row (Feature) Normalization
         row_norm = self.attrs.get("row_norm")
         if row_norm in ("VSN", "vsn"):
             result_df = self._row_norm_vsn(result_df)
@@ -333,4 +359,157 @@ class MetaboIntNorm(core_classes.MetaboInt):
             encoding="utf-8-sig"
         )
 
+        # Execute Pre vs Post Normalization Visualizations
+        vis = MetaboVisualizerNorm(raw_obj=self, norm_obj=normalized_data)
+        
+        fig_rle = vis.plot_rle_boxplot()
+        fig_rle.savefig(
+            os.path.join(output_dir, f"Norm_RLE_Boxplot_{suffix}.pdf"),
+            bbox_inches="tight"
+        )
+        
+        fig_ma = vis.plot_ma_scatter()
+        fig_ma.savefig(
+            os.path.join(output_dir, f"Norm_MA_Scatter_{suffix}.pdf"),
+            bbox_inches="tight"
+        )
+        
+        fig_kde = vis.plot_density_kde()
+        fig_kde.savefig(
+            os.path.join(output_dir, f"Norm_Density_KDE_{suffix}.pdf"),
+            bbox_inches="tight"
+        )
+
         return normalized_data
+
+
+class MetaboVisualizerNorm(visualizer_classes.BaseMetaboVisualizer):
+    """Visualization suite for data normalization evaluation."""
+
+    def __init__(
+        self, raw_obj: "MetaboIntNorm", norm_obj: "MetaboIntNorm"
+    ) -> None:
+        """Initialize with both raw and normalized datasets.
+        
+        Args:
+            raw_obj: The original, unnormalized MetaboIntNorm dataset.
+            norm_obj: The normalized MetaboIntNorm dataset.
+        """
+        super().__init__(metabo_obj=norm_obj)
+        self.raw_obj = raw_obj
+        self.norm_obj = norm_obj
+
+    def plot_rle_boxplot(self) -> plt.Figure:
+        """Plot pre/post Relative Log Expression (RLE) boxplots.
+        
+        Returns:
+            plt.Figure: The generated matplotlib figure object.
+        """
+        rle_raw = self.raw_obj.calc_rle()
+        rle_norm = self.norm_obj.calc_rle()
+        
+        fig, axes = plt.subplots(
+            nrows=1, ncols=2, figsize=(14, 5), sharey=True
+        )
+        
+        sns.boxplot(
+            data=rle_raw, ax=axes[0], fliersize=0, 
+            linewidth=0.5, color="lightcoral"
+        )
+        sns.boxplot(
+            data=rle_norm, ax=axes[1], fliersize=0, 
+            linewidth=0.5, color="skyblue"
+        )
+        
+        titles = ["Raw Data RLE", "Normalized RLE"]
+        for ax, title in zip(axes, titles):
+            ax.axhline(0, color="k", linestyle="--", linewidth=1.5)
+            ax.set_xticklabels([])
+            self._apply_standard_format(
+                ax=ax, title=title,
+                xlabel="Samples", ylabel="Relative Log Expression"
+            )
+            
+        plt.tight_layout()
+        plt.close(fig)
+        return fig
+
+    def plot_ma_scatter(self) -> plt.Figure:
+        """Plot pre/post global MA scatter with custom hexbin colormap.
+        
+        Returns:
+            plt.Figure: The generated matplotlib figure object.
+        """
+        a_raw, m_raw = self.raw_obj.calc_ma()
+        a_norm, m_norm = self.norm_obj.calc_ma()
+        
+        fig, axes = plt.subplots(
+            nrows=1, ncols=2, figsize=(14, 5), sharey=True, sharex=True
+        )
+        
+        # 1. Apply custom linear colormap via plot_utils
+        custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
+        
+        hb0 = axes[0].hexbin(
+            x=a_raw, y=m_raw, gridsize=50, 
+            cmap=custom_cmap, mincnt=1, bins="log"
+        )
+        hb1 = axes[1].hexbin(
+            x=a_norm, y=m_norm, gridsize=50, 
+            cmap=custom_cmap, mincnt=1, bins="log"
+        )
+        
+        titles = ["Raw Data MA", "Normalized MA"]
+        for ax, title, hb in zip(axes, titles, [hb0, hb1]):
+            ax.axhline(0, color="k", linestyle="--", linewidth=1.5)
+            self._apply_standard_format(
+                ax=ax, title=title,
+                xlabel="Average Log2 Intensity (A)", 
+                ylabel="Log2 Fold Change from Mean (M)"
+            )
+            cb = fig.colorbar(hb, ax=ax)
+            cb.set_label("Log10(Count)")
+            
+        plt.tight_layout()
+        plt.close(fig)
+        return fig
+
+    def plot_density_kde(self) -> plt.Figure:
+        """Plot combined pre/post Kernel Density Estimation (KDE) overlay.
+        
+        Returns:
+            plt.Figure: The generated matplotlib figure object.
+        """
+        log_raw = self.raw_obj.get_log2_matrix()
+        log_norm = self.norm_obj.get_log2_matrix()
+        
+        # 2. Merge into a single axis for overlapping comparison
+        fig, ax = plt.subplots(figsize=(8, 5))
+        
+        for col in log_raw.columns:
+            sns.kdeplot(
+                data=log_raw[col].dropna(), ax=ax, 
+                color="tab:red", alpha=0.15, linewidth=0.5
+            )
+            
+        for col in log_norm.columns:
+            sns.kdeplot(
+                data=log_norm[col].dropna(), ax=ax, 
+                color="tab:blue", alpha=0.15, linewidth=0.5
+            )
+            
+        self._apply_standard_format(
+            ax=ax, title="Pre/Post Normalization Density Overlay",
+            xlabel="Log2 Intensity", ylabel="Density"
+        )
+        
+        # 3. Create custom legend handles to avoid duplicating per sample
+        legend_elements = [
+            mlines.Line2D([0], [0], color="tab:red", lw=2, label="Raw Data"),
+            mlines.Line2D([0], [0], color="tab:blue", lw=2, label="Normalized")
+        ]
+        ax.legend(handles=legend_elements, loc="upper right", frameon=True)
+            
+        plt.tight_layout()
+        plt.close(fig)
+        return fig

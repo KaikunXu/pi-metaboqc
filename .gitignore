@@ -96,6 +96,6 @@ desktop.ini
 # Deprecated scripts and WIP functions
 .deprecated/
 
-# # Local data files that should not be public:
-# results/temp/
+# Local data files that should not be public
+examples/tutorial_output/
 

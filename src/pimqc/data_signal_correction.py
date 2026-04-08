@@ -315,8 +315,8 @@ class MetaboIntSC(core_classes.MetaboInt):
             return np.full(shape=len(x_process), fill_value=np.nan)
 
     def _process_matrix_fit_sb(
-        self, batch_data: List[Any], batch: str,
-        base_est: str = "QC-RLSC", span: float = 0.3,
+        self, batch_data: List[Any], batch: str, batch_idx: int = 0,
+        pbar: Any = None, base_est: str = "QC-RLSC", span: float = 0.3,
         n_tree: int = 500, random_state: int = 12345,
         svr_kernel: str = "rbf", svr_c: float = 1.0, 
         svr_gamma: Union[str, float] = "scale"
@@ -325,44 +325,50 @@ class MetaboIntSC(core_classes.MetaboInt):
         x_tr, y_tr, x_pr, y_pr = batch_data
         
         try:
-            logger.info(f"Analyzing {batch} using {base_est}...")
+            fit_results: Dict[str, np.ndarray] = {}
+            is_jup = iu.is_jupyter()
             
+            # --- Environment-Aware Progress Bar & Logging Routing ---
+            if is_jup and pbar is not None:
+                # In Jupyter: Iterate silently, update the global lock-safe pbar
+                iterable_cols = y_tr.items()
+            else:
+                # In Terminal: Log start and create a distinct progress bar
+                logger.info(f"Analyzing {batch} using {base_est}...")
+                iterable_cols = iu.get_custom_progress(
+                    iterable=y_tr.items(), 
+                    total=y_tr.shape[1], 
+                    desc=f"SC [{batch}]", 
+                    position=batch_idx
+                )
+
             if base_est in ("LOESS", "LOWESS", "QC-RLSC"):
-                y_fit = y_tr.apply(
-                    func=lambda x: self._loess_fit(
-                        x_train=x_tr, 
-                        y_train=x, 
-                        x_process=x_pr, 
-                        span=span
-                    ), 
-                    axis=0
-                )
+                for col_name, col_data in iterable_cols:
+                    fit_results[str(col_name)] = self._loess_fit(
+                        x_train=x_tr, y_train=col_data, 
+                        x_process=x_pr, span=span
+                    )
+                    if is_jup and pbar: pbar.update(1)
+                    
             elif base_est in ("RF", "Random forest", "QC-RFSC"):
-                y_fit = y_tr.apply(
-                    func=lambda x: self._rf_fit(
-                        x_train=x_tr, 
-                        y_train=x, 
-                        x_process=x_pr, 
-                        n_tree=n_tree, 
-                        random_state=random_state
-                    ), 
-                    axis=0
-                )
+                for col_name, col_data in iterable_cols:
+                    fit_results[str(col_name)] = self._rf_fit(
+                        x_train=x_tr, y_train=col_data, x_process=x_pr, 
+                        n_tree=n_tree, random_state=random_state
+                    )
+                    if is_jup and pbar: pbar.update(1)
+                    
             elif base_est in ("SVR", "QC-SVR"):
-                y_fit = y_tr.apply(
-                    func=lambda x: self._svr_fit(
-                        x_train=x_tr, 
-                        y_train=x, 
-                        x_process=x_pr, 
-                        kernel=svr_kernel, 
-                        c_val=svr_c, 
-                        gamma_val=svr_gamma
-                    ), 
-                    axis=0
-                )
+                for col_name, col_data in iterable_cols:
+                    fit_results[str(col_name)] = self._svr_fit(
+                        x_train=x_tr, y_train=col_data, x_process=x_pr, 
+                        kernel=svr_kernel, c_val=svr_c, gamma_val=svr_gamma
+                    )
+                    if is_jup and pbar: pbar.update(1)
             else:
                 raise ValueError(f"Unknown estimator: {base_est}")
                 
+            y_fit = pd.DataFrame(fit_results)
             y_fit.index = y_pr.index
             y_fit.columns = y_pr.columns
             return y_fit.transpose()
@@ -370,9 +376,7 @@ class MetaboIntSC(core_classes.MetaboInt):
         except Exception as e:
             logger.error(f"Critical failure in batch '{batch}': {e}.")
             empty_df = pd.DataFrame(
-                data=np.nan, 
-                index=y_pr.columns, 
-                columns=y_pr.index
+                data=np.nan, index=y_pr.columns, columns=y_pr.index
             )
             return empty_df
 
@@ -382,24 +386,46 @@ class MetaboIntSC(core_classes.MetaboInt):
         n_jobs = min(iu.__max_threading__, len(self._fit_data))
         logger.info(f"Using {n_jobs} threads for parallel SC analysis.")
         
-        # Dispatch only relevant slices to reduce IPC overhead
-        results = Parallel(n_jobs=n_jobs, backend="threading")(
-            delayed(function=self._process_matrix_fit_sb)(
-                batch_data=self._fit_data[batch_id],
-                batch=batch_id,
-                base_est=self.attrs["base_est"],
-                span=self.attrs["span"],
-                n_tree=self.attrs["n_tree"],
-                random_state=self.attrs["random_state"],
-                svr_kernel=self.attrs["svr_kernel"],
-                svr_c=self.attrs["svr_c"],
-                svr_gamma=self.attrs["svr_gamma"]
-            ) for batch_id in self._fit_data.keys()
-        )
+        batch_keys = list(self._fit_data.keys())
+        is_jup = iu.is_jupyter()
+        pbar = None
         
+        if is_jup:
+            # Pre-log the operation to avoid interrupting the tqdm progress bar
+            est = self.attrs.get("base_est", "Estimator")
+            logger.info(
+                f"Analyzing {len(batch_keys)} batches concurrently using {est}."
+            )
+            
+            total_feats = sum(self._fit_data[b][1].shape[1] for b in batch_keys)
+            pbar = iu.get_custom_progress(
+                iterable=None, total=total_feats, desc="SC [All Batches]"
+            )
+        
+        try:
+            results = Parallel(n_jobs=n_jobs, backend="threading")(
+                delayed(function=self._process_matrix_fit_sb)(
+                    batch_data=self._fit_data[batch_id],
+                    batch=batch_id,
+                    batch_idx=idx,
+                    pbar=pbar,
+                    base_est=self.attrs["base_est"],
+                    span=self.attrs["span"],
+                    n_tree=self.attrs["n_tree"],
+                    random_state=self.attrs["random_state"],
+                    svr_kernel=self.attrs["svr_kernel"],
+                    svr_c=self.attrs["svr_c"],
+                    svr_gamma=self.attrs["svr_gamma"]
+                ) for idx, batch_id in enumerate(iterable=batch_keys)
+            )
+        finally:
+            if pbar:
+                pbar.close()
+            
         res_df = pd.concat(objs=results, axis=1)
         res_df[res_df <= 0] = np.nan
         return res_df
+    
 
     @cached_property
     def intra_batch_corr(self) -> "MetaboIntSC":
@@ -530,7 +556,7 @@ class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
         cmap = pu.extract_linear_cmap(
             cmap=pu.custom_linear_cmap(
                 color_list=["white", "tab:red"], n_colors=3),
-            vmin=0.0, vmax=1.0)
+            cmin=0.0, cmax=1.0)
         
         sns.boxplot(
             data=rsd_df, x="Stage", y="RSD", hue="Stage", width=0.6,

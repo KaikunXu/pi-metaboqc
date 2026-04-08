@@ -42,18 +42,18 @@
         "boundary": "IQR",
         "stat_outlier": "All"
     },
-    "_comment_MetaboIntFLTR": "Feature and sample filtering thresholds (MV Warning only)",
+    "_comment_MetaboIntFLTR": "Feature and sample filtering thresholds",
     "MetaboIntFLTR": {
         "mv_global_tol": 0.7,
-        "mv_group_tol": 0.5,
         "mv_qc_tol": 0.8,
-        "rsd_qc_tol": 0.7,
+        "mv_group_tol": 0.5,
+        "rsd_qc_tol": 0.3,
         "qc_blank_ratio": 5.0,
         "sample_mv_tol": 0.5
     },
     "_comment_MetaboIntSC": "Signal correction and baseline fitting parameters",
     "MetaboIntSC": {
-        "base_est": "QC-RFSC",
+        "base_est": "SVR",
         "span": 0.3,
         "n_tree": 500,
         "random_state": 12345,
@@ -66,5 +66,12 @@
         "col_norm": "PQN",
         "row_norm": "VSN",
         "quantile_norm": false
+    },
+
+    "_comment_MetaboIntImputer": "Missing value imputation algorithm and parameters. Options for method: 'probabilistic', 'knn', 'halfmin', 'missforest'",
+    "MetaboIntImputer": {
+        "method": "auto",
+        "knn_neighbors": 5,
+        "halfmin_fraction": 0.5
     }
 }

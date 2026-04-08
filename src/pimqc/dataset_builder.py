@@ -7,6 +7,7 @@ Purpose of script:
 
 import os
 import pandas as pd
+from loguru import logger
 from typing import Optional, Dict, Any
 
 from . import io_utils as iu

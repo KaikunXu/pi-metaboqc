@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from pca import pca
+
 from loguru import logger
 
 from . import io_utils as iu
@@ -26,8 +27,6 @@ from . import visualizer_classes
 warnings.filterwarnings(action="ignore", category=FutureWarning)
 warnings.filterwarnings(action="ignore", category=RuntimeWarning)
 
-import logging
-logging.getLogger('pca').setLevel(logging.WARNING)
 
 class MetaboIntQA(core_classes.MetaboInt):
     """Data quality assessment computational class for metabolomics.
@@ -99,10 +98,9 @@ class MetaboIntQA(core_classes.MetaboInt):
     @cached_property
     def qc_corr_mask(self) -> np.ndarray:
         """Generate a boolean mask for the correlation matrix."""
-        mat_shape = self.qc_corr_matrix.shape
         if self.attrs.get("mask", True):
-            return np.triu(np.ones(mat_shape), 1).astype(bool)
-        return np.zeros(mat_shape).astype(bool)
+            return np.triu(self.qc_corr_matrix,1).astype(bool)
+        return np.zeros(self.qc_corr_matrix.shape).astype(bool)
 
     def _extract_features_and_labels(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Extract features and labels for PCA modeling.
@@ -145,10 +143,13 @@ class MetaboIntQA(core_classes.MetaboInt):
             index=features.index, columns=features.columns
         )
         
+        import logging
+        logging.getLogger('pca').setLevel(logging.CRITICAL)
         with iu.HiddenPrints():
-            model = pca(n_components=2,verbose=0)
+            # Force verbose=0 to suppress internal print statements
+            model = pca(n_components=2, verbose=0)
             res = model.fit_transform(scaled_feat)
-
+                    
         pca_scatter = res["PC"].set_axis(multi_idx, axis=0)
         pca_var = pd.Series(
             res["variance_ratio"], index=pca_scatter.columns
@@ -301,43 +302,48 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
                         break
 
     def plot_qc_correlation_heatmap(
-        self, value_max: float = 1.0, title: str = "QC Samples Correlation"
+        self, value_min: float = 0.85, value_max: float = 1.0, 
+        title: str = "Pooled QC Samples Correlation"
     ) -> plt.Figure:
         """Plot correlation matrix heatmap of QC samples."""
         batch_col = self.attrs["batch"]
         batch_list = self.qa.columns.get_level_values(batch_col).unique()
-        
+        method_title = self.attrs.get("corr_method", "spearman").title()
+
         custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
         tick_colors = pu.extract_linear_cmap(
             custom_cmap, 0.5, 1.0, len(batch_list)
         )
         tick_color_dict = dict(zip(batch_list, tick_colors))
-        color_map = pu.custom_linear_cmap(["white", "tab:red"], 100)
-
+        color_map = pu.extract_linear_cmap(custom_cmap,cmin=0.2, cmax=1.0)
+        
         n_samples = self.qa.qc_corr_matrix.shape[0]
-        fig, ax = plt.subplots(1, 1, figsize=(n_samples * 0.2, n_samples * 0.2))
-        
-        # [FIX] Force the background color of the axes to be pure white
-        ax.set_facecolor("white")
-        method_title = self.attrs.get("corr_method", "spearman").title()
-        
-        hm = sns.heatmap(
-            self.qa.qc_corr_matrix,
-            mask=self.qa.qc_corr_mask,
-            vmin=0.85, vmax=value_max,
-            cmap=color_map, annot=False,
-            linewidths=0.25, linecolor="white", square=True,
-            cbar_kws={
-                "label": f"{method_title} Correlation",
-                "location": "right", "shrink": 0.65, "pad": 0.015,
-                "aspect": (n_samples) / 15 + 30, "drawedges": False
-            },
-            ax=ax
+        fig, ax = plt.subplots(
+            nrows = 1, ncols = 1, 
+            figsize=(n_samples * 0.18, n_samples * 0.18)
         )
         
+        # Force the background color of the axes to be pure white
+        with sns.axes_style("white"):
+            hm = sns.heatmap(
+                self.qa.qc_corr_matrix,
+                mask=self.qa.qc_corr_mask,
+                xticklabels=1, yticklabels=1, # <- plot every x/y label
+                vmin=value_min, vmax=value_max,
+                cmap=color_map, annot=False,
+                linewidths=0.25, linecolor="white", square=True,
+                cbar_kws={
+                    "label": f"{method_title} Correlation",
+                    "location": "right", "shrink": 0.65, "pad": 0.015,
+                    "aspect": (n_samples) / 15 + 30, "drawedges": False
+                },
+                ax=ax
+            )
+            
         self._apply_standard_format(
-            ax=ax, title="QC Samples Correlation", 
-            title_fontsize=16, label_fontsize=6, tick_fontsize=6
+            ax=ax, title=title, 
+            xlabel="Pooled QCs",ylabel="Pooled QCs",
+            title_fontsize=16, label_fontsize=10, tick_fontsize=5
         )
         self._format_heatmap_ticks(hm=hm, tick_color_dict=tick_color_dict)
         plt.close(fig=fig)
@@ -367,7 +373,8 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         sns.scatterplot(
             data=pca_df, x=x, y=y, hue=st_col, style=bt_col,
             s=50, edgecolor="k", palette=pal_dict, linewidth=0.5,
-            ax=ax, hue_order=[qc_lbl, act_lbl]
+            ax=ax, hue_order=[qc_lbl, act_lbl],style_order=self.all_batches,
+            markers=self.style_map,
         )
         
         if draw_ce:
@@ -382,7 +389,9 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
             ax=ax, xlabel=f"{x} ({100 * pca_var.loc[x]:.1f}%)", 
             ylabel=f"{y} ({100 * pca_var.loc[y]:.1f}%)"
         )
-        ax.legend().remove()
+        # ax.legend().remove()
+        self._format_complex_legend(fig=fig, ax=ax)
+
         ax.autoscale()
         plt.close(fig=fig)
         return fig

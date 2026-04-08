@@ -54,25 +54,25 @@ MetaboInt:
 
 
 # ------------------------------------------------------------------------------
-# 2. Invalid Feature & Sample Filtering
+# 2. Invalid Feature Filtering
 # ------------------------------------------------------------------------------
 MetaboIntFLTR:
-  # [Float] Rule 1: Global MV Tolerance. Features exceeding this missing ratio are dropped. Range: 0.0 - 1.0
-  mv_global_tol: 0.7
-  
-  # [Float] Rule 2: Group MV Tolerance. Features below this missing ratio in ANY single group are retained. Range: 0.0 - 1.0
+  # [Float] Group Missing Value Tolerance. Features exceeding this missing rate in all valid biological groups are dropped. Range: 0.0 - 1.0
   mv_group_tol: 0.5
-  
-  # [Float] Rule 3: QC MV Tolerance. Features exceeding this missing ratio in Pooled QC are dropped. Range: 0.0 - 1.0
+
+  # [Float] Global Missing Value Tolerance. Fallback threshold for datasets without valid biological groups. Range: 0.0 - 1.0
+  mv_global_tol: 0.7
+
+  # [Float] QC Missing Value Tolerance. Fallback threshold for QC samples when biological groups are invalid. Range: 0.0 - 1.0
   mv_qc_tol: 0.8
-  
-  # [Float] Rule 4: QC RSD Tolerance. Features exceeding this RSD in Pooled QC are dropped. Range: 0.0 - 1.0
+
+  # [Float] QC RSD Tolerance. Features exceeding this RSD in Pooled QC are dropped. Range: 0.0 - 1.0
   rsd_qc_tol: 0.7
-  
-  # [Float] Rule 5: QC/Blank Ratio Limit. QC mean must reach this multiple of Blank mean (Blank=0 automatically retained). Range: > 0.0
+
+  # [Float] Blank to QC Ratio Tolerance. Features with a Blank/QC mean intensity ratio exceeding this value are dropped. Range: 0.0 - +inf
   qc_blank_ratio: 5.0
-  
-  # [Float] Sample Warning: Samples exceeding this missing feature ratio will be flagged (not forcefully dropped). Range: 0.0 - 1.0
+
+  # [Float] Sample Missing Value Tolerance. Samples exceeding this missing rate across all features are dropped. Range: 0.0 - 1.0
   sample_mv_tol: 0.5
 
 
@@ -81,7 +81,7 @@ MetaboIntFLTR:
 # ------------------------------------------------------------------------------
 MetaboIntSC:
   # [String] Baseline fitting estimator. Options: "QC-RLSC" (LOESS), "QC-RFSC" (Random Forest), "QC-SVR" (SVR)
-  base_est: "QC-RFSC"
+  base_est: "QC-RLSC"
   
   # [Float] Window span parameter for LOESS smoothing. Range: 0.0 - 1.0
   span: 0.3
@@ -131,3 +131,17 @@ MetaboIntNorm:
   
   # [Boolean] Enable standalone Quantile Normalization. Overrides col/row settings if true. Options: true, false
   quantile_norm: false
+
+# ------------------------------------------------------------------------------
+# 6. Missing Value Imputation
+# ------------------------------------------------------------------------------
+MetaboIntImputer:
+  # [String] Imputation algorithm to estimate missing values. Options: "probabilistic", "knn", "halfmin", "missforest"
+  # If "auto", evaluates all algorithms via NRMSE and selects the optimal one.
+  method: "auto"
+  
+  # [Integer] Number of neighboring samples to use for KNN imputation. Active only if method is "knn".
+  knn_neighbors: 5
+  
+  # [Float] Multiplier for the global minimum valid value. Active only if method is "halfmin".
+  halfmin_fraction: 0.5
