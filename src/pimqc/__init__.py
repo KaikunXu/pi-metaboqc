@@ -1,31 +1,34 @@
 # src/pimqc/__init__.py
 """
-pi-metaboqc: A comprehensive LC-MS metabolomics data quality control package.
-
-This package provides an object-oriented pipeline for preprocessing metabolomics
-data, including dataset building, invalid feature/sample filtering, quality 
-assessment, signal correction, and data normalization.
+pi-metaboqc: A Python-based high-throughput metabolomics data 
+quality control and preprocessing pipeline.
 """
 
+# Core Data Structure
 from .core_classes import MetaboInt
+
+# Data Ingestion & Pipeline Management
 from .dataset_builder import build_dataset
-from .invalid_feature_sample_filtering import MetaboIntFLTR
-from .data_quality_assessment import MetaboIntQA
-from .data_signal_correction import MetaboIntSC
-from .normalization import MetaboIntNorm
-from .imputation import MetaboIntImputer
 from .pipeline import run_pipeline
 
+# Processing Modules (Actors)
+from .assessment import MetaboIntAssessor
+from .correction import MetaboIntCorrector
+from .imputation import MetaboIntImputer
+from .normalization import MetaboIntNormalizer
+from .filtering import MetaboIntFilter
+
+# Define public API
 __all__ = [
-    "__version__",
     "MetaboInt",
     "build_dataset",
-    "MetaboIntFLTR", 
-    "MetaboIntQA",
-    "MetaboIntSC",
-    "MetaboIntNorm",
+    "run_pipeline",
+    "MetaboIntAssessor",
+    "MetaboIntCorrector",
     "MetaboIntImputer",
-    "run_pipeline"
+    "MetaboIntNormalizer",
+    "MetaboIntFilter",
 ]
 
-__version__ = "0.1.dev"
+# Package Version
+__version__ = "0.1.0"

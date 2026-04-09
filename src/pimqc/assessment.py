@@ -28,11 +28,11 @@ warnings.filterwarnings(action="ignore", category=FutureWarning)
 warnings.filterwarnings(action="ignore", category=RuntimeWarning)
 
 
-class MetaboIntQA(core_classes.MetaboInt):
+class MetaboIntAssessor(core_classes.MetaboInt):
     """Data quality assessment computational class for metabolomics.
 
     This class handles statistical calculations, PCA modeling, and outlier
-    detection. Visualization logic is separated to MetaboVisualizerQA.
+    detection. Visualization logic is separated to MetaboVisualizerAssessor.
     """
 
     _metadata: List[str] = ["attrs"]
@@ -43,7 +43,6 @@ class MetaboIntQA(core_classes.MetaboInt):
         pipeline_params: Optional[Dict[str, Any]] = None,
         mode: str = "POS",
         corr_method: str = "spearman",
-        boundary: str = "IQR",
         mask: bool = True,
         stat_outlier: str = "All",
         **kwargs: Any
@@ -55,7 +54,6 @@ class MetaboIntQA(core_classes.MetaboInt):
             pipeline_params: Configuration dictionary for the pipeline.
             mode: MS Polarity ("POS" or "NEG").
             corr_method: Correlation method for QC samples.
-            boundary: Strategy to calculate control boundaries (e.g., IQR).
             mask: Whether to apply an upper triangle mask to corr matrix.
             stat_outlier: Specific statistical outlier detection scope.
             **kwargs: Extra arguments passed to pandas DataFrame.
@@ -65,24 +63,23 @@ class MetaboIntQA(core_classes.MetaboInt):
         qa_configs: Dict[str, Any] = {
             "mode": mode,
             "corr_method": corr_method,
-            "boundary": boundary,
             "mask": mask,
             "stat_outlier": stat_outlier
         }
 
-        if pipeline_params and "MetaboIntQA" in pipeline_params:
-            qa_configs.update(pipeline_params["MetaboIntQA"])
+        if pipeline_params and "MetaboIntAssessor" in pipeline_params:
+            qa_configs.update(pipeline_params["MetaboIntAssessor"])
 
         self.attrs.update(qa_configs)
 
     @property
     def _constructor(self) -> type:
-        """Override constructor to return MetaboIntQA."""
-        return MetaboIntQA
+        """Override constructor to return MetaboIntAssessor."""
+        return MetaboIntAssessor
 
     def __finalize__(
         self, other: Any, method: Optional[str] = None, **kwargs: Any
-    ) -> "MetaboIntQA":
+    ) -> "MetaboIntAssessor":
         """Explicitly preserve custom attributes during pandas operations."""
         super().__finalize__(other, method=method, **kwargs)
         if hasattr(other, "attrs"):
@@ -118,7 +115,7 @@ class MetaboIntQA(core_classes.MetaboInt):
         
         met_df = self.loc[:, valid_samples].transpose()
         met_df = np.log10(met_df.replace({0: np.nan}))
-        met_df = met_df.fillna(met_df.min().min())
+        met_df = met_df.fillna(met_df.min().min()/2)
         
         labels = met_df.index.to_frame().reset_index(drop=True)
         feat_cols = list(set(met_df.index.names) - {self.attrs["sample_name"]})
@@ -187,31 +184,6 @@ class MetaboIntQA(core_classes.MetaboInt):
             "outliers": outliers
         }
 
-    def calculate_boundaries(
-        self, x: np.ndarray, boundary_type: str = "IQR"
-    ) -> Tuple[float, float, float]:
-        """Calculate statistical boundaries of a 1-dimensional array.
-
-        Args:
-            x: Input numpy array.
-            boundary_type: Method to calculate boundaries ('IQR' or 'sigma').
-
-        Returns:
-            Tuple[float, float, float]: Central line, lower limit, upper limit.
-        """
-        if boundary_type in ("mean-std", "sigma"):
-            solid = float(np.nanmean(x))
-            std_val = float(np.nanstd(x, ddof=1))
-            return solid, solid - 3 * std_val, solid + 3 * std_val
-            
-        elif boundary_type == "IQR":
-            solid = float(np.nanmedian(x))
-            q1 = float(np.nanquantile(x, 0.25))
-            q3 = float(np.nanquantile(x, 0.75))
-            iqr = q3 - q1
-            return solid, q1 - 1.5 * iqr, q3 + 1.5 * iqr
-            
-        return 0.0, 0.0, 0.0
 
     @iu._exe_time
     def execute_qa(self, output_dir: str) -> None:
@@ -235,48 +207,49 @@ class MetaboIntQA(core_classes.MetaboInt):
         )
 
         # 2. Delegate to Visualizer
-        vis = MetaboVisualizerQA(self)
+        vis = MetaboVisualizerAssessor(self)
         
         hm_fig = vis.plot_qc_correlation_heatmap(value_max=1.0)
-        hm_fig.savefig(
-            os.path.join(output_dir, f"QC_Corr_Heatmap_{mode}.pdf"),
-            bbox_inches="tight", dpi=300
-        )
+
+        vis.save_and_close_fig(
+            fig=hm_fig, 
+            file_path=os.path.join(
+                output_dir, f"QC_Corr_Heatmap_{mode}.pdf"))
 
         pca_fig = vis.plot_pca_scatter()
-        pca_fig.savefig(
-            os.path.join(output_dir, f"QC_AS_PCA_Scatter_{mode}.pdf"),
-            bbox_inches="tight", dpi=300
-        )
+        vis.save_and_close_fig(
+            fig=pca_fig, 
+            file_path=os.path.join(
+                output_dir, f"QC_AS_PCA_Scatter_{mode}.pdf"))
 
         stat_fig = vis.plot_statistical_outliers()
-        stat_fig.savefig(
-            os.path.join(output_dir, f"Outlier_Barplot_{mode}.pdf"),
-            bbox_inches="tight", dpi=300
-        )
+        vis.save_and_close_fig(
+            fig=stat_fig, 
+            file_path=os.path.join(
+                output_dir, f"Outlier_Barplot_{mode}.pdf"))
 
         rsd_fig = vis.plot_qc_rsd_distribution()
-        rsd_fig.savefig(
-            os.path.join(output_dir, f"QC_RSD_Barplot_{mode}.pdf"),
-            bbox_inches="tight", dpi=300
-        )
+        vis.save_and_close_fig(
+            fig=rsd_fig, 
+            file_path=os.path.join(
+                output_dir, f"QC_RSD_Barplot_{mode}.pdf"))
 
         if len(self.valid_is) > 0:
             sh_fig = vis.plot_shewhart_control_chart()
-            sh_fig.savefig(
-                os.path.join(output_dir, f"Shewhart_IS_{mode}.pdf"),
-                bbox_inches="tight", dpi=300
-            )
+            vis.save_and_close_fig(
+                fig=sh_fig, 
+                file_path=os.path.join(
+                    output_dir, f"Shewhart_IS_{mode}.pdf"))
 
 
-class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
+class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     """Visualization suite for metabolomics data quality assessment."""
 
-    def __init__(self, qa_obj: MetaboIntQA) -> None:
-        """Initialize with a computed MetaboIntQA object.
+    def __init__(self, qa_obj: MetaboIntAssessor) -> None:
+        """Initialize with a computed MetaboIntAssessor object.
 
         Args:
-            qa_obj: A MetaboIntQA instance with pre-computed statistics.
+            qa_obj: A MetaboIntAssessor instance with pre-computed statistics.
         """
         super().__init__(metabo_obj=qa_obj)
         self.qa = qa_obj
@@ -346,7 +319,6 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
             title_fontsize=16, label_fontsize=10, tick_fontsize=5
         )
         self._format_heatmap_ticks(hm=hm, tick_color_dict=tick_color_dict)
-        plt.close(fig=fig)
         return fig
 
     def plot_pca_scatter(
@@ -390,10 +362,9 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
             ylabel=f"{y} ({100 * pca_var.loc[y]:.1f}%)"
         )
         # ax.legend().remove()
-        self._format_complex_legend(fig=fig, ax=ax)
+        self._format_multi_legends(fig=fig, ax=ax)
 
         ax.autoscale()
-        plt.close(fig=fig)
         return fig
 
     def plot_statistical_outliers(self) -> plt.Figure:
@@ -437,14 +408,17 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         for ax in (ax1, ax2):
             self._apply_standard_format(
                 ax=ax, title_fontsize=12, label_fontsize=12, tick_fontsize=6)
-            ax.legend(ncol=2, frameon=True, shadow=True, fontsize=10)
+            # ax.legend(ncol=2, frameon=True, shadow=True, fontsize=10)
+            self._format_single_legend(
+                fig=fig, ax=ax, loc="upper right", bbox_to_anchor=None, 
+                ncol=2, frameon=True, shadow=True, fontsize=10
+            )
             
         for xlabel in ax2.get_xticklabels():
             if xlabel._text in outlier_samples:
                 xlabel.set_color("tab:red")
                 
         plt.tight_layout()
-        plt.close(fig=fig)
         return fig
 
     def plot_qc_rsd_distribution(self) -> plt.Figure:
@@ -469,8 +443,7 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         pu.show_values_on_bars(
             axs=ax, show_percentage=True, fontsize=9, position="outside", 
             value_format="{:.0f}")
-        self._apply_standard_format(ax=ax)
-        plt.close(fig=fig)
+        self._apply_standard_format(xlabel="RSD of Pooled QCs",ax=ax)
         return fig
 
     def plot_shewhart_control_chart(self) -> Optional[plt.Figure]:
@@ -485,7 +458,10 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
         ncols = 2
         nrows = int(np.ceil(len(self.qa.valid_is) / ncols))
         fig = plt.figure(figsize=(7.5 * ncols, 3 * nrows), layout="constrained")
-        bound_type = self.attrs.get("boundary", "IQR")
+        
+        # --- Update pointer to global MetaboInt parameters ---
+        pipeline_params = self.qa.attrs.get("pipeline_parameters", {})
+        bound_type = pipeline_params.get("MetaboInt", {}).get("boundary", "IQR")
         
         for n, feat in enumerate(iterable=self.qa.valid_is):
             ax = plt.subplot(nrows, ncols, n + 1)
@@ -510,11 +486,10 @@ class MetaboVisualizerQA(visualizer_classes.BaseMetaboVisualizer):
                 ax=ax, axis_format="scientific notation", axis="y")
 
             if n == len(self.qa.valid_is) - 1:
-                self._format_complex_legend(fig=fig, ax=ax)
+                self._format_multi_legends(fig=fig, ax=ax)
             elif ax.get_legend():
                 ax.legend().remove()
                         
         plt.suptitle(
             t="Shewhart Control Chart of IS", fontsize=14, weight="bold")
-        plt.close(fig=fig)
         return fig

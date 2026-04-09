@@ -18,6 +18,7 @@ from pca import pca
 from sklearn.preprocessing import StandardScaler
 from typing import Any, Dict, List, Optional, Tuple, Union
 from loguru import logger
+import logging
 
 from . import core_classes
 from . import io_utils as iu
@@ -40,7 +41,6 @@ class MetaboIntImputer(core_classes.MetaboInt):
         pipeline_params: Optional[Dict[str, Any]] = None,
         method: str = "probabilistic",
         knn_neighbors: int = 5,
-        halfmin_fraction: float = 0.5,
         **kwargs: Any
     ) -> None:
         """Initialize MetaboIntImputer with pipeline parameter loading."""
@@ -49,7 +49,6 @@ class MetaboIntImputer(core_classes.MetaboInt):
         imp_configs: Dict[str, Any] = {
             "method": method,
             "knn_neighbors": knn_neighbors,
-            "halfmin_fraction": halfmin_fraction
         }
 
         if pipeline_params and "MetaboIntImputer" in pipeline_params:
@@ -134,6 +133,61 @@ class MetaboIntImputer(core_classes.MetaboInt):
             
         return res_df
 
+    def extract_pca_features(self) -> Tuple[pd.DataFrame, pd.Series]:
+        """Calculate PCA coordinates and variance ratios.
+
+        Follows unified pipeline: Log10 -> Global Min Imputation ->
+        StandardScaler -> PCA extraction. Only 'Actual sample' and 
+        'QC sample' are included in the PCA model.
+
+        Returns:
+            Tuple[pd.DataFrame, pd.Series]: A tuple containing the PCA 
+                scatter coordinates (with MultiIndex reset to columns) 
+                and the variance ratio series.
+        """
+        st_col = self.attrs.get("sample_type", "Sample Type")
+        sample_dict = self.attrs.get("sample_dict", {})
+        qc_lbl = sample_dict.get("QC sample", "QC")
+        act_lbl = sample_dict.get("Actual sample", "Sample")
+
+        # Filter dataset to include only Actual and QC samples
+        valid_mask = self.columns.get_level_values(st_col).isin(
+            [act_lbl, qc_lbl]
+        )
+        df_filt = self.loc[:, valid_mask]
+
+        # Transpose: rows become samples, columns become metabolites
+        df_trans = df_filt.transpose()
+        
+        # Log10 transform and global min imputation (Pre-PCA)
+        df_log = np.log10(df_trans.replace({0: np.nan}))
+        df_imputed = df_log.fillna(df_log.min().min()/2)
+        
+        # Standardization
+        scaler = StandardScaler()
+        scaled_feat = scaler.fit_transform(df_imputed)
+        
+        import logging
+        logging.getLogger("pca").setLevel(logging.CRITICAL)
+        with iu.HiddenPrints():  # Uncomment if using custom silencer
+            model = pca(n_components=2, verbose=0)
+            res = model.fit_transform(scaled_feat)
+
+        # Unpack MultiIndex into standard columns for seaborn
+        # Note: Must use df_filt.columns as the index to match length
+        pca_scatter = pd.DataFrame(
+            res["PC"].values[:, :2],
+            columns=["PC1", "PC2"],
+            index=df_filt.columns
+        ).reset_index()
+        
+        pca_var = pd.Series(
+            res["variance_ratio"][:2], 
+            index=["PC1", "PC2"]
+        ).rename("Variance")
+        
+        return pca_scatter, pca_var
+
     # ====================================================================
     # Evaluation Metrics
     # ====================================================================
@@ -162,8 +216,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
             k = self.attrs.get("knn_neighbors", 5)
             df_imp = self._impute_knn(df_masked, n_neighbors=k)
         elif method == "halfmin":
-            frac = self.attrs.get("halfmin_fraction", 0.5)
-            df_imp = self._impute_constant(df_masked, fraction=frac)
+            df_imp = self._impute_constant(df_masked, fraction=0.5)
         elif method == "min":
             df_imp = self._impute_constant(df_masked, fraction=1.0)
         elif method == "probabilistic":
@@ -238,16 +291,19 @@ class MetaboIntImputer(core_classes.MetaboInt):
             iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
             mode = self.attrs.get("mode", "POS")
             
-            vis = MetaboVisualizerImp(raw_obj=self, imp_obj=self)
+            vis = MetaboVisualizerImputer(raw_obj=self, imp_obj=self)
             fig_nrmse = vis.plot_simulated_nrmse_scatter(
                 true_vals=t_vals, pred_vals=p_vals, nrmse=sim_nrmse
             )
             
-            file_name = f"Imp_Sim_NRMSE_{act_method.title()}_{mode}.pdf"
-            file_path = os.path.join(output_dir, file_name)
-            
-            fig_nrmse.savefig(file_path, bbox_inches="tight")
-            logger.info(f"Simulation scatter plot saved to: {file_path}")
+            vis.save_and_close_fig(
+                fig=fig_nrmse, 
+                file_path=os.path.join(
+                    output_dir, 
+                    f"Imp_Sim_NRMSE_{act_method.title()}_{mode}.pdf")
+            )
+            logger.info(
+                f"Simulation scatter plot saved as: Imp_Sim_NRMSE_{act_method.title()}_{mode}.pdf")
             
         return sim_nrmse
 
@@ -302,32 +358,36 @@ class MetaboIntImputer(core_classes.MetaboInt):
             iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
             mode = self.attrs.get("mode", "POS")
             
-            file_name = f"Imputed_Data_{act_method.title()}_{mode}.csv"
             imputed_df.to_csv(
-                os.path.join(output_dir, file_name), na_rep="NA", 
+                path_or_buf=os.path.join(
+                    output_dir, 
+                    f"Imputed_Data_{act_method.title()}_{mode}.csv"), 
+                na_rep="NA", 
                 encoding="utf-8-sig"
             )
             
-            vis = MetaboVisualizerImp(raw_obj=self, imp_obj=imputed_df)
+            vis = MetaboVisualizerImputer(raw_obj=self, imp_obj=imputed_df)
             
             fig_kde = vis.plot_observed_vs_imputed_kde()
-            if fig_kde:
-                fig_kde.savefig(
-                    os.path.join(output_dir, f"Imp_Obs_vs_KDE_{mode}.pdf"),
-                    bbox_inches="tight"
-                )
-            
+            vis.save_and_close_fig(
+                fig=fig_kde, 
+                file_path=os.path.join(
+                    output_dir, 
+                    f"Imp_Obs_vs_KDE_{mode}.pdf")
+            )
+
             fig_pca = vis.plot_pre_post_pca()
-            if fig_pca:
-                fig_pca.savefig(
-                    os.path.join(output_dir, f"Imp_Pre_Post_PCA_{mode}.pdf"),
-                    bbox_inches="tight"
-                )
+            vis.save_and_close_fig(
+                fig=fig_pca, 
+                file_path=os.path.join(
+                    output_dir, 
+                    f"Imp_Pre_Post_PCA_{mode}.pdf")
+            )
 
         return imputed_df
 
 
-class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
+class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
     """Visualization suite for missing value imputation evaluation."""
 
     # Unify legend visual parameters across all plotting methods in this class
@@ -349,7 +409,7 @@ class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
             elif col in self.imp_obj._qc.columns:
                 mapping[col] = "QC"
             elif hasattr(self.imp_obj, "_is") and \
-                 col in getattr(self.imp_obj, "_is").columns:
+                col in getattr(self.imp_obj, "_is").columns:
                 mapping[col] = "IS"
             else:
                 mapping[col] = "Sample"
@@ -394,7 +454,6 @@ class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
         cb.set_label("Log10(Count)")
         
         plt.tight_layout()
-        plt.close(fig)
         return fig
 
     def plot_observed_vs_imputed_kde(self) -> plt.Figure:
@@ -442,7 +501,7 @@ class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
         if len(unique_groups) == 1:
             axes = [axes]
             
-        import matplotlib.patches as mpatches
+        # import matplotlib.patches as mpatches
         
         for ax, grp in zip(axes, unique_groups):
             grp_data = df_plot[df_plot["Group"] == grp]
@@ -464,84 +523,49 @@ class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
                 ax.get_legend().remove()
                 
             present_types = grp_data["Type"].unique()
-            handles = []
             
-            # Dynamically generate legend elements based on what is actually plotted
             if "Observed" in present_types:
-                handles.append(mpatches.Patch(
-                    color="tab:blue", alpha=0.4, label="Observed"
-                ))
+                ax.fill_between(
+                    [], [], color="tab:blue", alpha=0.8, label="Observed")
             if "Imputed" in present_types:
-                handles.append(mpatches.Patch(
-                    color="tab:red", alpha=0.4, label="Imputed"
-                ))
-                
-            if handles:
-                ax.legend(
-                    handles=handles, title="Data Type", 
-                    loc="upper right", **self.LEGEND_KWARGS
-                )
+                ax.fill_between(
+                    [], [], color="tab:red", alpha=0.8, label="Imputed")
+        last_ax = axes[-1] if isinstance(axes, (list, np.ndarray)) else axes
+        self._format_single_legend(fig=fig, ax=last_ax, title="Data Type")
             
         plt.tight_layout()
-        plt.close(fig)
         return fig
 
     def plot_pre_post_pca(self) -> plt.Figure:
         """Plot global PCA structures before and after imputation."""
-        st_col = self.attrs.get("sample_type", "Sample Type")
-        bt_col = self.attrs.get("batch", "Batch")
-        sample_dict = self.attrs.get("sample_dict", {})
-        qc_lbl = sample_dict.get("QC sample", "QC sample")
-        act_lbl = sample_dict.get("Actual sample", "Actual sample")
-
-        valid_mask = self.imp_obj.columns.get_level_values(
-            st_col
-        ).isin([act_lbl, qc_lbl])
+        # Directly use data objects and metadata parsed in the Base class
+        st_col = self.st_col
+        bt_col = self.bat_col
         
-        raw_filt = self.raw_obj.loc[:, valid_mask].copy()
-        imp_filt = self.imp_obj.loc[:, valid_mask].copy()
+        # Delegate computation to the data classes
+        pca_raw, var_raw = self.raw_obj.extract_pca_features()
+        pca_imp, var_imp = self.imp_obj.extract_pca_features()
 
-        def _get_pca_coords(df_in: pd.DataFrame) -> pd.DataFrame:
-            df_trans = df_in.transpose()
-            df_log = np.log10(df_trans.replace({0: np.nan}))
-            df_imputed = df_log.fillna(df_log.min().min())
-            
-            scaler = StandardScaler()
-            scaled_feat = scaler.fit_transform(df_imputed)
-            
-            import logging
-            logging.getLogger('pca').setLevel(logging.CRITICAL)
-            with iu.HiddenPrints():
-                # Force verbose=0 to suppress internal print statements
-                model = pca(n_components=2, verbose=0)
-                res = model.fit_transform(scaled_feat)
-
-            pca_scatter =  pd.DataFrame(
-                res["PC"], columns=["PC1", "PC2"], index=df_in.index
-            )
-            pca_var = pd.Series(
-                res["variance_ratio"], index=pca_scatter.columns
-            ).rename("Variance")
-            return pca_scatter,pca_var
-
-        pca_raw, pca_var_raw = _get_pca_coords(raw_filt)
-        pca_imp, pca_var_imp = _get_pca_coords(imp_filt)
-
-        # pca_raw[st_col] = pca_raw[st_col].astype("category")
-        # pca_raw[bt_col] = pca_raw[bt_col].astype("category")
-        # pca_raw = pca_raw.sort_values(by=st_col, ascending=False)
+        # Safely set categories on the expanded columns
+        pca_raw[st_col] = pca_raw[st_col].astype("category")
+        pca_raw[bt_col] = pca_raw[bt_col].astype("category")
+        pca_raw = pca_raw.sort_values(by=st_col, ascending=False)
         
-        # pca_imp[st_col] = pca_imp[st_col].astype("category")
-        # pca_imp[bt_col] = pca_imp[bt_col].astype("category")
-        # pca_imp = pca_imp.sort_values(by=st_col, ascending=False)
+        pca_imp[st_col] = pca_imp[st_col].astype("category")
+        pca_imp[bt_col] = pca_imp[bt_col].astype("category")
+        pca_imp = pca_imp.sort_values(by=st_col, ascending=False)
 
-        pal_dict = {qc_lbl: "tab:red", act_lbl: "tab:gray"}
+        # Retrieve dynamic labels defined in the Base class
+        qc_lbl = self.qc_lbl
+        act_lbl = self.act_lbl
+        pal_dict = self.pal
 
-        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(14, 5))
+        fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(9, 4))
         titles = ["Pre-Imputation PCA", "Post-Imputation PCA"]
 
         for ax, df, var, title in zip(
-            axes, [pca_raw, pca_imp], [pca_var_raw, pca_var_imp], titles):
+            axes, [pca_raw, pca_imp], [var_raw, var_imp], titles
+        ):
             sns.scatterplot(
                 data=df, x="PC1", y="PC2", hue=st_col, style=bt_col,
                 s=50, edgecolor="k", palette=pal_dict, linewidth=0.5,
@@ -549,13 +573,14 @@ class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
                 style_order=self.all_batches, markers=self.style_map,
             )
 
+            # Draw confidence ellipses
             for group in [qc_lbl, act_lbl]:
                 sub_df = df[df[st_col] == group]
                 if len(sub_df) > 2:
                     pu.confidence_ellipse(
                         x=sub_df["PC1"], y=sub_df["PC2"], ax=ax, n_std=3.0, 
-                        alpha=0.1, facecolor=pal_dict[group], 
-                        edgecolor=pal_dict[group]
+                        alpha=0.1, facecolor=pal_dict.get(group, "none"), 
+                        edgecolor=pal_dict.get(group, "none")
                     )
 
             self._apply_standard_format(
@@ -565,10 +590,9 @@ class MetaboVisualizerImp(visualizer_classes.BaseMetaboVisualizer):
             )
             
             if ax == axes[1]:
-                self._format_complex_legend(fig=fig, ax=ax)
+                self._format_multi_legends(fig=fig, ax=ax)
             elif ax.get_legend():
                 ax.legend().remove()
+                
             ax.autoscale()
-        # plt.tight_layout()
-        plt.close(fig)
         return fig

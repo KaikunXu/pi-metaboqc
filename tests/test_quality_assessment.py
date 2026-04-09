@@ -4,7 +4,7 @@ import os
 import pytest
 from pathlib import Path
 from pimqc.dataset_builder import build_dataset
-from pimqc.data_quality_assessment import MetaboIntQA
+from pimqc.assessment import MetaboIntQA
 
 @pytest.fixture
 def real_qa_object(real_project_data):

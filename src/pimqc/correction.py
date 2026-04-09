@@ -92,7 +92,7 @@ class _LoessSmoother(BaseEstimator, RegressorMixin):
             return np.full(shape=x.shape, fill_value=np.nan)
 
 
-class MetaboIntSC(core_classes.MetaboInt):
+class MetaboIntCorrector(core_classes.MetaboInt):
     """Quality control-based signal correction for metabolomics data.
 
     This class handles baseline estimation (LOESS, RF, or SVR),
@@ -118,7 +118,7 @@ class MetaboIntSC(core_classes.MetaboInt):
         svr_gamma: Union[str, float] = "scale",
         **kwargs: Any
     ) -> None:
-        """Initialize the MetaboIntSC object.
+        """Initialize the MetaboIntCorrector object.
 
         Args:
             *args: Arguments passed to pandas DataFrame.
@@ -149,22 +149,24 @@ class MetaboIntSC(core_classes.MetaboInt):
             "svr_kernel": svr_kernel,
             "svr_c": svr_c,
             "svr_gamma": svr_gamma,
-            "internal_standard": self._to_list(internal_standard)
         }
 
-        if pipeline_params and "MetaboIntSC" in pipeline_params:
-            sc_configs.update(pipeline_params["MetaboIntSC"])
+        if internal_standard is not None:
+            sc_configs["internal_standard"] = self._to_list(internal_standard)
+
+        if pipeline_params and "MetaboIntCorrector" in pipeline_params:
+            sc_configs.update(pipeline_params["MetaboIntCorrector"])
 
         self.attrs.update(sc_configs)
 
     @property
     def _constructor(self) -> type:
-        """Override constructor to return MetaboIntSC."""
-        return MetaboIntSC
+        """Override constructor to return MetaboIntCorrector."""
+        return MetaboIntCorrector
 
     def __finalize__(
         self, other: Any, method: Optional[str] = None, **kwargs: Any
-    ) -> "MetaboIntSC":
+    ) -> "MetaboIntCorrector":
         """Explicitly preserve custom attributes during pandas operations."""
         super().__finalize__(other, method=method, **kwargs)
         if hasattr(other, "attrs"):
@@ -195,11 +197,11 @@ class MetaboIntSC(core_classes.MetaboInt):
         return self._qc.transpose().groupby(by=bt_col).mean().transpose()
 
     @cached_property
-    def _int_base_bc(self) -> "MetaboIntSC":
+    def _int_base_bc(self) -> "MetaboIntCorrector":
         """Broadcast _int_base to all samples by batch.
 
         Returns:
-            MetaboIntSC: Broadcasted baseline matrix (features * samples).
+            MetaboIntCorrector: Broadcasted baseline matrix (features * samples).
         """
         int_base = self._int_base
         bt_col = self.attrs["batch"]
@@ -218,7 +220,7 @@ class MetaboIntSC(core_classes.MetaboInt):
             int_base_bc = pd.concat(objs=[int_base_bc, fac], axis=1)
             
         int_base_bc.columns = self.columns
-        res_obj = MetaboIntSC(data=int_base_bc)
+        res_obj = MetaboIntCorrector(data=int_base_bc)
         res_obj.attrs.update(self.attrs)
         return res_obj
 
@@ -297,17 +299,29 @@ class MetaboIntSC(core_classes.MetaboInt):
             
             if valid.sum() > 0:
                 x_val = x_train[valid].values.reshape(-1, 1)
-                y_val = y_train[valid].values
+                # Reshape Y for the target scaler
+                y_val = y_train[valid].values.reshape(-1, 1)
                 
-                # Standardize data to ensure SVR convergence efficiency
+                # Standardize BOTH X and Y to prevent massive underfitting 
+                # (flat line) caused by large unscaled intensity values.
+                y_scaler = StandardScaler()
+                y_scaled = y_scaler.fit_transform(X=y_val).ravel()
+                
                 svr_pipe = make_pipeline(
                     StandardScaler(),
                     SVR(kernel=kernel, C=c_val, gamma=gamma_val)
                 )
-                svr_pipe.fit(X=x_val, y=y_val)
+                svr_pipe.fit(X=x_val, y=y_scaled)
                 
                 x_proc_val = x_process.values.reshape(-1, 1)
-                return svr_pipe.predict(X=x_proc_val)
+                y_pred_scaled = svr_pipe.predict(X=x_proc_val)
+                
+                # Inverse transform back to the original intensity space
+                y_pred = y_scaler.inverse_transform(
+                    X=y_pred_scaled.reshape(-1, 1)
+                ).ravel()
+                
+                return y_pred
                 
             return np.full(shape=len(x_process), fill_value=np.nan)
         except Exception as e:
@@ -424,37 +438,40 @@ class MetaboIntSC(core_classes.MetaboInt):
             
         res_df = pd.concat(objs=results, axis=1)
         res_df[res_df <= 0] = np.nan
-        return res_df
-    
+        return self._constructor(res_df).__finalize__(self)    
 
     @cached_property
-    def intra_batch_corr(self) -> "MetaboIntSC":
+    def intra_batch_corr(self) -> "MetaboIntCorrector":
         """Perform intra-batch correction via base / fit ratio."""
         with warnings.catch_warnings():
             warnings.simplefilter(action="ignore", category=RuntimeWarning)
             corr_matrix = self._int_base_bc * (self / self.process_matrix_fit)
             
-        res_obj = MetaboIntSC(data=corr_matrix)
+        res_obj = MetaboIntCorrector(data=corr_matrix)
         res_obj.attrs = self.attrs
         return res_obj
 
     @cached_property
-    def inter_batch_corr(self) -> "MetaboIntSC":
+    def inter_batch_corr(self) -> "MetaboIntCorrector":
         """Correct the mean of QCs in each batch to a global common mean."""
         bt_col = self.attrs["batch"]
         intra_df = self.intra_batch_corr
         
-        bt_qc_mean = intra_df.transpose().groupby(by=bt_col).mean()
-        global_qc_mean = intra_df.mean(axis=1)
+        # [BUG FIX]: Must restrict the mean calculation strictly to QC samples.
+        intra_qc = intra_df._qc
+        # 1. Calculate the mean of QCs within each batch (Shape: batches * features)
+        bt_qc_mean = intra_qc.transpose().groupby(by=bt_col).mean()
+        # 2. Calculate the global mean of all QCs (Shape: features)
+        global_qc_mean = intra_qc.mean(axis=1)
+        # 3. Calculate the correction factor
         corr_factor = (global_qc_mean / bt_qc_mean).transpose()
-        
+        # 4. Apply the correction factor to ALL samples in intra_df by batch
         inter_df = intra_df.transpose().groupby(
             by=bt_col, group_keys=False
         ).apply(
             func=lambda x: x * corr_factor[x.name]
         ).transpose()
-        
-        res_obj = MetaboIntSC(data=inter_df)
+        res_obj = MetaboIntCorrector(data=inter_df)
         res_obj.attrs = self.attrs
         return res_obj
 
@@ -464,7 +481,9 @@ class MetaboIntSC(core_classes.MetaboInt):
         return (self.std(axis=1, ddof=1) / self.mean(axis=1)).rename("RSD")
 
     @iu._exe_time
-    def execute_sc(self, output_dir: str) -> Tuple["MetaboIntSC", "MetaboIntSC"]:
+    def execute_sc(
+        self, output_dir: str
+    ) -> Tuple["MetaboIntCorrector", "MetaboIntCorrector"]:
         """Execute Signal Correction workflow and save outputs to disk.
 
         Args:
@@ -472,8 +491,9 @@ class MetaboIntSC(core_classes.MetaboInt):
 
         Returns:
             Tuple containing the intra-batch and inter-batch corrected 
-            MetaboIntSC objects.
+            MetaboIntCorrector objects.
         """
+        import re
         iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
 
         est = self.attrs["base_est"]
@@ -483,62 +503,78 @@ class MetaboIntSC(core_classes.MetaboInt):
             path_or_buf=os.path.join(
                 output_dir, f"QC_Fit_Baseline_{est}_{mode}.csv"
             ),
-            na_rep="NA", 
-            encoding="utf-8-sig"
+            na_rep="NA", encoding="utf-8-sig"
         )
         self.intra_batch_corr.to_csv(
             path_or_buf=os.path.join(
                 output_dir, f"Intra_Batch_Corrected_{est}_{mode}.csv"
             ),
-            na_rep="NA", 
-            encoding="utf-8-sig"
+            na_rep="NA", encoding="utf-8-sig"
         )
         self.inter_batch_corr.to_csv(
             path_or_buf=os.path.join(
                 output_dir, f"Inter_Batch_Corrected_{est}_{mode}.csv"
             ),
-            na_rep="NA", 
-            encoding="utf-8-sig"
+            na_rep="NA", encoding="utf-8-sig"
         )
 
-        vis = MetaboVisualizerSC(sc_obj=self)
+        # # ====================================================================
+        # # [DEBUG SNIPPET]: Check QC means of valid_is after inter-batch corr.
+        # # You can comment out or remove this block after verification.
+        # # ====================================================================
+        # if len(self.valid_is) > 0:
+        #     bt_col = self.attrs["batch"]
+        #     inter_qc = self.inter_batch_corr._qc
+            
+        #     # Select only valid IS features to prevent massive console output
+        #     valid_is_idx = inter_qc.index.intersection(self.valid_is)
+        #     if not valid_is_idx.empty:
+        #         check_means = inter_qc.loc[valid_is_idx].transpose().groupby(
+        #             by=bt_col).mean()
+                
+        #         logger.info(
+        #             "-- DEBUG: QC Means of valid_is AFTER Inter-Correction --"
+        #         )
+        #         for feat in valid_is_idx:
+        #             logger.info(f"Feature: {feat}")
+        #             for batch_name, val in check_means[feat].items():
+        #                 logger.info(f"  Batch {batch_name}: {val:.4f}")
+        #         logger.info("-" * 62)
+        # # ====================================================================
+
+        vis = MetaboVisualizerCorrector(sc_obj=self)
         
         rsd_df, rsd_fig = vis.plot_corr_rsd()
-        rsd_fig.savefig(
-            fname=os.path.join(
-                output_dir, f"QC_RSD_Boxplot_{est}_{mode}.pdf"
-            ),
-            bbox_inches="tight", 
-            dpi=300
-        )
+        vis.save_and_close_fig(
+            fig=rsd_fig, 
+            file_path=os.path.join(
+                output_dir, f"QC_RSD_Boxplot_{est}_{mode}.pdf"))
 
         int_figs = vis.plot_is_int_order_scatter()
+        
+        def _sanitize_filename(name: str) -> str:
+            return re.sub(r'[<>:"/\\|?*]', '_', name)
+            
         for feat, fig in int_figs.items():
-            fig.savefig(
-                fname=os.path.join(
-                    output_dir, f"Scatter_{feat}_{mode}.pdf"
-                ),
-                bbox_inches="tight", 
-                dpi=300
-            )
+            safe_feat = _sanitize_filename(feat)
+            vis.save_and_close_fig(
+                fig=fig, 
+                file_path=os.path.join(
+                    output_dir, f"Scatter_{safe_feat}_{mode}.pdf"))
 
         if len(self.valid_is) != 0:
             pred_fig = vis.plot_pred_baseline_is()
-            pred_fig.savefig(
-                fname=os.path.join(
-                    output_dir, f"Pred_Base_IS_{est}_{mode}.pdf"
-                ),
-                bbox_inches="tight", 
-                dpi=300
-            )
+            vis.save_and_close_fig(
+                fig=pred_fig, 
+                file_path=os.path.join(
+                    output_dir, f"Pred_Base_IS_{est}_{mode}.pdf"))
 
         return self.intra_batch_corr, self.inter_batch_corr
 
-
-class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
+class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
     """Visualization suite for signal correction."""
 
-    def __init__(self, sc_obj: "MetaboIntSC") -> None:
+    def __init__(self, sc_obj: "MetaboIntCorrector") -> None:
         super().__init__(metabo_obj=sc_obj)
         self.sc = sc_obj
 
@@ -564,10 +600,10 @@ class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
         )
         
         self._apply_standard_format(
-            ax=ax, ylabel="RSD of QC samples (%)", tick_fontsize=12)
+            ax=ax, ylabel="RSD of Pooled QCs (%)", tick_fontsize=12)
         pu.change_axis_format(ax=ax, axis_format="percentage", axis="y")
         pu.change_axis_rotation(ax=ax, rotation=0, axis="x")
-        plt.close(fig=fig)
+        self._format_single_legend(fig=fig, ax=ax, title="Correction Stage")
         return rsd_df, fig
 
     def plot_pred_baseline_is(self) -> Optional[Figure]:
@@ -583,7 +619,7 @@ class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
         batch_set = pred_info.index.get_level_values(level=self.bat_col).unique()
 
         ncols = 2
-        nrows = int(np.ceil(a=len(self.sc.valid_is) / ncols))
+        nrows = int(np.ceil(len(self.sc.valid_is) / ncols))
         fig = plt.figure(figsize=(7.5 * ncols, 3 * nrows), layout="constrained")
         
         for n, feat in enumerate(iterable=self.sc.valid_is):
@@ -609,12 +645,11 @@ class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
             pu.change_axis_format(ax=ax, axis_format="scientific notation", axis="y")
 
             if n == len(self.sc.valid_is) - 1:
-                self._format_complex_legend(fig=fig, ax=ax)
+                self._format_multi_legends(fig=fig, ax=ax)
             elif ax.get_legend():
                 ax.legend().remove()
                             
         plt.suptitle(t="Predicted Baseline of IS", fontsize=14, weight="bold")
-        plt.close(fig=fig)
         return fig
 
     def plot_is_int_order_scatter(self) -> Dict[str, Figure]:
@@ -624,6 +659,10 @@ class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
             "After Intra-batch \nCorrected": self.sc.intra_batch_corr.int_order_info(feat_type="IS"),
             "After Inter-batch \nCorrected": self.sc.inter_batch_corr.int_order_info(feat_type="IS")
         }
+
+        # --- Update pointer to global MetaboInt parameters ---
+        pipeline_params = self.sc.attrs.get("pipeline_parameters", {})
+        bound_type = pipeline_params.get("MetaboInt", {}).get("boundary", "IQR")
 
         fig_dict = {}
         for feat in self.sc.valid_is:
@@ -641,18 +680,27 @@ class MetaboVisualizerSC(visualizer_classes.BaseMetaboVisualizer):
                     palette=self.pal, hue=self.st_col, hue_order=[self.qc_lbl, self.act_lbl]
                 )
 
+                # --- Calculate boundaries from the unified method ---
+                int_data = data_dict[data_type][feat].values
+                solid, lower, upper = self.sc.calculate_boundaries(
+                    x=int_data, boundary_type=bound_type
+                )
+                
+                ax.axhline(y=solid, color="k", linestyle="-", linewidth=1.5)
+                ax.axhline(y=lower, color="k", linestyle="--", linewidth=1.5)
+                ax.axhline(y=upper, color="k", linestyle="--", linewidth=1.5)
+
                 self._apply_standard_format(
                     ax=ax, xlabel=self.io_col, ylabel=data_type, tick_fontsize=11,
                     title_fontsize=13)
                 pu.change_axis_format(ax=ax, axis_format="scientific notation", axis="y")
 
                 if n == len(data_dict) - 1:
-                    self._format_complex_legend(fig=fig, ax=ax)
+                    self._format_multi_legends(fig=fig, ax=ax)
                 elif ax.get_legend():
                     ax.legend().remove()
                             
             plt.suptitle(t=f"Scatter of {feat}", fontsize=14, weight="bold")
             plt.close(fig=fig)
             fig_dict[feat] = fig
-            
         return fig_dict

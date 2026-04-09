@@ -3,7 +3,7 @@
 Purpose of script: Base classes for visualization suites.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -114,61 +114,159 @@ class BaseMetaboVisualizer:
             title_fontsize=title_fontsize, axis="xy"
         )
 
-    def _format_complex_legend(self, fig: plt.Figure, ax: plt.Axes) -> None:
-        """Format and reposition legends for scatter plots to the right side.
+    def _format_single_legend(
+        self, 
+        fig: plt.Figure, 
+        ax: plt.Axes, 
+        loc: str = "upper right", 
+        bbox_to_anchor: tuple = (1.05, 1.0),
+        **kwargs: Any
+    ) -> None:
+        """Format and position a standard single-group legend.
         
-        This method splits the default Seaborn legend into separate sub-legends
-        for Sample Type and Batch, positioning them outside the last subplot.
-        It uses fig.legend with bbox_transform=ax.transAxes to ensure the 
-        legend is fully captured by bbox_inches='tight' during saving.
+        Args:
+            fig: The matplotlib Figure object.
+            ax: The matplotlib Axes object where the data was plotted.
+            loc: The location string for the legend.
+            bbox_to_anchor: The bounding box coordinates to anchor the legend.
+            **kwargs: Additional keyword arguments passed to fig.legend(), 
+                which will override self.LEGEND_KWARGS if duplicated.
         """
         # Remove default built-in legend from the individual axis
         if ax.get_legend():
-            ax.legend().remove()
-        
+            ax.get_legend().remove()
+            
         handles, labels = ax.get_legend_handles_labels()
+        if not handles:
+            return
+            
+        # Merge global legend settings with user-provided specific kwargs
+        legend_kwargs = self.LEGEND_KWARGS.copy()
+        legend_kwargs.update(kwargs)
         
-        # Check if both Sample Type and Batch labels are present in the handles
-        if self.st_col in labels and self.bat_col in labels:
-            c_loc = labels.index(self.st_col)
-            s_loc = labels.index(self.bat_col)
+        fig.legend(
+            handles, labels, 
+            loc=loc, 
+            bbox_to_anchor=bbox_to_anchor, 
+            bbox_transform=ax.transAxes,
+            **legend_kwargs
+        )
+
+    def _format_multi_legends(
+        self, 
+        fig: plt.Figure, 
+        ax: plt.Axes, 
+        group_titles: Optional[list] = None,
+        loc: str = "upper left",
+        start_bbox: tuple = (1.05, 1.0),
+        y_offset: float = 0.4,
+        **kwargs: Any
+    ) -> None:
+        """Dynamically split a seaborn combined legend into multiple sub-legends.
+        
+        This algorithm searches for the specified category names within the 
+        legend labels, dynamically slices the handles/labels, and stacks them 
+        vertically outside the plot.
+        
+        Args:
+            fig: The matplotlib Figure object.
+            ax: The matplotlib Axes object where the data was plotted.
+            group_titles: List of expected title strings in the legend. 
+                Defaults to [self.st_col, self.bat_col].
+            loc: The location string for all sub-legends.
+            start_bbox: The anchor coordinates for the top-most sub-legend.
+            y_offset: The vertical distance subtracted from the Y-coordinate 
+                for each subsequent sub-legend to prevent overlap.
+            **kwargs: Additional keyword arguments passed to fig.legend().
+        """
+        if ax.get_legend():
+            ax.get_legend().remove()
             
-            # Slice handles to exclude the label string itself (prevents duplication)
-            h_color = handles[c_loc + 1 : s_loc]
-            l_color = labels[c_loc + 1 : s_loc]
-            
-            h_style = handles[s_loc + 1 :]
-            l_style = labels[s_loc + 1 :]
-            
-            kwargs = self.LEGEND_KWARGS.copy()
-            
-            # First Sub-legend: Sample Type (Color)
-            # Anchored to the right of the specific subplot passed (ax)
-            fig.legend(
-                h_color, l_color, 
-                title=self.st_col, 
-                loc="upper left", 
-                bbox_to_anchor=(1.05, 1.0),
-                bbox_transform=ax.transAxes,
-                **kwargs
+        handles, labels = ax.get_legend_handles_labels()
+        if not handles:
+            return
+
+        if group_titles is None:
+            group_titles = [self.st_col, self.bat_col]
+
+        # Scan for existing titles and record their index positions
+        found_titles = []
+        for title in group_titles:
+            if title in labels:
+                found_titles.append((labels.index(title), title))
+                
+        # Fallback to single legend if no group titles were matched
+        if not found_titles:
+            self._format_single_legend(
+                fig=fig, ax=ax, loc=loc, bbox_to_anchor=start_bbox, **kwargs
             )
+            return
+
+        # Sort indices to ensure we slice the list sequentially from top to bottom
+        found_titles.sort(key=lambda x: x[0])
+        
+        legend_kwargs = self.LEGEND_KWARGS.copy()
+        legend_kwargs.update(kwargs)
+
+        # Slice and render each sub-legend
+        for i in range(len(found_titles)):
+            start_idx = found_titles[i][0]
+            title = found_titles[i][1]
             
-            # Second Sub-legend: Batch (Shape)
-            # Positioned below the first legend
+            # Determine the end index for slicing this specific group
+            if i + 1 < len(found_titles):
+                end_idx = found_titles[i + 1][0]
+            else:
+                end_idx = len(labels)
+                
+            # Slice handles and labels (skipping the title string itself)
+            h_sub = handles[start_idx + 1 : end_idx]
+            l_sub = labels[start_idx + 1 : end_idx]
+            
+            if not h_sub:
+                continue
+
+            # Calculate dynamic vertical anchor to stack legends
+            current_bbox = (start_bbox[0], start_bbox[1] - i * y_offset)
+            
             fig.legend(
-                h_style, l_style, 
-                title=self.bat_col, 
-                loc="upper left", 
-                bbox_to_anchor=(1.05, 0.6),
+                h_sub, l_sub, 
+                title=title, 
+                loc=loc, 
+                bbox_to_anchor=current_bbox,
                 bbox_transform=ax.transAxes,
-                **kwargs
+                **legend_kwargs
             )
+
+    def save_and_close_fig(
+        self,
+        fig: plt.Figure,
+        file_path: str,
+        close_all: bool = False,
+        **kwargs: Any
+    ) -> None:
+        """Save the figure to disk and cleanly close the canvas to free memory.
+
+        Args:
+            fig: The matplotlib Figure object to save.
+            file_path: The complete output path including file extension.
+            close_all: If True, closes all active matplotlib figures.
+            **kwargs: Additional arguments passed to fig.savefig.
+        """
+        # Use tight bounding box by default to prevent label clipping.
+        kwargs.setdefault("bbox_inches", "tight")
+        
+        # Set default DPI to 300 for high-quality, publication-ready output.
+        kwargs.setdefault("dpi", 300)
+
+        # 1. Save the figure to disk.
+        fig.savefig(file_path, **kwargs)
+
+        # 2. Clear the canvas and release memory.
+        if close_all:
+            plt.close("all")
         else:
-            # Fallback for plots with only one categorical variable
-            fig.legend(
-                handles, labels,
-                loc="upper left", 
-                bbox_to_anchor=(1.05, 1.0), 
-                bbox_transform=ax.transAxes,
-                **self.LEGEND_KWARGS
-            )
+            # Clear the internal elements of the current figure.
+            fig.clf()
+            # Close and unregister the figure from matplotlib state machine.
+            plt.close(fig)

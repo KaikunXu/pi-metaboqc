@@ -4,7 +4,7 @@ import copy
 import numpy as np
 import pandas as pd
 from functools import cached_property
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Tuple, Any, Optional, Union
 
 from . import plot_utils as pu
 
@@ -128,11 +128,22 @@ class MetaboInt(pd.DataFrame):
 
     @cached_property
     def valid_is(self) -> List[str]:
-        """List of valid internal standards in the current index."""
-        return list(
-            set(self.index).intersection(set(self.attrs["internal_standard"]))
-        )
-
+        """List of valid internal standards in the current index (case-insensitive)."""
+        # Retrieve the configured internal standards, return empty if not set.
+        configured_is = self.attrs.get("internal_standard", [])
+        if not configured_is:
+            return []
+            
+        # Convert configured IS to lowercase and store in a set for O(1) lookup.
+        target_is_lower = {str(item).lower() for item in configured_is}
+        
+        # Match using lowercase to ensure case-insensitivity, 
+        # but retain the original naming format from the index.
+        return [
+            item for item in self.index 
+            if str(item).lower() in target_is_lower
+        ]
+        
     @cached_property
     def valid_om(self) -> List[str]:
         """List of valid outlier markers in the current index."""
@@ -172,3 +183,31 @@ class MetaboInt(pd.DataFrame):
             ascending=True
         )
         return int_order_df
+
+    def calculate_boundaries(
+        self, x: np.ndarray, boundary_type: str = "IQR"
+    ) -> Tuple[float, float, float]:
+        """Calculate statistical boundaries of a 1-dimensional array.
+
+        Args:
+            x: Input numpy array.
+            boundary_type: Method to calculate boundaries ('IQR' or 'sigma').
+
+        Returns:
+            Tuple[float, float, float]: Central line, lower limit, upper limit.
+        """
+        import numpy as np
+        
+        if boundary_type in ("mean-std", "sigma"):
+            solid = float(np.nanmean(x))
+            std_val = float(np.nanstd(x, ddof=1))
+            return solid, solid - 3 * std_val, solid + 3 * std_val
+            
+        elif boundary_type == "IQR":
+            solid = float(np.nanmedian(x))
+            q1 = float(np.nanquantile(x, 0.25))
+            q3 = float(np.nanquantile(x, 0.75))
+            iqr = q3 - q1
+            return solid, q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            
+        return 0.0, 0.0, 0.0

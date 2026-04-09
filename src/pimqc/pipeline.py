@@ -11,10 +11,10 @@ from loguru import logger
 
 from . import io_utils as iu
 from .dataset_builder import build_dataset
-from .data_quality_assessment import MetaboIntQA
-from .invalid_feature_sample_filtering import MetaboIntFLTR
-from .data_signal_correction import MetaboIntSC
-from .normalization import MetaboIntNorm
+from .assessment import MetaboIntAssessor
+from .filtering import MetaboIntFilter
+from .correction import MetaboIntCorrector
+from .normalization import MetaboIntNormalizer
 from .imputation import MetaboIntImputer
 
 
@@ -121,7 +121,7 @@ def run_pipeline(
     logger.info("Step 2: Conducting QA on Raw Data...")
     step2_dir = os.path.join(output_dir, "02_QA_Raw_Data")
     
-    qa_raw = MetaboIntQA(raw_data, pipeline_params=pipeline_params)
+    qa_raw = MetaboIntAssessor(raw_data, pipeline_params=pipeline_params)
     qa_raw.execute_qa(output_dir=step2_dir)
 
     # ---------------------------------------------------------
@@ -129,7 +129,7 @@ def run_pipeline(
     # ---------------------------------------------------------
     logger.info("Step 3: Filtering high MV features (Stage 1)...")
     
-    metabo_fltr_stg1 = MetaboIntFLTR(raw_data, pipeline_params=pipeline_params)
+    metabo_fltr_stg1 = MetaboIntFilter(raw_data, pipeline_params=pipeline_params)
     filtered_data = metabo_fltr_stg1.execute_mv_fltr()
 
     # ---------------------------------------------------------
@@ -138,7 +138,7 @@ def run_pipeline(
     logger.info("Step 4: Performing signal drift correction...")
     step4_dir = os.path.join(output_dir, "04_Corrected_Data")
     
-    metabo_sc = MetaboIntSC(filtered_data, pipeline_params=pipeline_params)
+    metabo_sc = MetaboIntCorrector(filtered_data, pipeline_params=pipeline_params)
     intra_data, inter_data = metabo_sc.execute_sc(output_dir=step4_dir)
 
     # ---------------------------------------------------------
@@ -147,7 +147,7 @@ def run_pipeline(
     logger.info("Step 5: Conducting QA on Intra-batch Corrected Data...")
     step5_dir = os.path.join(output_dir, "05_QA_Intra_Corrected")
     
-    qa_intra = MetaboIntQA(intra_data, pipeline_params=pipeline_params)
+    qa_intra = MetaboIntAssessor(intra_data, pipeline_params=pipeline_params)
     qa_intra.execute_qa(output_dir=step5_dir)
 
     # ---------------------------------------------------------
@@ -156,7 +156,7 @@ def run_pipeline(
     logger.info("Step 6: Conducting QA on Inter-batch Corrected Data...")
     step6_dir = os.path.join(output_dir, "06_QA_Inter_Corrected")
     
-    qa_inter = MetaboIntQA(inter_data, pipeline_params=pipeline_params)
+    qa_inter = MetaboIntAssessor(inter_data, pipeline_params=pipeline_params)
     qa_inter.execute_qa(output_dir=step6_dir)
 
     # ---------------------------------------------------------
@@ -165,7 +165,7 @@ def run_pipeline(
     logger.info("Step 7: Filtering low quality features (Stage 2)...")
     step7_dir = os.path.join(output_dir, "07_Filtered_Quality")
     
-    metabo_fltr_stg2 = MetaboIntFLTR(
+    metabo_fltr_stg2 = MetaboIntFilter(
         inter_data, pipeline_params=pipeline_params
     )
     
@@ -183,7 +183,7 @@ def run_pipeline(
     logger.info("Step 8: Conducting QA on Post-Filtered Data...")
     step8_dir = os.path.join(output_dir, "08_QA_Filtered_Data")
     
-    qa_filtered = MetaboIntQA(
+    qa_filtered = MetaboIntAssessor(
         quality_filtered_data, pipeline_params=pipeline_params
     )
     qa_filtered.execute_qa(output_dir=step8_dir)
@@ -204,7 +204,7 @@ def run_pipeline(
     logger.info("Step 10: Conducting QA on Imputed Data...")
     step10_dir = os.path.join(output_dir, "10_QA_Imputed_Data")
     
-    qa_imputed = MetaboIntQA(imputed_data, pipeline_params=pipeline_params)
+    qa_imputed = MetaboIntAssessor(imputed_data, pipeline_params=pipeline_params)
     qa_imputed.execute_qa(output_dir=step10_dir)
 
     # ---------------------------------------------------------
@@ -213,7 +213,7 @@ def run_pipeline(
     logger.info("Step 11: Executing data normalization and scaling...")
     step11_dir = os.path.join(output_dir, "11_Normalized_Data")
     
-    metabo_norm = MetaboIntNorm(imputed_data, pipeline_params=pipeline_params)
+    metabo_norm = MetaboIntNormalizer(imputed_data, pipeline_params=pipeline_params)
     normalized_data = metabo_norm.execute_norm(output_dir=step11_dir)
 
     # ---------------------------------------------------------
@@ -222,7 +222,7 @@ def run_pipeline(
     logger.info("Step 12: Conducting final QA on Normalized Data...")
     step12_dir = os.path.join(output_dir, "12_QA_Normalized_Data")
     
-    qa_final = MetaboIntQA(normalized_data, pipeline_params=pipeline_params)
+    qa_final = MetaboIntAssessor(normalized_data, pipeline_params=pipeline_params)
     qa_final.execute_qa(output_dir=step12_dir)
 
     # ---------------------------------------------------------
