@@ -17,7 +17,7 @@ import pandas as pd
 from pathlib import Path
 
 
-# Dynamic R Environment Configuration
+# Dynamic R Environment Configuration, ready for rpy2
 if sys.platform == "win32":
     import winreg
     try:
@@ -86,7 +86,7 @@ def real_project_data() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """
     data_dir = Path(__file__).parents[1] / "src" / "pimqc" / "data"
     
-    meta_path = data_dir / "project_meta.csv"
+    meta_path = data_dir / "project_meta_with_simu_group.csv"
     int_path = data_dir / "project_intensity.csv"
     param_path = data_dir / "pipeline_parameters.json"
     

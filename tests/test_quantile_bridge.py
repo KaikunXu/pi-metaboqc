@@ -10,7 +10,7 @@ import rpy2.robjects as ro
 from rpy2.robjects import pandas2ri
 from rpy2.robjects.conversion import localconverter
 
-from pimqc.normalization import MetaboIntNorm
+from pimqc.normalization import MetaboIntNormalizer
 
 
 def run_r_quantile(df_input: pd.DataFrame) -> pd.DataFrame:
@@ -38,11 +38,11 @@ def run_r_quantile(df_input: pd.DataFrame) -> pd.DataFrame:
 def test_quantile_equivalence(mock_ms_data: pd.DataFrame) -> None:
     """Test if Python Quantile norm matches preprocessCore."""
     df_raw = mock_ms_data
-    pipe_para = {"MetaboIntNorm": {"quantile_norm": True}}
+    pipe_para = {"MetaboIntNormalizer": {"quantile_norm": True}}
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        py_obj = MetaboIntNorm(df_raw, pipeline_params=pipe_para)
+        py_obj = MetaboIntNormalizer(df_raw, pipeline_params=pipe_para)
         df_py_norm = py_obj.apply_normalization()
         
     df_r_norm = run_r_quantile(df_raw)
