@@ -136,7 +136,8 @@ def build_dataset(
             output_dir, f"Metabolomics_Intensity_Raw_{mode}.csv")
         int_df.to_csv(
             path_or_buf=output_path, na_rep="NA", encoding="utf-8-sig")
-        
+        logger.info(f"MetaboInt object saved as: {output_path}")
+
     # 7. Instantiate and return the MetaboInt core object.
     metabo_obj = MetaboInt(
         int_df,
@@ -148,5 +149,7 @@ def build_dataset(
         batch=batch,
         inject_order=inject_order
     )
-    
+
+    logger.info(f"MetaboInt object built, the shape is: {metabo_obj.shape}")
+
     return metabo_obj

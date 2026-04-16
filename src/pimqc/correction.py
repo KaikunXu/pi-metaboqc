@@ -1,20 +1,16 @@
 """
-Purpose of script: Execute Quality control-based signal correction.
+Purpose of script: Execute Quality control-based signal drift correction.
 """
 
 import os
+import re
+import copy
 import warnings
-from functools import cached_property
-from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from loguru import logger
-from joblib import Parallel, delayed
-
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib.figure import Figure
 
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.exceptions import NotFittedError
@@ -24,66 +20,49 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from scipy.interpolate import interp1d
+from joblib import Parallel, delayed
+from loguru import logger
 
 from . import io_utils as iu
 from . import plot_utils as pu
 from . import core_classes
 from . import visualizer_classes
 
+warnings.filterwarnings(action="ignore", category=FutureWarning)
+warnings.filterwarnings(action="ignore", category=RuntimeWarning)
+
+
 class _LoessSmoother(BaseEstimator, RegressorMixin):
     """Loess corrector implementation following scikit-learn API."""
 
-    def __init__(self, span: float = 0.3) -> None:
-        """Initialize the LOESS smoother.
+    def __init__(self, span=0.3):
+        """
+        Initialize the LOESS smoother.
 
         Args:
-            span: The fraction of data used when estimating each y-value.
-                Must be between 0 and 1. Defaults to 0.3.
+            span: Fraction of data used for estimating each y-value.
         """
         self.span = span
         self.interpolator_ = None
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "_LoessSmoother":
-        """Fit the loess algorithm to the training data.
-
-        Args:
-            x: Injection order of QC samples.
-            y: Intensity of QC samples.
-
-        Returns:
-            The fitted estimator object.
-        """
-        x_arr = np.asarray(a=x)
-        y_arr = np.asarray(a=y)
+    def fit(self, x, y):
+        """Fit the loess algorithm matching alpha version logic."""
+        x_arr = np.asarray(x)
+        y_arr = np.asarray(y)
         try:
+            # Revert: Match alpha version lowess parameters
             y_fit = lowess(
-                endog=y_arr, 
-                exog=x_arr, 
-                frac=self.span, 
-                it=3, 
-                missing="drop", 
-                is_sorted=True, 
-                return_sorted=False
+                endog=y_arr, exog=x_arr, frac=self.span, it=3, 
+                missing="drop", is_sorted=True, return_sorted=False
             )
-            self.interpolator_ = interp1d(
-                x=x_arr, 
-                y=y_fit, 
-                bounds_error=False
-            )
-        except Exception as e:
-            logger.error(f"Loess fitting failed: {e}")
-            
+            # Revert: No extrapolation to match alpha version boundary behavior
+            self.interpolator_ = interp1d(x=x_arr, y=y_fit, bounds_error=False)
+        except Exception:
+            pass
         return self
 
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        """Predict intensity based on injection order.
-
-        Args:
-            x: Injection order of samples to be predicted.
-
-        Returns:
-            Predicted intensities. NaNs if the model was not fitted.
-        """
+    def predict(self, x):
+        """Predict intensity based on injection order."""
         try:
             if self.interpolator_ is None:
                 raise NotFittedError("Loess smoother is not fitted yet.")
@@ -93,66 +72,54 @@ class _LoessSmoother(BaseEstimator, RegressorMixin):
 
 
 class MetaboIntCorrector(core_classes.MetaboInt):
-    """Quality control-based signal correction for metabolomics data.
+    """Quality control-based signal drift correction."""
 
-    This class handles baseline estimation (LOESS, RF, or SVR),
-    intra-batch drift correction, and inter-batch alignment.
-    """
-
-    _metadata: List[str] = ["attrs"]
+    _metadata = ["attrs"]
 
     def __init__(
         self,
-        *args: Any,
-        pipeline_params: Optional[Dict[str, Any]] = None,
-        mode: str = "POS",
-        batch: str = "Batch",
-        inject_order: str = "Inject Order",
-        internal_standard: Optional[Union[List[str], str]] = None,
-        base_est: str = "QC-RLSC",
-        span: float = 0.3,
-        n_tree: int = 500,
-        random_state: int = 12345,
-        svr_kernel: str = "rbf",
-        svr_c: float = 1.0,
-        svr_gamma: Union[str, float] = "scale",
-        **kwargs: Any
-    ) -> None:
-        """Initialize the MetaboIntCorrector object.
+        *args,
+        pipeline_params=None,
+        mode="POS",
+        batch="Batch",
+        inject_order="Inject Order",
+        base_est="QC-RLSC",
+        span=0.3,
+        n_tree=500,
+        random_state=12345,
+        svr_kernel="rbf",
+        svr_c=1.0,
+        svr_gamma="scale",
+        n_jobs=-1,
+        **kwargs
+    ):
+        """
+        Initialize the signal correction class with explicit hyperparameters.
 
         Args:
-            *args: Arguments passed to pandas DataFrame.
-            pipeline_params: Global configuration dictionary.
-            mode: MS polarity mode ("POS" or "NEG").
-            batch: Column name representing analytical batch.
-            inject_order: Column name representing injection sequence.
-            internal_standard: List of internal standards.
+            *args: Variable length arguments for pandas DataFrame.
+            pipeline_params: Configuration dictionary for the pipeline.
+            mode: MS Polarity ("POS" or "NEG").
+            batch: Column name representing batch information.
+            inject_order: Column name representing injection order.
             base_est: Estimator type ("QC-RLSC", "QC-RFSC", or "QC-SVR").
             span: Smoothing parameter for LOESS.
             n_tree: Number of estimators for Random Forest.
-            random_state: Random seed for model reproducibility.
-            svr_kernel: Kernel type to be used in SVR algorithm.
+            random_state: Seed for random number generators.
+            svr_kernel: Kernel type for SVR.
             svr_c: Regularization parameter for SVR.
-            svr_gamma: Kernel coefficient for 'rbf', 'poly' and 'sigmoid'.
-            **kwargs: Extra arguments passed to pandas DataFrame.
+            svr_gamma: Kernel coefficient for SVR.
+            n_jobs: Number of parallel jobs.
+            **kwargs: Extra arguments for pandas DataFrame.
         """
         super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
 
-        sc_configs: Dict[str, Any] = {
-            "mode": mode,
-            "batch": batch,
-            "inject_order": inject_order,
-            "base_est": base_est,
-            "span": span,
-            "n_tree": n_tree,
-            "random_state": random_state,
-            "svr_kernel": svr_kernel,
-            "svr_c": svr_c,
-            "svr_gamma": svr_gamma,
+        sc_configs = {
+            "mode": mode, "batch": batch, "inject_order": inject_order,
+            "base_est": base_est, "span": span, "n_tree": n_tree,
+            "random_state": random_state, "svr_kernel": svr_kernel,
+            "svr_c": svr_c, "svr_gamma": svr_gamma, "n_jobs": n_jobs
         }
-
-        if internal_standard is not None:
-            sc_configs["internal_standard"] = self._to_list(internal_standard)
 
         if pipeline_params and "MetaboIntCorrector" in pipeline_params:
             sc_configs.update(pipeline_params["MetaboIntCorrector"])
@@ -160,547 +127,399 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         self.attrs.update(sc_configs)
 
     @property
-    def _constructor(self) -> type:
+    def _constructor(self):
         """Override constructor to return MetaboIntCorrector."""
         return MetaboIntCorrector
 
-    def __finalize__(
-        self, other: Any, method: Optional[str] = None, **kwargs: Any
-    ) -> "MetaboIntCorrector":
+    def __finalize__(self, other, method=None, **kwargs):
         """Explicitly preserve custom attributes during pandas operations."""
         super().__finalize__(other, method=method, **kwargs)
         if hasattr(other, "attrs"):
-            self.attrs = __import__("copy").deepcopy(other.attrs)
+            self.attrs = copy.deepcopy(other.attrs)
         return self
 
-    @cached_property
-    def _injection_dict(self) -> Dict[str, pd.Series]:
-        """Injection order grouped by batch."""
-        io_col = self.attrs["inject_order"]
-        bt_col = self.attrs["batch"]
-        io_series = self.columns.to_frame().loc[:, io_col].astype(dtype=int)
-        return dict(list(io_series.groupby(by=bt_col)))
+    # =========================================================================
+    # Algorithm Factory & Fitting Logic
+    # =========================================================================
 
-    @cached_property
-    def _matrix_dict(self) -> Dict[str, pd.DataFrame]:
-        """Intensity matrix transposed and grouped by batch."""
-        return dict(list(self.transpose().groupby(by=self.attrs["batch"])))
-
-    @cached_property
-    def _int_base(self) -> pd.DataFrame:
-        """Features' basic mean intensity of QC samples by batch.
-
-        Returns:
-            pd.DataFrame: Matrix with shape (features * batches).
-        """
-        bt_col = self.attrs["batch"]
-        return self._qc.transpose().groupby(by=bt_col).mean().transpose()
-
-    @cached_property
-    def _int_base_bc(self) -> "MetaboIntCorrector":
-        """Broadcast _int_base to all samples by batch.
-
-        Returns:
-            MetaboIntCorrector: Broadcasted baseline matrix (features * samples).
-        """
-        int_base = self._int_base
-        bt_col = self.attrs["batch"]
-        int_base_bc = pd.DataFrame([])
-        
-        batch_labels = self.columns.get_level_values(level=bt_col).unique()
-        
-        for batch in batch_labels:
-            mask = self.columns.get_level_values(level=bt_col) == batch
-            int_batch = self.loc[:, mask]
-            n_batch = int_batch.shape[1]
-            fac = pd.concat(
-                objs=[int_base.loc[:, batch]] * n_batch, 
-                axis=1
+    def build_correction_pipeline(
+        self, method, span, n_tree, random_state, svr_kernel, svr_c, svr_gamma
+    ):
+        """Construct the ML pipeline based on explicit hyperparameters."""
+        name = method.upper()
+        if name in ("LOESS", "LOWESS", "QC-RLSC"):
+            return _LoessSmoother(span=span)
+        elif name in ("RF", "RANDOM FOREST", "QC-RFSC"):
+            # Revert: Remove StandardScaler for RF to match alpha version
+            return RandomForestRegressor(
+                n_estimators=n_tree, random_state=random_state
             )
-            int_base_bc = pd.concat(objs=[int_base_bc, fac], axis=1)
-            
-        int_base_bc.columns = self.columns
-        res_obj = MetaboIntCorrector(data=int_base_bc)
-        res_obj.attrs.update(self.attrs)
-        return res_obj
+        elif name in ("SVR", "QC-SVR"):
+            # Maintain Scaling for SVR to ensure numerical stability
+            return make_pipeline(
+                StandardScaler(), 
+                SVR(kernel=svr_kernel, C=svr_c, gamma=svr_gamma)
+            )
+        return _LoessSmoother(span=span)
 
-    @cached_property
-    def _fit_data(self) -> Dict[str, List[Any]]:
-        """Yield chunks of X and Y data for estimators based on batch."""
-        def _merge_dicts(dicts: List[Dict], strict: bool = False) -> Dict:
-            if not dicts:
-                return {}
-            elif not strict and len(dicts) == 1:
-                return dicts[0]
-            
-            merged = {}
-            for item in dicts:
-                for k, v in item.items():
-                    if k in merged:
-                        merged[k].append(v)
-                    else:
-                        merged[k] = [v]
-            return merged
+    def _fit_predict_feature(
+        self, feat_idx, raw_vals, qc_mask, io_arr, method, kwargs_dict
+    ):
+        """Fit model on QCs and predict drift matching alpha version logic."""
+        qc_x = io_arr[qc_mask].reshape(-1, 1)
+        qc_y = raw_vals[qc_mask]
+        valid = ~np.isnan(qc_y)
+        
+        # Revert: Use relaxed threshold (min 1 valid QC) matching alpha version
+        if valid.sum() < 1:
+            return feat_idx, np.full(len(io_arr), np.nan)
 
-        return _merge_dicts(dicts=[
-            self._qc._injection_dict,
-            self._qc._matrix_dict,
-            self._injection_dict,
-            self._matrix_dict
-        ])
-
-    def _loess_fit(
-        self, x_train: pd.Series, y_train: pd.Series,
-        x_process: pd.Series, span: float = 0.3
-    ) -> np.ndarray:
-        """Baseline prediction based on _LoessSmoother."""
+        model = self.build_correction_pipeline(method=method, **kwargs_dict)
         try:
-            loess = _LoessSmoother(span=span)
-            loess.fit(x=x_train, y=y_train)
-            return loess.predict(x=x_process)
-        except Exception as e:
-            logger.debug(f"LOESS fit failed for a feature: {e}")
-            return np.full(shape=len(x_process), fill_value=np.nan)
-
-    def _rf_fit(
-        self, x_train: pd.Series, y_train: pd.Series,
-        x_process: pd.Series, n_tree: int = 500, random_state: int = 12345
-    ) -> np.ndarray:
-        """Baseline prediction based on Random Forest regression."""
-        try:
-            valid = ~x_train.isna() & ~y_train.isna()
-            
-            if valid.sum() > 0:
-                x_val = x_train[valid].values.reshape(-1, 1)
-                y_val = y_train[valid].values
-                
-                rf_reg = RandomForestRegressor(
-                    n_estimators=n_tree, 
-                    random_state=random_state
-                )
-                rf_reg.fit(X=x_val, y=y_val)
-                
-                x_proc_val = x_process.values.reshape(-1, 1)
-                return rf_reg.predict(X=x_proc_val)
-                
-            return np.full(shape=len(x_process), fill_value=np.nan)
-        except Exception as e:
-            logger.debug(f"RF fit failed for a feature: {e}")
-            return np.full(shape=len(x_process), fill_value=np.nan)
-
-    def _svr_fit(
-        self, x_train: pd.Series, y_train: pd.Series,
-        x_process: pd.Series, kernel: str = "rbf",
-        c_val: float = 1.0, gamma_val: Union[str, float] = "scale"
-    ) -> np.ndarray:
-        """Baseline prediction based on Support Vector Regression."""
-        try:
-            valid = ~x_train.isna() & ~y_train.isna()
-            
-            if valid.sum() > 0:
-                x_val = x_train[valid].values.reshape(-1, 1)
-                # Reshape Y for the target scaler
-                y_val = y_train[valid].values.reshape(-1, 1)
-                
-                # Standardize BOTH X and Y to prevent massive underfitting 
-                # (flat line) caused by large unscaled intensity values.
+            if "SVR" in method.upper():
                 y_scaler = StandardScaler()
-                y_scaled = y_scaler.fit_transform(X=y_val).ravel()
-                
-                svr_pipe = make_pipeline(
-                    StandardScaler(),
-                    SVR(kernel=kernel, C=c_val, gamma=gamma_val)
-                )
-                svr_pipe.fit(X=x_val, y=y_scaled)
-                
-                x_proc_val = x_process.values.reshape(-1, 1)
-                y_pred_scaled = svr_pipe.predict(X=x_proc_val)
-                
-                # Inverse transform back to the original intensity space
-                y_pred = y_scaler.inverse_transform(
-                    X=y_pred_scaled.reshape(-1, 1)
+                y_scaled = y_scaler.fit_transform(qc_y[valid].reshape(-1, 1))
+                model.fit(qc_x[valid], y_scaled.ravel())
+                pred_scaled = model.predict(io_arr.reshape(-1, 1))
+                pred_y = y_scaler.inverse_transform(
+                    pred_scaled.reshape(-1, 1)
                 ).ravel()
-                
-                return y_pred
-                
-            return np.full(shape=len(x_process), fill_value=np.nan)
-        except Exception as e:
-            logger.debug(f"SVR fit failed for a feature: {e}")
-            return np.full(shape=len(x_process), fill_value=np.nan)
-
-    def _process_matrix_fit_sb(
-        self, batch_data: List[Any], batch: str, batch_idx: int = 0,
-        pbar: Any = None, base_est: str = "QC-RLSC", span: float = 0.3,
-        n_tree: int = 500, random_state: int = 12345,
-        svr_kernel: str = "rbf", svr_c: float = 1.0, 
-        svr_gamma: Union[str, float] = "scale"
-    ) -> pd.DataFrame:
-        """Estimate the intensity baseline for a single batch."""
-        x_tr, y_tr, x_pr, y_pr = batch_data
-        
-        try:
-            fit_results: Dict[str, np.ndarray] = {}
-            is_jup = iu.is_jupyter()
-            
-            # --- Environment-Aware Progress Bar & Logging Routing ---
-            if is_jup and pbar is not None:
-                # In Jupyter: Iterate silently, update the global lock-safe pbar
-                iterable_cols = y_tr.items()
             else:
-                # In Terminal: Log start and create a distinct progress bar
-                logger.info(f"Analyzing {batch} using {base_est}...")
-                iterable_cols = iu.get_custom_progress(
-                    iterable=y_tr.items(), 
-                    total=y_tr.shape[1], 
-                    desc=f"SC [{batch}]", 
-                    position=batch_idx
-                )
+                # LOESS/RF fitting logic
+                x_fit = qc_x[valid] if "RF" in method.upper() else io_arr[qc_mask]
+                model.fit(x_fit, qc_y[valid])
+                pred_y = model.predict(io_arr)
+            return feat_idx, pred_y
+        except Exception:
+            return feat_idx, np.full(len(io_arr), np.nan)
 
-            if base_est in ("LOESS", "LOWESS", "QC-RLSC"):
-                for col_name, col_data in iterable_cols:
-                    fit_results[str(col_name)] = self._loess_fit(
-                        x_train=x_tr, y_train=col_data, 
-                        x_process=x_pr, span=span
-                    )
-                    if is_jup and pbar: pbar.update(1)
-                    
-            elif base_est in ("RF", "Random forest", "QC-RFSC"):
-                for col_name, col_data in iterable_cols:
-                    fit_results[str(col_name)] = self._rf_fit(
-                        x_train=x_tr, y_train=col_data, x_process=x_pr, 
-                        n_tree=n_tree, random_state=random_state
-                    )
-                    if is_jup and pbar: pbar.update(1)
-                    
-            elif base_est in ("SVR", "QC-SVR"):
-                for col_name, col_data in iterable_cols:
-                    fit_results[str(col_name)] = self._svr_fit(
-                        x_train=x_tr, y_train=col_data, x_process=x_pr, 
-                        kernel=svr_kernel, c_val=svr_c, gamma_val=svr_gamma
-                    )
-                    if is_jup and pbar: pbar.update(1)
-            else:
-                raise ValueError(f"Unknown estimator: {base_est}")
-                
-            y_fit = pd.DataFrame(fit_results)
-            y_fit.index = y_pr.index
-            y_fit.columns = y_pr.columns
-            return y_fit.transpose()
-            
-        except Exception as e:
-            logger.error(f"Critical failure in batch '{batch}': {e}.")
-            empty_df = pd.DataFrame(
-                data=np.nan, index=y_pr.columns, columns=y_pr.index
-            )
-            return empty_df
+    # =========================================================================
+    # Mathematical Core Phases
+    # =========================================================================
 
-    @cached_property
-    def process_matrix_fit(self) -> pd.DataFrame:
-        """Parallel calculation of predicted baseline for each batch."""
-        n_jobs = min(iu.__max_threading__, len(self._fit_data))
-        logger.info(f"Using {n_jobs} threads for parallel SC analysis.")
+    def _calculate_qc_baseline_means(self, bt_col, st_col, qc_lbl):
+        """Calculate and broadcast basic mean intensity of QC by batch."""
+        # Isolate QC samples from the main matrix
+        qc_df = self.loc[:, self.columns.get_level_values(st_col) == qc_lbl]
+        batch_levels = qc_df.columns.get_level_values(bt_col)
         
-        batch_keys = list(self._fit_data.keys())
-        is_jup = iu.is_jupyter()
-        pbar = None
+        # Calculate batch-wise mean for all features
+        int_base = qc_df.transpose().groupby(batch_levels).mean().transpose()
         
-        if is_jup:
-            # Pre-log the operation to avoid interrupting the tqdm progress bar
-            est = self.attrs.get("base_est", "Estimator")
-            logger.info(
-                f"Analyzing {len(batch_keys)} batches concurrently using {est}."
-            )
+        # Broadcast batch means to all samples in the original dataframe
+        int_base_bc = pd.DataFrame(index=self.index, columns=self.columns)
+        for batch in self.columns.get_level_values(bt_col).unique():
+            mask = self.columns.get_level_values(bt_col) == batch
+            bc_block = pd.concat([int_base[batch]] * mask.sum(), axis=1)
+            int_base_bc.loc[:, mask] = bc_block.values
+        return int_base_bc
+
+    def _calculate_predicted_matrix(
+        self, bt_col, st_col, io_col, qc_lbl, method, n_jobs, kwargs_dict
+    ):
+        """Calculate continuous drift baseline with parallel progress bar."""
+        pred_df = self.copy()
+        for batch in self.columns.get_level_values(bt_col).unique():
+            # Filter samples belonging to current batch
+            mask = self.columns.get_level_values(bt_col) == batch
+            batch_data = self.loc[:, mask]
+            qc_m = batch_data.columns.get_level_values(st_col) == qc_lbl
+            io_a = batch_data.columns.get_level_values(io_col).values
             
-            total_feats = sum(self._fit_data[b][1].shape[1] for b in batch_keys)
-            pbar = iu.get_custom_progress(
-                iterable=None, total=total_feats, desc="SC [All Batches]"
-            )
+            # Prepare parallel fitting tasks
+            tasks = [delayed(self._fit_predict_feature)(
+                idx, row.values, qc_m, io_a, method, kwargs_dict
+            ) for idx, row in batch_data.iterrows()]
+            
+            # Execute with custom progress bar from io_utils
+            results = Parallel(n_jobs=n_jobs)(iu.get_custom_progress(
+                tasks, len(tasks), desc=f"SC [{batch}]"
+            ))
+            for feat_idx, pred_vals in results:
+                pred_df.loc[feat_idx, mask] = pred_vals
         
-        try:
-            results = Parallel(n_jobs=n_jobs, backend="threading")(
-                delayed(function=self._process_matrix_fit_sb)(
-                    batch_data=self._fit_data[batch_id],
-                    batch=batch_id,
-                    batch_idx=idx,
-                    pbar=pbar,
-                    base_est=self.attrs["base_est"],
-                    span=self.attrs["span"],
-                    n_tree=self.attrs["n_tree"],
-                    random_state=self.attrs["random_state"],
-                    svr_kernel=self.attrs["svr_kernel"],
-                    svr_c=self.attrs["svr_c"],
-                    svr_gamma=self.attrs["svr_gamma"]
-                ) for idx, batch_id in enumerate(iterable=batch_keys)
-            )
-        finally:
-            if pbar:
-                pbar.close()
-            
-        res_df = pd.concat(objs=results, axis=1)
-        res_df[res_df <= 0] = np.nan
-        return self._constructor(res_df).__finalize__(self)    
+        # Revert: Global truncation to NaN for non-positive predicted baselines
+        pred_df[pred_df <= 0] = np.nan
+        return pred_df
 
-    @cached_property
-    def intra_batch_corr(self) -> "MetaboIntCorrector":
-        """Perform intra-batch correction via base / fit ratio."""
-        with warnings.catch_warnings():
-            warnings.simplefilter(action="ignore", category=RuntimeWarning)
-            corr_matrix = self._int_base_bc * (self / self.process_matrix_fit)
-            
-        res_obj = MetaboIntCorrector(data=corr_matrix)
-        res_obj.attrs = self.attrs
-        return res_obj
-
-    @cached_property
-    def inter_batch_corr(self) -> "MetaboIntCorrector":
-        """Correct the mean of QCs in each batch to a global common mean."""
-        bt_col = self.attrs["batch"]
-        intra_df = self.intra_batch_corr
-        
-        # [BUG FIX]: Must restrict the mean calculation strictly to QC samples.
-        intra_qc = intra_df._qc
-        # 1. Calculate the mean of QCs within each batch (Shape: batches * features)
-        bt_qc_mean = intra_qc.transpose().groupby(by=bt_col).mean()
-        # 2. Calculate the global mean of all QCs (Shape: features)
-        global_qc_mean = intra_qc.mean(axis=1)
-        # 3. Calculate the correction factor
-        corr_factor = (global_qc_mean / bt_qc_mean).transpose()
-        # 4. Apply the correction factor to ALL samples in intra_df by batch
-        inter_df = intra_df.transpose().groupby(
-            by=bt_col, group_keys=False
-        ).apply(
-            func=lambda x: x * corr_factor[x.name]
-        ).transpose()
-        res_obj = MetaboIntCorrector(data=inter_df)
-        res_obj.attrs = self.attrs
-        return res_obj
-
-    @cached_property
-    def _rsd(self) -> pd.Series:
-        """Calculate Relative Standard Deviation (RSD)."""
-        return (self.std(axis=1, ddof=1) / self.mean(axis=1)).rename("RSD")
+    # =========================================================================
+    # Execution Stream
+    # =========================================================================
 
     @iu._exe_time
-    def execute_sc(
-        self, output_dir: str
-    ) -> Tuple["MetaboIntCorrector", "MetaboIntCorrector"]:
-        """Execute Signal Correction workflow and save outputs to disk.
-
-        Args:
-            output_dir: Target directory path for saving results.
-
-        Returns:
-            Tuple containing the intra-batch and inter-batch corrected 
-            MetaboIntCorrector objects.
-        """
-        import re
-        iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
-
-        est = self.attrs["base_est"]
-        mode = self.attrs["mode"]
-
-        self.process_matrix_fit.to_csv(
-            path_or_buf=os.path.join(
-                output_dir, f"QC_Fit_Baseline_{est}_{mode}.csv"
-            ),
-            na_rep="NA", encoding="utf-8-sig"
-        )
-        self.intra_batch_corr.to_csv(
-            path_or_buf=os.path.join(
-                output_dir, f"Intra_Batch_Corrected_{est}_{mode}.csv"
-            ),
-            na_rep="NA", encoding="utf-8-sig"
-        )
-        self.inter_batch_corr.to_csv(
-            path_or_buf=os.path.join(
-                output_dir, f"Inter_Batch_Corrected_{est}_{mode}.csv"
-            ),
-            na_rep="NA", encoding="utf-8-sig"
-        )
-
-        # # ====================================================================
-        # # [DEBUG SNIPPET]: Check QC means of valid_is after inter-batch corr.
-        # # You can comment out or remove this block after verification.
-        # # ====================================================================
-        # if len(self.valid_is) > 0:
-        #     bt_col = self.attrs["batch"]
-        #     inter_qc = self.inter_batch_corr._qc
-            
-        #     # Select only valid IS features to prevent massive console output
-        #     valid_is_idx = inter_qc.index.intersection(self.valid_is)
-        #     if not valid_is_idx.empty:
-        #         check_means = inter_qc.loc[valid_is_idx].transpose().groupby(
-        #             by=bt_col).mean()
-                
-        #         logger.info(
-        #             "-- DEBUG: QC Means of valid_is AFTER Inter-Correction --"
-        #         )
-        #         for feat in valid_is_idx:
-        #             logger.info(f"Feature: {feat}")
-        #             for batch_name, val in check_means[feat].items():
-        #                 logger.info(f"  Batch {batch_name}: {val:.4f}")
-        #         logger.info("-" * 62)
-        # # ====================================================================
-
-        vis = MetaboVisualizerCorrector(sc_obj=self)
+    def execute_signal_correction(self, output_dir):
+        """Execute complete signal correction workflow matching alpha results."""
+        # Explicit variable extraction to increase modularity
+        st_col = self.attrs.get("sample_type", "Sample Type")
+        bt_col = self.attrs.get("batch", "Batch")
+        io_col = self.attrs.get("inject_order", "Inject Order")
         
-        rsd_df, rsd_fig = vis.plot_corr_rsd()
+        sample_dict = self.attrs.get("sample_dict", {})
+        qc_lbl = sample_dict.get("QC sample", "QC")
+        act_lbl = sample_dict.get("Actual sample", "Sample")
+        
+        mode = self.attrs.get("mode", "POS")
+        method = self.attrs.get("base_est", "QC-RLSC")
+        n_jobs = self.attrs.get("n_jobs", -1)
+        
+        pipe_params = self.attrs.get("pipeline_parameters", {})
+        bound_type = pipe_params.get("MetaboInt", {}).get("boundary", "IQR")
+        
+        kwargs_dict = {
+            "span": self.attrs.get("span"), "n_tree": self.attrs.get("n_tree"),
+            "random_state": self.attrs.get("random_state"),
+            "svr_kernel": self.attrs.get("svr_kernel"),
+            "svr_c": self.attrs.get("svr_c"), 
+            "svr_gamma": self.attrs.get("svr_gamma")
+        }
+
+        iu._check_dir_exists(output_dir, handle="makedirs")
+
+        # Phase 1: Signal Drift Prediction
+        int_base_bc = self._calculate_qc_baseline_means(bt_col, st_col, qc_lbl)
+        pred_df = self._calculate_predicted_matrix(
+            bt_col, st_col, io_col, qc_lbl, method, n_jobs, kwargs_dict
+        )
+        
+        pred_df.to_csv(os.path.join(
+            output_dir, f"QC_Fit_Baseline_{method}_{mode}.csv"
+        ))
+        logger.info("Baseline fitting completed")
+        
+        # Phase 2: Intra-batch Correction
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            intra_df = self._constructor(
+                int_base_bc * (self / pred_df)
+            ).__finalize__(self)
+
+        intra_path = os.path.join(
+            output_dir, f"Intra_Batch_Corrected_{method}_{mode}.csv")
+        intra_df.to_csv(intra_path)
+        logger.info(
+            f"Intra-correction completed, saved as : {intra_path}")
+        logger.info(
+            f"MetaboInt shape after intra-correction: {intra_df.shape}")
+
+        # Phase 3: Inter-batch Alignment
+        inter_df = intra_df.copy()
+        if len(self.columns.get_level_values(bt_col).unique()) > 1:
+            intra_qc = intra_df.loc[:, 
+                intra_df.columns.get_level_values(st_col) == qc_lbl
+            ]
+            bt_qc_mean = intra_qc.transpose().groupby(bt_col).mean().transpose()
+            global_mean = intra_qc.mean(axis=1)
+            
+            for batch in self.columns.get_level_values(bt_col).unique():
+                mask = inter_df.columns.get_level_values(bt_col) == batch
+                inter_df.loc[:, mask] = inter_df.loc[:, mask].multiply(
+                    global_mean / bt_qc_mean[batch], axis=0
+                )
+
+        inter_path = os.path.join(
+            output_dir, f"Inter_Batch_Corrected_{method}_{mode}.csv")
+        inter_df.to_csv(intra_path)
+        logger.info(
+            f"Inter-correction completed, saved as : {inter_path}")
+        logger.info(
+            f"MetaboInt shape after inter-correction: {inter_df.shape}")
+        
+        # Phase 4: Visualization Suite
+        vis = MetaboVisualizerCorrector(self)
+        # 4.1: QC RSD Progression Boxplot
+        fig_rsd = vis.plot_corr_rsd(self, intra_df, inter_df, st_col, qc_lbl)
         vis.save_and_close_fig(
-            fig=rsd_fig, 
-            file_path=os.path.join(
-                output_dir, f"QC_RSD_Boxplot_{est}_{mode}.pdf"))
-
-        int_figs = vis.plot_is_int_order_scatter()
+            fig_rsd, os.path.join(
+                output_dir, f"QC_RSD_Boxplot_{method}_{mode}.pdf")
+        )
         
-        def _sanitize_filename(name: str) -> str:
-            return re.sub(r'[<>:"/\\|?*]', '_', name)
+        if len(self.valid_is) > 0:
+            # 4.2: 3-Stage Scatter Panels per Internal Standard
+            fig_dict = vis.plot_is_int_order_scatter(
+                self, intra_df, inter_df, pred_df, self.valid_is, st_col, 
+                bt_col, io_col, qc_lbl, act_lbl, bound_type
+            )
+            for feat, fig in fig_dict.items():
+                safe_feat = re.sub(r'[^a-zA-Z0-9]', '_', feat)
+                vis.save_and_close_fig(
+                    fig,
+                    os.path.join(output_dir, f"Scatter_{safe_feat}_{mode}.pdf")
+                )
             
-        for feat, fig in int_figs.items():
-            safe_feat = _sanitize_filename(feat)
+            # 4.3: Predicted Baseline Overlay Grid
+            fig_pred = vis.plot_pred_baseline_is(
+                self, pred_df, self.valid_is, st_col, bt_col, io_col, 
+                qc_lbl, act_lbl
+            )
             vis.save_and_close_fig(
-                fig=fig, 
-                file_path=os.path.join(
-                    output_dir, f"Scatter_{safe_feat}_{mode}.pdf"))
+                fig_pred,
+                os.path.join(output_dir, f"Pred_Base_IS_{method}_{mode}.pdf")
+            )
+            
+        logger.success(
+            "Data signal drift and batch-effect correction "
+            "completed.")
+        # ==========================================================
+        intra_df.attrs["pipeline_stage"] = "Intra-batch correction"
+        inter_df.attrs["pipeline_stage"] = "Inter-batch correction"
+        # ==========================================================
 
-        if len(self.valid_is) != 0:
-            pred_fig = vis.plot_pred_baseline_is()
-            vis.save_and_close_fig(
-                fig=pred_fig, 
-                file_path=os.path.join(
-                    output_dir, f"Pred_Base_IS_{est}_{mode}.pdf"))
+        return intra_df, inter_df
 
-        return self.intra_batch_corr, self.inter_batch_corr
 
 class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
-    """Visualization suite for signal correction."""
+    """Visualization suite matching original alpha output styles."""
 
-    def __init__(self, sc_obj: "MetaboIntCorrector") -> None:
-        super().__init__(metabo_obj=sc_obj)
-        self.sc = sc_obj
+    def __init__(self, corr_obj):
+        """Initialize with a computed MetaboIntCorrector object."""
+        super().__init__(metabo_obj=corr_obj)
+        self.corr = corr_obj
 
-    def plot_corr_rsd(self) -> Tuple[pd.DataFrame, Figure]:
+    # =========================================================================
+    # Evaluation & Diagnostic Plotters
+    # =========================================================================
+
+    def plot_corr_rsd(self, raw_df, intra_df, inter_df, st_col, qc_lbl, ax=None):
         """Plot RSD boxplots across different correction stages."""
-        rsd_df = pd.concat(
-            objs=[
-                self.sc._qc._rsd, self.sc.intra_batch_corr._qc._rsd,
-                self.sc.inter_batch_corr._qc._rsd], 
-            keys=["Original", "Intra-batch\ncorrected", "Inter-batch\ncorrected"], 
-            names=["Stage"], axis=1
-        ).unstack().rename("RSD").reset_index()
+        def get_rsd(df):
+            qc = df.loc[:, df.columns.get_level_values(st_col) == qc_lbl]
+            return (qc.std(axis=1, ddof=1) / qc.mean(axis=1)).dropna()
 
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(4, 4))
-        cmap = pu.extract_linear_cmap(
-            cmap=pu.custom_linear_cmap(
-                color_list=["white", "tab:red"], n_colors=3),
-            cmin=0.0, cmax=1.0)
-        
+        # Aggregate RSD statistics
+        plot_df = pd.DataFrame({
+            "Original": get_rsd(raw_df), 
+            "Intra-batch\ncorrected": get_rsd(intra_df),
+            "Inter-batch\ncorrected": get_rsd(inter_df)
+        }).melt(var_name="Stage", value_name="RSD")
+
+        if ax is None:
+            fig, current_ax = plt.subplots(figsize=(4, 4))
+        else:
+            current_ax = ax
+            fig = current_ax.figure
+            
         sns.boxplot(
-            data=rsd_df, x="Stage", y="RSD", hue="Stage", width=0.6,
-            showfliers=False, dodge=False, palette=cmap, ax=ax
+            data=plot_df, x="Stage", y="RSD", hue="Stage", width=0.6, 
+            showfliers=False, palette=pu.extract_linear_cmap(
+                pu.custom_linear_cmap(["white", "tab:red"], 3), 0, 1
+            ), ax=current_ax
         )
         
         self._apply_standard_format(
-            ax=ax, ylabel="RSD of Pooled QCs (%)", tick_fontsize=12)
-        pu.change_axis_format(ax=ax, axis_format="percentage", axis="y")
-        pu.change_axis_rotation(ax=ax, rotation=0, axis="x")
-        self._format_single_legend(fig=fig, ax=ax, title="Correction Stage")
-        return rsd_df, fig
-
-    def plot_pred_baseline_is(self) -> Optional[Figure]:
-        """Plot scatter charts of IS and overlay predicted baseline lines."""
-        if not self.sc.valid_is: return None
-
-        plot_data = self.sc.int_order_info(feat_type="IS").reset_index()
-        plot_data[self.st_col] = plot_data[self.st_col].astype(dtype="category")
-        plot_data[self.bat_col] = plot_data[self.bat_col].astype(dtype="category")
-        plot_data = plot_data.sort_values(by=self.st_col, ascending=False)
-        
-        pred_info = self.sc.process_matrix_fit.int_order_info(feat_type="IS")
-        batch_set = pred_info.index.get_level_values(level=self.bat_col).unique()
-
-        ncols = 2
-        nrows = int(np.ceil(len(self.sc.valid_is) / ncols))
-        fig = plt.figure(figsize=(7.5 * ncols, 3 * nrows), layout="constrained")
-        
-        for n, feat in enumerate(iterable=self.sc.valid_is):
-            ax = plt.subplot(nrows, ncols, n + 1)
-            
-            sns.scatterplot(
-                ax=ax, data=plot_data, x=self.io_col, y=feat, s=40, 
-                edgecolor="k", linewidth=0.5, style=self.bat_col,
-                palette=self.pal, hue=self.st_col, hue_order=[self.qc_lbl, self.act_lbl]
-            )
-            
-            for batch in batch_set:
-                sub_info = pred_info.loc[
-                    pred_info.index.get_level_values(level=self.bat_col) == batch]
-                sns.lineplot(
-                    data=sub_info, x=self.io_col, y=feat, linewidth=1.5, 
-                    linestyle="solid", color="k", label=None, ax=ax
-                )
-
-            self._apply_standard_format(
-                ax=ax, xlabel=self.io_col, ylabel=feat, tick_fontsize=11,
-                title_fontsize=13)
-            pu.change_axis_format(ax=ax, axis_format="scientific notation", axis="y")
-
-            if n == len(self.sc.valid_is) - 1:
-                self._format_multi_legends(fig=fig, ax=ax)
-            elif ax.get_legend():
-                ax.legend().remove()
-                            
-        plt.suptitle(t="Predicted Baseline of IS", fontsize=14, weight="bold")
+            current_ax, ylabel="RSD (%)",append_stage=False)
+        pu.change_axis_format(current_ax, "percentage", "y")
         return fig
 
-    def plot_is_int_order_scatter(self) -> Dict[str, Figure]:
-        """Plot scatter charts comparing IS before and after correction."""
-        data_dict = {
-            "Raw Intensity": self.sc.int_order_info(feat_type="IS"),
-            "After Intra-batch \nCorrected": self.sc.intra_batch_corr.int_order_info(feat_type="IS"),
-            "After Inter-batch \nCorrected": self.sc.inter_batch_corr.int_order_info(feat_type="IS")
-        }
+    def plot_single_is_scatter(
+        self, df, feat, st, bt, io, qcl, actl, yl, bnd, ax=None
+    ):
+        """Plot a single scatter panel with calculated boundaries."""
+        if ax is None:
+            fig, current_ax = plt.subplots(figsize=(7.5, 3))
+        else:
+            current_ax = ax
+            fig = current_ax.figure
+            
+        # Extract and format data for plotting
+        p_data = df.int_order_info(feat_type="IS").reset_index()
+        
+        # [BUG FIX]: Explicitly sort to render QC samples on the top layer
+        p_data[st] = pd.Categorical(
+            p_data[st], categories=[actl, qcl], ordered=True
+        )
+        p_data = p_data.sort_values(st)
+        
+        sns.scatterplot(
+            data=p_data, x=io, y=feat, hue=st, style=bt, s=40, edgecolor="k", 
+            palette=self.pal, hue_order=[qcl, actl], markers=self.style_map, 
+            style_order=self.all_batches, ax=current_ax
+        )
+        
+        # Calculate and draw Shewhart boundary lines
+        s, l, u = core_classes.MetaboInt().calculate_boundaries(
+            p_data[feat], bnd
+        )
+        for y, ls in zip([s, l, u], ["-", "--", "--"]):
+            current_ax.axhline(y, color="k", linestyle=ls)
+            
+        self._apply_standard_format(
+            current_ax, xlabel=io, ylabel=yl, append_stage=False)
+        pu.change_axis_format(current_ax, "scientific notation", "y")
+        return fig
 
-        # --- Update pointer to global MetaboInt parameters ---
-        pipeline_params = self.sc.attrs.get("pipeline_parameters", {})
-        bound_type = pipeline_params.get("MetaboInt", {}).get("boundary", "IQR")
-
+    def plot_is_int_order_scatter(
+        self, raw, intra, inter, pred, valid, st, bt, io, qcl, actl, bnd
+    ):
+        """Reconstruct original 3-row scatter layout with baseline overlay."""
         fig_dict = {}
-        for feat in self.sc.valid_is:
+        for feat in valid:
             fig = plt.figure(figsize=(7.5, 9), layout="constrained")
-            for n, data_type in enumerate(data_dict.keys()):
-                plot_data = data_dict[data_type].reset_index().copy()
-                plot_data[self.st_col] = plot_data[self.st_col].astype(dtype="category")
-                plot_data[self.bat_col] = plot_data[self.bat_col].astype(dtype="category")
-                plot_data = plot_data.sort_values(by=self.st_col, ascending=False)
-                
+            stages = [
+                ("Raw Intensity", raw), 
+                ("After Intra-batch \nCorrected", intra), 
+                ("After Inter-batch \nCorrected", inter)
+            ]
+            
+            for n, (yl, df) in enumerate(stages):
                 ax = plt.subplot(3, 1, n + 1)
-                sns.scatterplot(
-                    ax=ax, data=plot_data, x=self.io_col, y=feat, s=40, 
-                    edgecolor="k", linewidth=0.5, style=self.bat_col,
-                    palette=self.pal, hue=self.st_col, hue_order=[self.qc_lbl, self.act_lbl]
-                )
-
-                # --- Calculate boundaries from the unified method ---
-                int_data = data_dict[data_type][feat].values
-                solid, lower, upper = self.sc.calculate_boundaries(
-                    x=int_data, boundary_type=bound_type
-                )
+                self.plot_single_is_scatter(
+                    df, feat, st, bt, io, qcl, actl, yl, bnd, ax)
                 
-                ax.axhline(y=solid, color="k", linestyle="-", linewidth=1.5)
-                ax.axhline(y=lower, color="k", linestyle="--", linewidth=1.5)
-                ax.axhline(y=upper, color="k", linestyle="--", linewidth=1.5)
-
-                self._apply_standard_format(
-                    ax=ax, xlabel=self.io_col, ylabel=data_type, tick_fontsize=11,
-                    title_fontsize=13)
-                pu.change_axis_format(ax=ax, axis_format="scientific notation", axis="y")
-
-                if n == len(data_dict) - 1:
-                    self._format_multi_legends(fig=fig, ax=ax)
+                # Overlay red dashed baseline specifically on the raw plot
+                if yl == "Raw Intensity":
+                    p_info = pred.int_order_info(feat_type="IS").reset_index()
+                    for b in p_info[bt].unique():
+                        sns.lineplot(
+                            data=p_info[p_info[bt] == b], x=io, y=feat, 
+                            color="tab:red", linestyle="--", ax=ax, zorder=3
+                        )
+                
+                # Manage legends: Only the bottom plot shows the unified legend
+                if n == 2:
+                    self._format_multi_legends(ax=ax, group_titles=[st, bt])
                 elif ax.get_legend():
                     ax.legend().remove()
-                            
-            plt.suptitle(t=f"Scatter of {feat}", fontsize=14, weight="bold")
-            plt.close(fig=fig)
+            
+            plt.close(fig)
             fig_dict[feat] = fig
         return fig_dict
+
+    def plot_pred_baseline_is(self, raw, pred, valid, st, bt, io, qcl, actl):
+        """Reconstruct original multi-panel baseline overlay grid."""
+        nc = 2
+        nr = int(np.ceil(len(valid) / nc))
+        fig = plt.figure(figsize=(7.5 * nc, 3 * nr), layout="constrained")
+        
+        for n, feat in enumerate(valid):
+            ax = plt.subplot(nr, nc, n + 1)
+            p_data = raw.int_order_info(feat_type="IS").reset_index()
+            
+            # [BUG FIX]: Explicitly sort to render QC samples on the top layer
+            p_data[st] = pd.Categorical(
+                p_data[st], categories=[actl, qcl], ordered=True
+            )
+            p_data = p_data.sort_values(st)
+            
+            # Render raw scatter points
+            sns.scatterplot(
+                data=p_data, x=io, y=feat, hue=st, style=bt, s=40, 
+                edgecolor="k", palette=self.pal, hue_order=[qcl, actl], 
+                markers=self.style_map, style_order=self.all_batches, ax=ax
+            )
+            
+            # Overlay continuous black baseline prediction
+            p_info = pred.int_order_info(feat_type="IS").reset_index()
+            for b in p_info[bt].unique():
+                sns.lineplot(
+                    data=p_info[p_info[bt] == b], x=io, y=feat, color="k", ax=ax
+                )
+                
+            self._apply_standard_format(
+                ax, xlabel=io, ylabel=feat, append_stage=False)
+            
+            # Management of legends in grid
+            if n == len(valid) - 1:
+                self._format_multi_legends(ax=ax, group_titles=[st, bt])
+            elif ax.get_legend():
+                ax.legend().remove()
+        return fig

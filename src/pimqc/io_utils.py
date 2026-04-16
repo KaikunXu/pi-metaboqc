@@ -77,7 +77,7 @@ def is_jupyter() -> bool:
 
 def get_custom_progress(
     iterable: Any, total: int, desc: str = "Progress", 
-    color: str = "green", bar_length: int = 80, position: int = 0
+    color: str = None, bar_length: int = 80, position: int = 0
 ) -> Any:
     """Unified progress bar adapter using tqdm for both CLI and Jupyter.
     

@@ -54,6 +54,16 @@ class MetaboInt(pd.DataFrame):
         if not hasattr(self, "attrs"):
             self.attrs: Dict[str, Any] = {}
 
+        input_data = kwargs.get("data")
+        if input_data is None and len(args) > 0:
+            input_data = args[0]
+            
+        if input_data is not None and hasattr(input_data, "attrs"):
+            self.attrs.update(copy.deepcopy(input_data.attrs))
+
+        if "pipeline_stage" not in self.attrs:
+            self.attrs["pipeline_stage"] = "Raw Data"
+
         if sample_dict is None:
             sample_dict = {
                 "Actual sample": "Sample",

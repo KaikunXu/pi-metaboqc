@@ -126,27 +126,68 @@ def show_values_on_bars(
     fontsize: float = 11, 
     position: str = "outside", 
     font_color: str = "k", 
-    show_percentage: bool = False
+    show_percentage: bool = False,
+    pct_type: str = "total"
 ) -> None:
-    """Annotate bar plots with their values."""
-    def _show_on_single_plot(ax: plt.Axes):
-        total_height = float(np.sum([patch.get_height() for patch in ax.patches]))
-        for p in ax.patches:
-            value = value_format.format(p.get_height())
-            if show_percentage and total_height > 0:
-                value += "\n({:.1f}%)".format(100 * p.get_height() / total_height)
-            _x = p.get_x() + p.get_width() / 2
-            if position == "outside":
-                _y = p.get_y() + p.get_height()
-            else:
-                p.get_y() + p.get_height() / 2
-            ax.text(
-                _x, _y, value, ha="center", 
-                va="bottom" if (
-                    position == "outside" and p.get_height() >= 0) else "center", 
-                rotation=0, fontsize=fontsize, color=font_color
-            )
+    """Annotate bar plots with their values.
+    
+    Args:
+        axs: A single matplotlib Axes or a numpy array of Axes.
+        value_format: Format string for the numerical value.
+        fontsize: Font size of the text annotation.
+        position: 'outside' or 'inside' the bar.
+        font_color: Color of the text annotation.
+        show_percentage: Whether to calculate and append percentage.
+        pct_type: 'total' (plot-level) or 'group' (hue-container-level).
+    """
+    def _draw_label(ax: plt.Axes, p: mpl.patches.Patch, total: float):
+        """Internal helper to draw a single text label."""
+        height = p.get_height()
+        value = value_format.format(height)
+        
+        if show_percentage and total > 0:
+            value += "\n({:.1f}%)".format(100 * height / total)
+        
+        _x = p.get_x() + p.get_width() / 2
+        
+        if position == "outside":
+            _y = p.get_y() + height
+        else:
+            _y = p.get_y() + height / 2
             
+        ax.text(
+            _x, _y, value, ha="center", 
+            va="bottom" if (
+                position == "outside" and height >= 0) else "center", 
+            rotation=0, fontsize=fontsize, color=font_color
+        )
+
+    def _show_on_single_plot(ax: plt.Axes):
+        # Logic 1: Percentage by group (for seaborn barplots with hue)
+        if show_percentage and pct_type == "group" and ax.containers:
+            for container in ax.containers:
+                # Filter out patches that were manually removed
+                valid_patches = [p for p in container if p in ax.patches]
+                if not valid_patches:
+                    continue
+                
+                # Calculate group total using only valid patches
+                group_total = float(
+                    np.sum([p.get_height() for p in valid_patches])
+                )
+                
+                for p in valid_patches:
+                    _draw_label(ax, p, group_total)
+                    
+        # Logic 2: Percentage by total across all bars (default legacy)
+        else:
+            valid_patches = ax.patches
+            total_height = float(
+                np.sum([p.get_height() for p in valid_patches])
+            )
+            for p in valid_patches:
+                _draw_label(ax, p, total_height)
+                
     if isinstance(axs, np.ndarray):
         for _, ax in np.ndenumerate(axs):
             _show_on_single_plot(ax)

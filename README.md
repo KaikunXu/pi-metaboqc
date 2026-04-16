@@ -1,18 +1,25 @@
-# π-Metabolomics-Quality Control (`pi-metaboqc`)
+# `pi-metaboqc`: π-Metabolomics-Quality Control
 
-[![Status](https://img.shields.io/badge/status-active--development-orange.svg)](https://github.com/KaikunXu/pi-metaboqc)
+[![Status](https://badgen.net/badge/status/active-development/orange)](https://github.com/KaikunXu/pi-metaboqc)
+[![Status](https://badgen.net/badge/stage/alpha/red)](https://github.com/KaikunXu/pi-metaboqc)
+[![License](https://badgen.net/github/license/KaikunXu/pi-metaboqc)](https://github.com/KaikunXu/pi-metaboqc/blob/main/LICENSE)
 
-**pi-metaboqc** is a comprehensive LC-MS metabolomics data quality control module. This module provides an object-oriented pipeline for preprocessing metabolomics data, including dataset building, invalid feature/sample filtering, quality assessment, signal correction, and data normalization..
 
-⚠️ Note: This project is currently under active development. The API may change without notice, and some features might be experimental.
+**pi-metaboqc** is a comprehensive LC-MS metabolomics data quality control module. This module provides an object-oriented pipeline for preprocessing metabolomics data, including dataset building, quality assessment, invalid feature/sample filtering, signal correction, missing value imputation and data normalization.
+
+>⚠️ Note: This project is currently under active development. The API may change without notice, and some features might be experimental.
 
 ## Installation
 
 You can install the module via pip:
 
-Option 1: Install directly from GitHub (Recommended for most users)
+Option 1: Install directly from pypi or GitHub (Recommended for most users)
 
 ```bash
+# Install module from The Python Package Index (PyPI)
+pip install pi-metaboqc
+
+# Or you can choose install module from GitHub
 pip install git+https://github.com/KaikunXu/pi-metaboqc.git
 ``` 
 
