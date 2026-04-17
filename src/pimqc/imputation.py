@@ -396,7 +396,7 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             lim_max = max(true_vals.max(), pred_vals.max())
 
         color_map = pu.custom_linear_cmap(
-            color_list=["white", "tab:red"], n_colors=256, cmin=0.2, cmax=1.0)
+            color_list=["white", "tab:red"], n_colors=256, cmin=0.1, cmax=1.0)
 
         hb = current_ax.hexbin(
             x=true_vals, y=pred_vals, gridsize=40, extent=extent,

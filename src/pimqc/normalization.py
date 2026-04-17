@@ -575,7 +575,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         extent = (a_min - margin_x, a_max + margin_x, -5, 5)
         
         color_map = pu.custom_linear_cmap(
-            color_list=["white", "tab:red"], n_colors=256, cmin=0.2, cmax=1.0)
+            color_list=["white", "tab:red"], n_colors=256, cmin=0.1, cmax=1.0)
 
         hb = None
         for i, (log_df, label) in enumerate(active_stages):
