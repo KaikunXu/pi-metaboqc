@@ -16,7 +16,7 @@ You can install the module via pip:
 Option 1: Install directly from pypi or GitHub (Recommended for most users)
 
 ```bash
-# Install module from The Python Package Index (PyPI)
+# Install module from The Python Package Index (PyPI) <-- Not valid now
 pip install pi-metaboqc
 
 # Or you can choose install module from GitHub
