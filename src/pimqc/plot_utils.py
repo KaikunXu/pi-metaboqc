@@ -15,14 +15,21 @@ def get_cmap(palette: str = "Set1") -> mpl.colors.Colormap:
     return mpl.colormaps[palette]
 
 def custom_linear_cmap(
-    color_list: List[str] = ["#1F77B4", "#FFFFFF", "#D62728"], 
-    n_colors: int = 7
+    color_list: List[str] = ["#1F77B4", "#FFFFFF", "#D62728"],
+    n_colors: int = 100, 
+    cmin: float = 0.0, cmax: float = 1.0
 ) -> mpl.colors.LinearSegmentedColormap:
-    """Create a custom linear segmented colormap."""
+    """Create a truncated custom linear segmented colormap."""
+    base_cmap = mpl.colors.LinearSegmentedColormap.from_list(
+        "Base_Cmap", colors=color_list, N=256
+    )
+    sampled_colors = base_cmap(np.linspace(cmin, cmax, n_colors))
     cmap = mpl.colors.LinearSegmentedColormap.from_list(
-        "Custom_Colormaps", colors=color_list, N=n_colors)
+        "Truncated_Cmap", colors=sampled_colors, N=n_colors
+    )
     cmap.set_bad(color="tab:gray")
     return cmap
+
 
 def extract_qual_cmap(
     cmap: mpl.colors.Colormap, n_colors: Optional[int] = None) -> List[str]:

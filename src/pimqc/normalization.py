@@ -74,17 +74,12 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         return self
 
     # ====================================================================
-    # Data Transformation & Matrix Extractors
-    # ====================================================================
-
-# ====================================================================
     # Data Transformation & Matrix Extractors (Static Methods)
     # ====================================================================
 
     @staticmethod
     def calc_log2_transform(df):
         """Perform log2 transformation after replacing zeros with NaNs."""
-        # Ensure data is float and handle zeros to avoid -inf in log2
         return np.log2(df.astype(float).replace({0: np.nan}))
 
     @staticmethod
@@ -96,22 +91,19 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     @staticmethod
     def calc_ma_arrays(df_log):
         """Calculate flattened A and M values for MA-plot visualization."""
-        # A = average of log-intensities per feature
         a_vals = df_log.mean(axis="columns")
-        # M = difference from the average
         m_df = df_log.sub(a_vals, axis="index")
         
-        # Flatten and align for scattering
         a_flat = np.repeat(a_vals.values, m_df.shape[1])
         m_flat = m_df.values.flatten()
         
-        # Drop NaN pairs for visualization safety
         valid = ~np.isnan(a_flat) & ~np.isnan(m_flat)
         return a_flat[valid], m_flat[valid]
 
     # ====================================================================
     # Category 1: Column (Sample) Dimension Normalization
     # ====================================================================
+    
     @staticmethod
     def calc_tic_normalization(df):
         """Apply Total Ion Current (TIC) normalization column-wise."""
@@ -136,6 +128,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     # ====================================================================
     # Category 2: Row (Feature) Dimension Normalization
     # ====================================================================
+    
     @staticmethod
     def _estimate_vsn_params(data):
         """Estimate VSN params via mathematically exact Profile Likelihood.
@@ -177,9 +170,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     @staticmethod
     def calc_vsn_normalization(df):
         """Apply VSN matching Bioconductor vsn2 behavior.
-
-        The transformation follows the inverse hyperbolic sine:
-        $$h(x) = \text{arcsinh}(a + bx)$$
 
         Args:
             df: Input intensity DataFrame.
@@ -232,6 +222,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     # ====================================================================
     # Category 3: Quantile Normalization (NaN Compatible)
     # ====================================================================
+    
     @staticmethod
     def calc_quantile_normalization(df):
         """Quantile normalizes a DataFrame with missing value handling."""
@@ -283,10 +274,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     ):
         """Execute normalizations and return intermediate & final objects.
 
-        This method coordinates the execution of static normalization 
-        algorithms. It manages the transition from sample-wise (column) 
-        to feature-wise (row) scaling.
-
         Args:
             col_norm: Override for column normalization method.
             row_norm: Override for row normalization method.
@@ -298,13 +285,11 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         blank_cols = self._blank.columns
         target_cols = self.columns.difference(blank_cols)
 
-        # Slice the data to work only on non-blank samples
         df_target = self[target_cols].copy()
 
         if df_target.empty:
             raise ValueError("No target samples available for normalization.")
 
-        # Resolve parameters from arguments or object attributes
         c_norm = col_norm or self.attrs.get("col_norm")
         r_norm = row_norm or self.attrs.get("row_norm")
         is_qnt = quantile_norm
@@ -312,7 +297,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             is_qnt = self.attrs.get("quantile_norm", False)
 
         if is_qnt:
-            # Quantile normalization is a global non-linear transformation
             df_target = self.calc_quantile_normalization(df_target)
             obj_col = None
         else:
@@ -324,13 +308,11 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             elif c_norm in ("PQN", "pqn"):
                 df_target = self.calc_pqn_normalization(df_target)
             
-            # Encapsulate intermediate column-normalized state
             df_col = df_target.copy()
             obj_col = self._constructor(df_col).__finalize__(self)
 
             # Stage 2: Row (Feature-wise) Scaling/Normalization
             if r_norm in ("VSN", "vsn"):
-                # VSN static method returns (DataFrame, Parameter_Dict)
                 df_target, vsn_meta = self.calc_vsn_normalization(df_target)
                 self.attrs.update(vsn_meta)
             elif r_norm in ("Auto", "auto"):
@@ -338,7 +320,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             elif r_norm in ("Pareto", "pareto"):
                 df_target = self.calc_pareto_scaling(df_target)
 
-        # Encapsulate the final comprehensive normalized data
         obj_final = self._constructor(df_target).__finalize__(self)
         
         return obj_col, obj_final
@@ -347,10 +328,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     def execute_normalization(
         self, output_dir, col_norm=None, row_norm=None, quantile_norm=None
     ):
-        """Execute normalization workflow, save outputs, and return objects.
-
-        This method handles the high-level orchestration: running the
-        normalization, exporting CSV files, and generating diagnostic plots.
+        """Execute normalization workflow, save outputs, and generate plots.
 
         Args:
             output_dir: Directory path to save output files.
@@ -366,7 +344,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         mode = self.attrs.get("mode", "POS")
         st_col = self.attrs.get("sample_type", "Sample Type")
         
-        # Resolve sample labels from metadata
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
         act_lbl = sample_dict.get("Actual sample", "Sample")
@@ -377,7 +354,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         if is_qnt is None:
             is_qnt = self.attrs.get("quantile_norm", False)
 
-        # Logging the start of the process
         blank_count = len(self._blank.columns)
         if blank_count > 0:
             logger.info(f"Permanently dropping {blank_count} Blank samples.")
@@ -391,58 +367,53 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 f"Applying Normalization | Col: {c_norm} | Row: {r_norm}"
             )
 
-        # Core logic execution
         col_data, final_data = self.apply_normalization(
             col_norm=c_norm, row_norm=r_norm, quantile_norm=is_qnt
         )
 
-        # Export intermediate CSV if applicable
         if not is_qnt and col_data is not None:
             col_suffix = f"Col_Only_{c_norm}_{mode}"
             file_path_col = os.path.join(
                 output_dir, f"Normalized_Data_{col_suffix}.csv"
             )
-            col_data.attrs["pipeline_stage"] = "Normalization_Col_Only"
+            col_data.attrs["pipeline_stage"] = "Column Normalization"
             col_data.to_csv(
                 path_or_buf=file_path_col, na_rep="NA", encoding="utf-8-sig"
             )
 
-        # Export Final normalized matrix
         file_path_final = os.path.join(
             output_dir, f"Normalized_Data_{suffix}.csv"
         )
-        final_data.attrs["pipeline_stage"] = "Normalization_Final"
+        final_data.attrs["pipeline_stage"] = "Final Normalization"
         final_data.to_csv(
             path_or_buf=file_path_final, na_rep="NA", encoding="utf-8-sig"
         )
 
-        # Initialize visualizer and generate diagnostic plots
-        vis = MetaboVisualizerNormalizer(raw_obj=self, norm_obj=final_data)
+        # Build visualizer utilizing 3-stage objects
+        vis = MetaboVisualizerNormalizer(
+            raw_obj=self, col_obj=col_data, norm_obj=final_data
+        )
 
-        # Plot 1: Relative Log Expression (RLE) Boxplot
         fig_rle = vis.plot_rle_boxplot(
             st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl
         )
         vis.save_and_close_fig(
             fig=fig_rle, 
-            file_path=os.path.join(output_dir, f"Norm_RLE_{suffix}.pdf")
+            file_path=os.path.join(output_dir, f"Norm_RLE_3Stage_{suffix}.pdf")
         )
 
-        # Plot 2: Minus-Average (MA) Scatter Plot
         fig_ma = vis.plot_ma_scatter()
         vis.save_and_close_fig(
             fig=fig_ma, 
-            file_path=os.path.join(output_dir, f"Norm_MA_{suffix}.pdf")
+            file_path=os.path.join(output_dir, f"Norm_MA_3Stage_{suffix}.pdf")
         )
 
-        # Plot 3: Density KDE Overlay
         fig_kde = vis.plot_density_kde()
         vis.save_and_close_fig(
             fig=fig_kde, 
-            file_path=os.path.join(output_dir, f"Norm_KDE_{suffix}.pdf")
+            file_path=os.path.join(output_dir, f"Norm_KDE_Split_{suffix}.pdf")
         )
         
-        # Plot 4: Combined Summary Grid (using patchworklib)
         fig_grid = vis.plot_normalization_summary_grid(
             st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl
         )
@@ -452,7 +423,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             )
             vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
 
-        # Plot 5: Variance Stabilization Validation (Pre vs Post)
         fig_var = vis.plot_variance_stabilization_grid()
         if fig_var is not None:
             var_path = os.path.join(
@@ -466,25 +436,37 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
 
 
 class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
-    """Visualization suite for data normalization evaluation."""
+    """Visualization suite for evaluating 3-stage data normalization."""
 
-    def __init__(self, raw_obj, norm_obj):
-        """Initialize the visualizer with raw and normalized datasets.
+    def __init__(self, raw_obj, col_obj, norm_obj):
+        """Initialize the visualizer with raw, col-normalized, and final data.
 
         Args:
-            raw_obj: MetaboInt object representing the data before normalization.
-            norm_obj: MetaboInt object representing the data after normalization.
+            raw_obj: MetaboInt object representing data before normalization.
+            col_obj: MetaboInt object representing data after column norm.
+            norm_obj: MetaboInt object representing fully normalized data.
         """
         super().__init__(metabo_obj=norm_obj)
         self.raw_obj = raw_obj
+        self.col_obj = col_obj
         self.norm_obj = norm_obj
 
-    def _get_log_target(self, obj, is_norm_obj=False):
-        """Extract target columns and conditionally apply log2 transform."""
+    def _get_log_target(self, obj, check_vsn=False):
+        """Extract target columns and conditionally apply log2 transform.
+        
+        Args:
+            obj: The MetaboInt object to process.
+            check_vsn: If True, blocks double-logging for VSN-scaled objects.
+            
+        Returns:
+            pd.DataFrame: Log-scaled target data, or None if obj is None.
+        """
+        if obj is None:
+            return None
+            
         target_cols = obj.columns.difference(obj._blank.columns)
         
-        # VSN data is already in a generalized log2 scale; avoid double-logging
-        if is_norm_obj and obj.attrs.get("row_norm") in ("VSN", "vsn"):
+        if check_vsn and obj.attrs.get("row_norm") in ("VSN", "vsn"):
             return obj[target_cols].astype(float)
             
         return obj.calc_log2_transform(obj[target_cols])
@@ -494,69 +476,68 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
     # ====================================================================
 
     def plot_rle_boxplot(self, st_col, qc_lbl, act_lbl, ax=None):
-        """Plot pre/post RLE boxplot combining QC and target samples."""
-        log_raw = self._get_log_target(self.raw_obj, is_norm_obj=False)
-        log_norm = self._get_log_target(self.norm_obj, is_norm_obj=True)
+        """Plot multi-stage RLE boxplot combining QC and target samples."""
+        stages = [
+            (self.raw_obj, "Before"),
+            (self.col_obj, "Col-Norm"),
+            (self.norm_obj, "Final")
+        ]
         
-        rle_raw = self.raw_obj.calc_rle_matrix(log_raw)
-        rle_norm = self.norm_obj.calc_rle_matrix(log_norm)
-
-        def _melt_to_long(df_rle, label):
-            df_t = df_rle.T
-            df_flat = df_t.reset_index()
-            id_cols = list(df_rle.columns.names)
+        long_dfs = []
+        for obj, label in stages:
+            if obj is None: 
+                continue
             
-            # Clear attrs to prevent Pandas ValueError during melt
+            # VSN checking is strictly assigned to the 'Final' stage
+            log_data = self._get_log_target(obj, check_vsn=(label == "Final"))
+            rle = obj.calc_rle_matrix(log_data)
+            
+            df_flat = rle.T.reset_index()
             df_flat.attrs = {} 
-            
             df_long = df_flat.melt(
-                id_vars=id_cols, var_name="Feature", value_name="RLE"
+                id_vars=list(rle.columns.names), 
+                var_name="Feature", value_name="RLE"
             )
-            df_long["Status"] = label
-            return df_long
+            df_long["Stage"] = label
+            long_dfs.append(df_long)
 
-        df_raw_long = _melt_to_long(rle_raw, "Before")
-        df_norm_long = _melt_to_long(rle_norm, "After")
-
-        plot_df = pd.concat([df_raw_long, df_norm_long], ignore_index=True)
+        plot_df = pd.concat(long_dfs, ignore_index=True)
         plot_df = plot_df.dropna(subset=["RLE"])
         
         valid_types = [qc_lbl, act_lbl]
         plot_df = plot_df[plot_df[st_col].isin(valid_types)]
 
         if ax is None:
-            fig, current_ax = plt.subplots(figsize=(6, 5))
+            fig, current_ax = plt.subplots(figsize=(8, 5))
         else:
             current_ax = ax
             fig = current_ax.figure
 
-        qc_color = self.pal.get(qc_lbl, "tab:red")
-        act_color = self.pal.get(act_lbl, "tab:gray")
-        curr_palette = {qc_lbl: qc_color, act_lbl: act_color}
+        curr_palette = {
+            qc_lbl: self.pal.get(qc_lbl, "tab:red"), 
+            act_lbl: self.pal.get(act_lbl, "tab:gray")
+        }
         
-        plot_df["Status"] = pd.Categorical(
-            plot_df["Status"], categories=["Before", "After"], ordered=True
+        plot_df["Stage"] = pd.Categorical(
+            plot_df["Stage"], 
+            categories=["Before", "Col-Norm", "Final"], 
+            ordered=True
         )
 
-        if plot_df.empty:
-            self._apply_standard_format(
-                ax=current_ax, title="Relative Log Expression (No Data)"
-            )
-            return fig if ax is None else current_ax
-
         sns.boxplot(
-            data=plot_df, x="Status", y="RLE", hue=st_col,
+            data=plot_df, x="Stage", y="RLE", hue=st_col,
             hue_order=[qc_lbl, act_lbl], width=0.6, dodge=True, 
             palette=curr_palette, showfliers=False, ax=current_ax, 
-            linewidth=1.5
+            linewidth=1.2
         )
 
         self._apply_standard_format(
-            ax=current_ax, title="Relative Log Expression (RLE)", 
-            xlabel="", ylabel="Relative Log Expression"
+            ax=current_ax, title="Relative Log Expression Across Stages", 
+            xlabel="", ylabel="Relative Log Expression", append_stage=False
         )
         
         if current_ax.get_legend():
+            current_ax.legend(loc="best")
             self._format_single_legend(ax=current_ax, title="Sample Type")
 
         if ax is None:
@@ -564,148 +545,173 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         return current_ax
 
     def plot_ma_scatter(self, ax_list=None, cax=None):
-        """Plot pre/post MA scatter with optional external colorbar axis."""
-        log_raw = self._get_log_target(self.raw_obj, is_norm_obj=False)
-        log_norm = self._get_log_target(self.norm_obj, is_norm_obj=True)
+        """Plot multi-stage MA scatter to assess intensity bias reduction."""
+        stages = [
+            (self._get_log_target(self.raw_obj), "Before"),
+            (self._get_log_target(self.col_obj), "Col-Norm"),
+            (self._get_log_target(self.norm_obj, True), "Final")
+        ]
         
-        a_raw, m_raw = self.raw_obj.calc_ma_arrays(log_raw)
-        a_norm, m_norm = self.norm_obj.calc_ma_arrays(log_norm)
+        active_stages = [(obj, lbl) for obj, lbl in stages if obj is not None]
+        n_stages = len(active_stages)
 
         if ax_list is None:
             fig, axes = plt.subplots(
-                nrows=1, ncols=2, figsize=(9, 4), sharey=True, sharex=True
+                nrows=1, ncols=n_stages, 
+                figsize=(4.5 * n_stages, 4), sharey=True
             )
+            if n_stages == 1:
+                axes = [axes]
         else:
             axes = ax_list
             fig = axes[0].figure
 
-        g_min_x = min(a_raw.min(), a_norm.min())
-        g_max_x = max(a_raw.max(), a_norm.max())
-        g_min_y = min(m_raw.min(), m_norm.min())
-        g_max_y = max(m_raw.max(), m_norm.max())
+        # Compute global bounds for consistency across stages
+        all_a_vals = np.concatenate(
+            [self.raw_obj.calc_ma_arrays(log_df)[0] for log_df, _ in active_stages]
+        )
+        a_min, a_max = np.nanmin(all_a_vals), np.nanmax(all_a_vals)
+        margin_x = (a_max - a_min) * 0.08
+        extent = (a_min - margin_x, a_max + margin_x, -5, 5)
         
-        margin_x = (g_max_x - g_min_x) * 0.05
-        margin_y = (g_max_y - g_min_y) * 0.05
-        
-        extent = (
-            g_min_x - margin_x, g_max_x + margin_x, 
-            g_min_y - margin_y, g_max_y + margin_y
-        )
+        color_map = pu.custom_linear_cmap(
+            color_list=["white", "tab:red"], n_colors=256, cmin=0.2, cmax=1.0)
 
-        custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
-
-        hb0 = axes[0].hexbin(
-            x=a_raw, y=m_raw, gridsize=50, extent=extent,
-            cmap=custom_cmap, mincnt=1, bins="log"
-        )
-        hb1 = axes[1].hexbin(
-            x=a_norm, y=m_norm, gridsize=50, extent=extent,
-            cmap=custom_cmap, mincnt=1, bins="log"
-        )
-
-        titles = ["MA before Normalization", "MA after Normalization"]
-        for ax, title in zip(axes, titles):
-            ax.axhline(0, color="k", linestyle="--", linewidth=1.5)
-            self._apply_standard_format(
-                ax=ax, title=title,
-                xlabel="Average Log2 Intensity (A)",
-                ylabel="Log2 Fold Change from Mean (M)"
+        hb = None
+        for i, (log_df, label) in enumerate(active_stages):
+            a_vals, m_vals = self.raw_obj.calc_ma_arrays(log_df)
+            hb = axes[i].hexbin(
+                x=a_vals, y=m_vals, gridsize=40, extent=extent,
+                cmap=color_map, mincnt=1, # bins="log"
             )
-            
-            ax.set_xlim(extent[0], extent[1])
-            ax.set_ylim(extent[2], extent[3])
+            axes[i].axhline(0, color="k", linestyle="--", linewidth=1.5)
+            self._apply_standard_format(
+                ax=axes[i], title=label,
+                xlabel="Average Log2 Intensity (A)",
+                ylabel="Log2 Fold Change (M)", append_stage=False
+            )
+            axes[i].set_xlim(extent[0], extent[1])
+            axes[i].set_ylim(extent[2], extent[3])
 
-        if cax is not None:
-            cb = fig.colorbar(hb1, cax=cax)
-        elif ax_list is None:
-            cb = fig.colorbar(hb1, ax=axes.tolist())
-        else:
-            cb = fig.colorbar(hb1, ax=axes[-1])
-        cb.set_label("Log10(Count)")
+            # sample_size = min(len(a_vals), 2000)
+            # idx = np.random.choice(len(a_vals), sample_size, replace=False)
+
+            # sns.regplot(
+            #     x=a_vals[idx], y=m_vals[idx], 
+            #     scatter=False, lowess=True, 
+            #     color="k", line_kws={
+            #         "linewidth": 2, "zorder": 5, "linestyle":"dashdot"}, 
+            #     ax=axes[i])
+
+        if cax is not None and hb is not None:
+            cb = fig.colorbar(hb, cax=cax)
+            cb.set_label("Log10(Count)")
+        elif ax_list is None and hb is not None:
+            cb = fig.colorbar(hb, ax=axes) # pyright: ignore
+            cb.set_label("Log10(Count)")
             
         if ax_list is None:
             return fig
         return axes
 
-    def plot_density_kde(self, ax=None):
-        """Plot KDE overlay, comparing pre/post normalization."""
-        log_raw = self._get_log_target(self.raw_obj, is_norm_obj=False)
-        log_norm = self._get_log_target(self.norm_obj, is_norm_obj=True)
-
-        if ax is None:
-            fig, current_ax = plt.subplots(figsize=(4, 4))
+    def plot_density_kde(self, ax_qc=None, ax_sample=None):
+        """Plot KDE overlay split into QC and Sample subplots across stages."""
+        if ax_qc is None or ax_sample is None:
+            fig, (ax_qc, ax_sample) = plt.subplots(1, 2, figsize=(10, 4))
+            return_fig = True
         else:
-            current_ax = ax
-            fig = current_ax.figure
+            fig = ax_qc.figure
+            return_fig = False
 
-        for col in log_raw.columns:
-            data_to_plot = log_raw[col].dropna()
-            if data_to_plot.nunique() > 1:
-                sns.kdeplot(
-                    data=data_to_plot, ax=current_ax,
-                    color="tab:red", alpha=0.15, linewidth=0.5
+        stages = [
+            (self.raw_obj, "Before", "tab:gray"),
+            (self.col_obj, "Col-Norm", "tab:blue"),
+            (self.norm_obj, "Final", "tab:red")
+        ]
+
+        for obj, label, color in stages:
+            if obj is None: 
+                continue
+                
+            log_df = self._get_log_target(obj, check_vsn=(label == "Final"))
+            
+            qc_cols = obj._qc.columns
+            exclude = qc_cols.union(obj._blank.columns)
+            sam_cols = obj.columns.difference(exclude)
+            
+            splits = [
+                (qc_cols, ax_qc, "QC"), 
+                (sam_cols, ax_sample, "Sample")
+            ]
+            
+            for cols, ax, group_name in splits:
+                if cols.empty: 
+                    continue
+                    
+                data_to_plot = log_df[cols].values.flatten()
+                data_to_plot = data_to_plot[~np.isnan(data_to_plot)]
+                
+                if len(data_to_plot) > 1:
+                    sns.kdeplot(
+                        data=data_to_plot, ax=ax, color=color, 
+                        label=label, lw=2, alpha=0.7
+                    )
+                    
+                self._apply_standard_format(
+                    ax=ax, title=f"Density Overlay ({group_name})",
+                    xlabel="Log2 Intensity", ylabel="Density", 
+                    append_stage=False
                 )
+                
+                if ax.get_legend_handles_labels()[0]:
+                    ax.legend(loc="best")
+                    self._format_single_legend(ax=ax, title="Stage")
 
-        for col in log_norm.columns:
-            data_to_plot = log_norm[col].dropna()
-            if data_to_plot.nunique() > 1:
-                sns.kdeplot(
-                    data=data_to_plot, ax=current_ax,
-                    color="tab:gray", alpha=0.15, linewidth=0.5
-                )
+        if return_fig:
+            plt.tight_layout()
+            return fig # pyright: ignore
+            
+        return ax_qc, ax_sample
 
-        self._apply_standard_format(
-            ax=current_ax, title="Density Overlay",
-            xlabel="Log2 Intensity", ylabel="Density"
-        )
-        
-        current_ax.plot([], [], color="tab:red", lw=2, label="Raw Data")
-        current_ax.plot([], [], color="tab:gray", lw=2, label="Normalized")
-        self._format_single_legend(ax=current_ax)
-        
-        if ax is None:
-            return fig
-        return current_ax
-
-    def plot_mean_variance_dependency(self, target_obj, title_suffix="", ax=None):
+    def plot_mean_variance_dependency(self, target_obj, label, ax=None):
         """Plot Mean vs Standard Deviation to validate variance stabilization.
 
-        In raw mass spectrometry data, standard deviation typically increases
-        with the mean intensity (heteroscedasticity). A successful VSN or log 
-        transformation will flatten this dependency curve (homoscedasticity).
+        Homoscedasticity is a key goal of normalization. This plot checks
+        if the standard deviation remains constant across intensity levels.
+
+        Args:
+            target_obj: MetaboInt object (raw, col-norm, or finalized).
+            label: Stage name to display in the title (e.g., 'Before').
+            ax: Matplotlib axis object.
+
+        Returns:
+            plt.Axes: The axis containing the diagnostic plot.
         """
         if ax is None:
             fig, ax = plt.subplots(figsize=(5, 4))
         
-        # 1. Manually identify target columns for extraction
-        target_cols = target_obj.columns.difference(target_obj._blank.columns)
+        # Use the safe wrapper to handle VSN vs Log2 logic
+        is_norm = (label == "Final")
+        log_df = self._get_log_target(target_obj, check_vsn=is_norm)
         
-        # 2. Extract data in log/generalized-log scale to prevent double logging
-        if target_obj.attrs.get("row_norm") == "VSN":
-            log_df = target_obj[target_cols].astype(float)
-        else:
-            log_df = target_obj.calc_log2_transform(target_obj[target_cols])
+        if log_df is None:
+            return ax
             
-        # 3. Calculate Mean and Standard Deviation across samples per feature
         feat_means = log_df.mean(axis="columns").values
         feat_sds = log_df.std(axis="columns", ddof=1).values
         
-        # Drop NaNs generated by missing values to ensure safe plotting
         valid_mask = ~np.isnan(feat_means) & ~np.isnan(feat_sds)
         x_val = feat_means[valid_mask]
         y_val = feat_sds[valid_mask]
         
         if len(x_val) == 0:
-            self._apply_standard_format(
-                ax=ax, title=f"Mean-Variance Dependency {title_suffix}"
-            )
-            ax.text(0.5, 0.5, "Insufficient valid data", ha="center")
+            self._apply_standard_format(ax=ax, title=f"Mean-Variance ({label})")
             return ax
 
-        # 4. Plot scatter points and LOWESS trend line
         ax.scatter(
             x_val, y_val, color="tab:gray", alpha=0.3, s=5, label="Features"
         )
+        # Apply LOWESS smoothing to visualize the mean-variance trend
         sns.regplot(
             x=x_val, y=y_val, scatter=False, lowess=True, 
             color="tab:red", line_kws={"linewidth": 2}, 
@@ -713,45 +719,52 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         )
         
         self._apply_standard_format(
-            ax=ax, title=f"Mean-Variance Dependency {title_suffix}",
+            ax=ax, title=f"Mean-Variance ({label})",
             xlabel="Feature Mean (Log2-Scale)", 
-            ylabel="Standard Deviation"
+            ylabel="Standard Deviation", append_stage=False
         )
+        
+        ax.legend(loc="best")
         self._format_single_legend(ax=ax)
         
-        if ax is None:
-            return fig
         return ax
+
     def plot_variance_stabilization_grid(self):
-        """Combine pre- and post-normalization variance diagnostic plots.
+        """Combine 3-stage Mean-Variance plots into a diagnostic grid.
         
         Returns:
-            patchworklib.Brick: Combined 1x2 grid object, or None if failed.
+            patchworklib.Brick: Combined grid object or None.
         """
         try:
             import patchworklib as pw
         except ImportError:
-            # Import explicitly within the method to avoid global namespace pollution
-            from loguru import logger
-            logger.warning("patchworklib not found. Skipping variance grid.")
             return None
 
         pw.clear()
 
-        ax_var_pre = pw.Brick(figsize=(4, 4), label="VAR_PRE")
-        self.plot_mean_variance_dependency(
-            target_obj=self.raw_obj, title_suffix="(Raw)", ax=ax_var_pre
-        )
+        # Define active stages based on the normalization workflow
+        stages = [(self.raw_obj, "Before")]
+        if self.col_obj is not None:
+            stages.append((self.col_obj, "Col-Norm"))
+        stages.append((self.norm_obj, "Final"))
 
-        ax_var_post = pw.Brick(figsize=(4, 4), label="VAR_POST")
-        self.plot_mean_variance_dependency(
-            target_obj=self.norm_obj, title_suffix="(Norm)", ax=ax_var_post
-        )
+        bricks = []
+        for obj, label in stages:
+            brick = pw.Brick(figsize=(4, 4), label=f"var_{label}")
+            self.plot_mean_variance_dependency(
+                target_obj=obj, label=label, ax=brick
+            )
+            bricks.append(brick)
 
-        return ax_var_pre | ax_var_post
+        # Assemble the grid horizontally (1x2 or 1x3)
+        res_grid = bricks[0]
+        for b in bricks[1:]:
+            res_grid = res_grid | b
+            
+        return res_grid
 
     def plot_normalization_summary_grid(self, st_col, qc_lbl, act_lbl):
-        """Combine RLE, KDE, and MA plots into a global grid."""
+        """Combine RLE, KDE, and MA plots into a dynamic global grid."""
         try:
             import patchworklib as pw
         except ImportError:
@@ -760,24 +773,36 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
 
         pw.clear()
 
+        # Top Row: RLE | KDE QC | KDE Sample
         ax_rle = pw.Brick(figsize=(4, 4), label="RLE")
         self.plot_rle_boxplot(
             st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl, ax=ax_rle
         )
 
-        ax_kde = pw.Brick(figsize=(4, 4), label="KDE")
-        self.plot_density_kde(ax=ax_kde)
-
-        ax_spacer = pw.Brick(figsize=(0.2, 4), label="Spacer")
-        ax_spacer.axis("off")
-
-        ax_ma_pre = pw.Brick(figsize=(4, 4), label="MA_PRE")
-        ax_ma_post = pw.Brick(figsize=(4, 4), label="MA_POST")
-        ax_ma_cb = pw.Brick(figsize=(0.2, 4), label="MA_CB")
+        ax_qc = pw.Brick(figsize=(4, 4), label="KDE_QC")
+        ax_sam = pw.Brick(figsize=(4, 4), label="KDE_SAM")
+        self.plot_density_kde(ax_qc=ax_qc, ax_sample=ax_sam)
         
-        self.plot_ma_scatter(ax_list=[ax_ma_pre, ax_ma_post], cax=ax_ma_cb)
+        row1 = ax_rle | ax_qc | ax_sam
 
-        row1 = ax_rle | ax_kde | ax_spacer
-        row2 = ax_ma_pre | ax_ma_post | ax_ma_cb
+        # Bottom Row: MA Scatters (Variable length based on active stages)
+        n_stages = 2 if self.col_obj is None else 3
+        ax_ma_list = [
+            pw.Brick(figsize=(4, 4), label=f"MA_{i}") for i in range(n_stages)
+        ]
+        ax_cb = pw.Brick(figsize=(0.2, 4), label="MA_CB")
+        
+        self.plot_ma_scatter(ax_list=ax_ma_list, cax=ax_cb)
+        
+        row2 = ax_ma_list[0]
+        for ax in ax_ma_list[1:]:
+            row2 = row2 | ax
+        row2 = row2 | ax_cb
+        
+        # Pad row2 if needed to match row1 width visually
+        if n_stages == 2:
+            ax_spacer = pw.Brick(figsize=(4, 4), label="Spacer")
+            ax_spacer.axis("off")
+            row2 = row2 | ax_spacer
 
         return row1 / row2

@@ -1,7 +1,6 @@
 """Pytest module for VSN implementation consistency testing."""
 
 import warnings
-import pytest
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
@@ -35,15 +34,19 @@ def run_r_vsn(df_input: pd.DataFrame) -> pd.DataFrame:
 
 
 def test_vsn_equivalence(mock_ms_data: pd.DataFrame) -> None:
-    """Test if Python VSN is statistically equivalent to R vsn2."""
+    """Test if Python VSN is statistically equivalent to R vsn2.
+    
+    Note: Python implementation adds a constant `pure_shift` to align high 
+    abundance data with log2. Pearson correlation evaluates the structural 
+    equivalence, which remains invariant to this constant shift.
+    """
     df_raw = mock_ms_data
-    pipe_para = {"MetaboIntNormalizer": {"row_norm": "VSN"}}
     
     # Suppress numpy division warnings during log1p
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        py_obj = MetaboIntNormalizer(df_raw, pipeline_params=pipe_para)
-        df_py_norm = py_obj.apply_normalization()
+        # Unpack the tuple (df, vsn_meta) returned by the new staticmethod
+        df_py_norm, _ = MetaboIntNormalizer.calc_vsn_normalization(df_raw)
         
     df_r_norm = run_r_vsn(df_raw)
     

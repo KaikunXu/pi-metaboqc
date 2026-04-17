@@ -1,7 +1,7 @@
+# tests/test_quantile_bridge.py
 """Pytest module for Quantile Normalization consistency testing."""
 
 import warnings
-import pytest
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr
@@ -36,14 +36,16 @@ def run_r_quantile(df_input: pd.DataFrame) -> pd.DataFrame:
 
 
 def test_quantile_equivalence(mock_ms_data: pd.DataFrame) -> None:
-    """Test if Python Quantile norm matches preprocessCore."""
+    """Test if Python Quantile norm matches preprocessCore.
+    
+    Now leverages the decoupled staticmethod directly for pure math testing.
+    """
     df_raw = mock_ms_data
-    pipe_para = {"MetaboIntNormalizer": {"quantile_norm": True}}
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        py_obj = MetaboIntNormalizer(df_raw, pipeline_params=pipe_para)
-        df_py_norm = py_obj.apply_normalization()
+        # Directly call the pure staticmethod instead of initializing an object
+        df_py_norm = MetaboIntNormalizer.calc_quantile_normalization(df_raw)
         
     df_r_norm = run_r_quantile(df_raw)
     

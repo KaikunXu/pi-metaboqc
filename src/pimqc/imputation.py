@@ -295,12 +295,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
             )
             
         # Merge imputed actual samples with untouched blank columns
-        final_log = pd.concat(
-            [imp_log, df_log[self._blank.columns]], axis=1
-        )[self.columns]
+        final_log = pd.concat([
+            pd.DataFrame(imp_log), pd.DataFrame(df_log[self._blank.columns])],
+        axis=1)[self.columns]
+        final_data = self._constructor(final_log).__finalize__(self)
         
         res_val = np.exp2(final_log) - 1.0
         imputed_obj = self._constructor(res_val).__finalize__(self)
+        imputed_obj.attrs["pipeline_stage"] = "Imputation"
 
         # Export numerical results and visualizations
         if output_dir:
@@ -370,6 +372,7 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
                 }))
                 
         return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    
     def plot_nrmse_scatter(
         self, true_vals, pred_vals, metrics, method_name="", axis_lims=None, ax=None
     ):
@@ -391,13 +394,14 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             extent = None
             lim_min = min(true_vals.min(), pred_vals.min())
             lim_max = max(true_vals.max(), pred_vals.max())
-            
+
+        color_map = pu.custom_linear_cmap(
+            color_list=["white", "tab:red"], n_colors=256, cmin=0.2, cmax=1.0)
+
         hb = current_ax.hexbin(
             x=true_vals, y=pred_vals, gridsize=40, extent=extent,
-            cmap=pu.custom_linear_cmap(
-                color_list=["white", "tab:red"], n_colors=100
-            ),
-            mincnt=1, bins="log"
+            cmap=color_map,
+            mincnt=1, # bins="log"
         )
         
         current_ax.plot(
@@ -432,8 +436,8 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
         
         # Enforce exact axes clipping if global limits are provided
         if axis_lims is not None:
-            current_ax.set_xlim(ax_min, ax_max)
-            current_ax.set_ylim(ax_min, ax_max)
+            current_ax.set_xlim(ax_min, ax_max) # pyright: ignore[reportPossiblyUnboundVariable]
+            current_ax.set_ylim(ax_min, ax_max) # pyright: ignore[reportPossiblyUnboundVariable]
         
         cb = fig.colorbar(hb, ax=current_ax)
         cb.set_label("Log10(Count)")
@@ -452,11 +456,17 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             
         # Calculate global bounds across all candidate methods with 5% padding
         g_min, g_max = float("inf"), float("-inf")
-        # Unpack the metrics dictionary tuple
-        for met, t, p in results_dict.values():
+        best_method = None
+        best_nrmse = float("inf")
+        
+        for m, (met, t, p) in results_dict.items():
             g_min = min(g_min, t.min(), p.min())
             g_max = max(g_max, t.max(), p.max())
-            
+            # Identify the optimal method based on NRMSE_Low
+            if met["NRMSE_Low"] < best_nrmse:
+                best_nrmse = met["NRMSE_Low"]
+                best_method = m
+                
         margin = (g_max - g_min) * 0.05
         shared_lims = (g_min - margin, g_max + margin)
 
@@ -464,9 +474,11 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
         bricks = []
         for m, (met, t, p) in results_dict.items():
             ax = pw.Brick(figsize=(4, 4), label=f"nrmse_{m}")
-            # Inject global axis boundaries to enforce scale consistency
+            # Add an asterisk to the title of the optimal method
+            display_name = f"* {m}" if m == best_method else m
+            
             self.plot_nrmse_scatter(
-                t, p, met, method_name=m, axis_lims=shared_lims, ax=ax
+                t, p, met, method_name=display_name, axis_lims=shared_lims, ax=ax
             )
             bricks.append(ax)
             
@@ -478,133 +490,86 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             
         return (bricks[0] | bricks[1]) / (bricks[2] | bricks[3])
 
-    def plot_imputed_kde_overlay(self, ax=None):
-        """Plot density comparisons between observed and imputed sets."""
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(5, 4))
-            
-        raw_log = np.log2(self.raw_obj + 1.0)
-        imp_log = np.log2(self.imp_obj + 1.0)
+    def plot_imputed_kde_overlay(self, ax_qc=None, ax_sample=None):
+        """Plot KDE overlay, split into distinct QC and Sample subplots.
         
-        for grp, ls in [("QC", "-"), ("Sample", "--")]:
-            if grp == "QC":
-                cols = self.imp_obj._qc.columns
-            else:
-                exclude = self.imp_obj._qc.columns.union(
-                    self.imp_obj._blank.columns
-                )
-                cols = self.imp_obj.columns.difference(exclude)
-                
-            if cols.empty:
-                continue
-                
-            sns.kdeplot(
-                raw_log[cols].values.flatten(), color="gray", ls=ls,
-                ax=ax, label=f"{grp} Obs"
-            )
-            sns.kdeplot(
-                imp_log[cols].values.flatten(), color="red", ls=ls,
-                ax=ax, label=f"{grp} Imp"
-            )
+        Args:
+            ax_qc: Optional matplotlib axis for the QC plot.
+            ax_sample: Optional matplotlib axis for the Sample plot.
             
-        self._apply_standard_format(
-            ax=ax, title="Density: Observed vs Imputed", 
-            xlabel="Intensity (Log2)"
-        )
-        ax.legend()
-        return ax
-
-    def plot_imputed_kde_overlay(self, ax=None):
-        """Plot combined KDE overlay for QC and Sample with distinct linestyles."""
+        Returns:
+            fig if no axes are provided, else (ax_qc, ax_sample).
+        """
         df_plot = self._prepare_kde_data()
+        return_fig = False
         
         if df_plot.empty:
-            if ax is None:
-                fig, current_ax = plt.subplots()
-            else:
-                current_ax = ax
-                fig = current_ax.figure
-            current_ax.text(
-                0.5, 0.5, "No valid target data to plot.", ha="center"
-            )
-            return fig if ax is None else current_ax
-            
-        if ax is None:
-            fig, current_ax = plt.subplots(figsize=(6, 5))
-        else:
-            current_ax = ax
-            fig = current_ax.figure
+            if ax_qc is None or ax_sample is None:
+                fig, ax = plt.subplots()
+                ax.text(0.5, 0.5, "No valid data to plot.", ha="center")
+                return fig
+            return ax_qc, ax_sample
+
+        # Create a 1x2 figure if no external axes are passed
+        if ax_qc is None or ax_sample is None:
+            fig, (ax_qc, ax_sample) = plt.subplots(1, 2, figsize=(10, 4))
+            return_fig = True
 
         colors = {"Observed": "tab:gray", "Imputed": "tab:red"}
-        styles = {"QC": "-", "Sample": "--"}
         
-        unique_groups = df_plot["Group"].unique()
-        unique_types = df_plot["Type"].unique()
-        
-        for grp in unique_groups:
-            ls = styles.get(grp, "-")
-            for t in unique_types:
-                subset = df_plot[
-                    (df_plot["Group"] == grp) & (df_plot["Type"] == t)
-                ]
-                if subset.empty:
-                    continue
-                    
-                sns.kdeplot(
-                    data=subset, x="Log2_Intensity", 
-                    color=colors.get(t, "black"), linestyle=ls,
-                    ax=current_ax, linewidth=2, alpha=0.8
-                )
-
-        self._apply_standard_format(
-            ax=current_ax, title="Density Overlay: Observed vs Imputed",
-            xlabel="Log2 Intensity", ylabel="Density"
-        )
-        
-        from matplotlib.lines import Line2D
-        from matplotlib.patches import Rectangle
-        
-        title_proxy = Rectangle(
-            (0, 0), 0, 0, fill=False, edgecolor='none', visible=False
-        )
-        
-        handles = [
-            title_proxy,
-            Line2D([0], [0], color="tab:gray", lw=2),
-            Line2D([0], [0], color="tab:red", lw=2),
-            title_proxy,
-            Line2D([0], [0], color="black", lw=2, ls="-"),
-            Line2D([0], [0], color="black", lw=2, ls="--")
-        ]
-        
-        labels = [
-            "Data Type",
-            "Observed",
-            "Imputed",
-            "Sample Type",
-            getattr(self, "qc_lbl", "QC"),
-            getattr(self, "act_lbl", "Sample")
-        ]
-        
-        current_ax.legend(handles, labels)
-        
-        self._format_multi_legends(
-            ax=current_ax, 
-            group_titles=["Data Type", "Sample Type"]
-        )
+        for grp, ax in [("QC", ax_qc), ("Sample", ax_sample)]:
+            subset_grp = df_plot[df_plot["Group"] == grp]
             
-        if ax is None:
-            return fig
-        return current_ax
+            if subset_grp.empty:
+                ax.text(0.5, 0.5, f"No {grp} data available.", ha="center")
+                self._apply_standard_format(
+                    ax=ax, title=f"Density Overlay ({grp})"
+                )
+                continue
+                
+            for t in ["Observed", "Imputed"]:
+                subset = subset_grp[subset_grp["Type"] == t]
+                if not subset.empty:
+                    sns.kdeplot(
+                        data=subset, x="Log2_Intensity", 
+                        color=colors.get(t, "black"), ax=ax, 
+                        linewidth=2, alpha=0.8, label=t
+                    )
+
+            self._apply_standard_format(
+                ax=ax, title=f"Density Overlay ({grp})",
+                xlabel="Log2 Intensity", ylabel="Density"
+            )
+            
+            # Place legend inside the best location and format it
+            if ax.get_legend_handles_labels()[0]:
+                ax.legend(loc="best")
+                self._format_single_legend(ax=ax, title="Data Type")
+                
+        if return_fig:
+            plt.tight_layout()
+            return fig # pyright: ignore[reportPossiblyUnboundVariable]
+            
+        return ax_qc, ax_sample
+
     def plot_imputation_summary_grid(self, t, p, met, method):
-        """Combine NRMSE scatter and KDE density into a single grid."""
-        import patchworklib as pw
+        """Combine NRMSE scatter and split KDE density subplots into a grid."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("patchworklib not found. Skipping summary grid.")
+            return None
+            
         pw.clear()
         
-        ax1 = pw.Brick(figsize=(4, 4))
+        ax1 = pw.Brick(figsize=(4, 4), label="NRMSE")
         self.plot_nrmse_scatter(t, p, met, method, ax=ax1)
         
-        ax2 = pw.Brick(figsize=(4, 4))
-        self.plot_imputed_kde_overlay(ax=ax2)
+        ax_qc = pw.Brick(figsize=(4, 4), label="KDE_QC")
+        ax_sample = pw.Brick(figsize=(4, 4), label="KDE_Sample")
         
-        return ax1 | ax2
+        # Populate the split KDE plots using the provided patchwork bricks
+        self.plot_imputed_kde_overlay(ax_qc=ax_qc, ax_sample=ax_sample)
+        
+        # Assemble 1x3 horizontal layout
+        return ax1 | ax_qc | ax_sample

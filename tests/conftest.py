@@ -1,17 +1,17 @@
+# tests/conftest.py
 """Pytest configuration and shared environment setup.
 
 This file ensures that the R environment is dynamically located and injected
 into system variables before any rpy2 modules are imported by the test suite.
-
 Generate a shared mock metabolomics dataset for all tests.
 """
 
 import os
 import sys 
-import subprocess
-import logging
-import pytest
 import json
+import logging
+import subprocess
+import pytest
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -67,15 +67,14 @@ def mock_ms_data() -> pd.DataFrame:
     if nan_ratio > 0:
         total_elements = n_features * n_samples
         n_nans = int(total_elements * nan_ratio)
-        nan_indices = np.random.choice(
-            total_elements, size=n_nans, replace=False
-        )
-        mat.flat[nan_indices] = np.nan
+        nan_idx = np.random.choice(total_elements, size=n_nans, replace=False)
+        mat.flat[nan_idx] = np.nan
     
     cols = [f"Sample_{i+1}" for i in range(n_samples)]
     idx = [f"Met_{i+1}" for i in range(n_features)]
     
     return pd.DataFrame(mat, index=idx, columns=cols)
+
 
 @pytest.fixture(scope="session")
 def real_project_data() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
