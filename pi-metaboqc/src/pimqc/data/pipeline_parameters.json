@@ -1,0 +1,80 @@
+﻿{
+    "_comment_MetaboInt": "Core dataset construction parameters",
+    "MetaboInt": {
+        "mode": "POS",
+        "sample_name": "Sample Name",
+        "sample_type": "Sample Type",
+        "bio_group": "Bio Group",
+        "group_order": null,
+        "batch": "Batch",
+        "inject_order": "Inject Order",
+        "boundary": "IQR",
+        "sample_dict": {
+            "Actual sample": "Sample",
+            "Blank sample": "Blank",
+            "QC sample": "QC"
+        },
+        "internal_standard": [
+            "Phenylalanine-d5",
+            "Choline-d4",
+            "CA-d4",
+            "CDCA-d4",
+            "Carnitine C10:0-d3",
+            "FFA 18:0-d3",
+            "FFA 16:0-d3",
+            "IS-PC",
+            "IS-TG",
+            "IS-CER",
+            "IS-SM",
+            "IS-PE",
+            "IS-LPC",
+            "IS_PC 38:0+AcO",
+            "IS_PE 30:0-H",
+            "IS_LPC 19:0+AcO",
+            "IS_SM 30:1;2+AcO",
+            "IS_FFA C16:0-d3",
+            "IS_FFA C18:0-d3"
+        ],
+        "outlier_marker": []
+    },
+    "_comment_MetaboIntAssessor": "Quality assessment parameters (PCA & IS Outliers)",
+    "MetaboIntAssessor": {
+        "corr_method": "spearman",
+        "mask": true,
+        "stat_outlier": "All"
+    },
+    "_comment_MetaboIntFilter": "Feature and sample filtering thresholds",
+    "MetaboIntFilter": {
+        "mv_global_tol": 0.7,
+        "mv_qc_tol": 0.8,
+        "mv_group_tol": 0.5,
+        "rsd_qc_tol": 0.3,
+        "blank_qc_ratio": 0.2,
+        "sample_mv_tol": 0.5,
+        "mnar_group_mv_tol": 0.8,
+        "mnar_qc_mv_tol": 0.2,
+        "mnar_intensity_percentile": 0.1
+    },
+    "_comment_MetaboIntCorrector": "Signal correction and baseline fitting parameters",
+    "MetaboIntCorrector": {
+        "base_est": "QC-SVR",
+        "span": 0.3,
+        "n_tree": 500,
+        "random_state": 12345,
+        "svr_kernel": "rbf",
+        "svr_c": 100.0,
+        "svr_gamma": 1.0
+    },
+    "_comment_MetaboIntNormalizer": "Data normalization and scaling parameters",
+    "MetaboIntNormalizer": {
+        "col_norm": "PQN",
+        "row_norm": "VSN",
+        "quantile_norm": false
+    },
+
+    "_comment_MetaboIntImputer": "Missing value imputation algorithm and parameters. Options for method: 'probabilistic', 'knn', 'halfmin', 'min'",
+    "MetaboIntImputer": {
+        "method": "auto",
+        "knn_neighbors": 5
+    }
+}
