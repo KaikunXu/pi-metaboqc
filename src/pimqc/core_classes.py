@@ -62,7 +62,7 @@ class MetaboInt(pd.DataFrame):
             self.attrs.update(copy.deepcopy(input_data.attrs))
 
         if "pipeline_stage" not in self.attrs:
-            self.attrs["pipeline_stage"] = "Raw Data"
+            self.attrs["pipeline_stage"] = "Raw data"
 
         if sample_dict is None:
             sample_dict = {

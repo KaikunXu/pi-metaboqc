@@ -376,7 +376,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             file_path_col = os.path.join(
                 output_dir, f"Normalized_Data_{col_suffix}.csv"
             )
-            col_data.attrs["pipeline_stage"] = "Column Normalization"
+            col_data.attrs["pipeline_stage"] = "Column normalization"
             col_data.to_csv(
                 path_or_buf=file_path_col, na_rep="NA", encoding="utf-8-sig"
             )
@@ -384,7 +384,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         file_path_final = os.path.join(
             output_dir, f"Normalized_Data_{suffix}.csv"
         )
-        final_data.attrs["pipeline_stage"] = "Final Normalization"
+        final_data.attrs["pipeline_stage"] = "Final normalization"
         final_data.to_csv(
             path_or_buf=file_path_final, na_rep="NA", encoding="utf-8-sig"
         )
