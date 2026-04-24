@@ -9,7 +9,12 @@ import warnings
 
 import numpy as np
 import pandas as pd
+from functools import cached_property
+
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.patches import Patch
+
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -28,9 +33,10 @@ warnings.filterwarnings(action="ignore", category=RuntimeWarning)
 
 class MetaboIntAssessor(core_classes.MetaboInt):
     """Data quality assessment computational class for metabolomics."""
-
-    _metadata = ["attrs"]
-
+    
+    # Register 'stats' for pandas metadata propagation
+    _metadata = ["attrs", "stats"]
+    
     def __init__(
         self,
         *args,
@@ -55,6 +61,10 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         """
         super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
 
+        # Initialize local state cache for heavy computational results
+        if not hasattr(self, "stats"):
+            self.stats = {}
+
         qa_configs = {
             "mode": mode,
             "corr_method": corr_method,
@@ -73,10 +83,11 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         return MetaboIntAssessor
 
     def __finalize__(self, other, method=None, **kwargs):
-        """Explicitly preserve custom attributes during pandas operations."""
+        """Explicitly preserve custom attributes and state during operations."""
         super().__finalize__(other, method=method, **kwargs)
-        if hasattr(other, "attrs"):
-            self.attrs = copy.deepcopy(other.attrs)
+        for name in self._metadata:
+            if hasattr(other, name):
+                setattr(self, name, copy.deepcopy(getattr(other, name)))
         return self
 
     # =========================================================================
@@ -84,30 +95,98 @@ class MetaboIntAssessor(core_classes.MetaboInt):
     # =========================================================================
 
     def calc_qc_corr_matrix(self, qc_data, method="spearman"):
-        """Calculate correlation matrix based on intensity of QC samples."""
-        # Compute generic correlation mapping based on user preference
-        return qc_data.corr(method=method)
+        """Calculate correlation matrix with internal state caching."""
+        if hasattr(self, "stats") and "corr_mat" in self.stats:
+            return self.stats["corr_mat"]
+            
+        corr_mat = qc_data.corr(method=method)
+        self.stats["corr_mat"] = corr_mat
+        return corr_mat
 
     def calc_batch_qc_corr_matrix(self, corr_mat, qc_data, bt_col):
         """Aggregate QC correlation matrix into batch-level median matrix."""
-        batches = qc_data.columns.get_level_values(bt_col)
+        if hasattr(self, "stats") and "batch_corr" in self.stats:
+            return self.stats["batch_corr"]
         
+        batches = qc_data.columns.get_level_values(bt_col)
         # Compress rows and columns sequentially to extract medians
         batch_corr = corr_mat.groupby(batches).median()
-        batch_corr = batch_corr.transpose().groupby(batches).median()
-        
-        return batch_corr.transpose()
+        batch_corr = batch_corr.transpose().groupby(batches).median().transpose()
+        self.stats["batch_corr"] = batch_corr
+        return batch_corr
 
-    def calc_pca_and_outliers(self, features, labels, n_components=2):
-        """Execute PCA and construct formatted outlier data structures."""
+    def calc_rsd_distribution(self):
+        """Calculates and caches the RSD distribution for QA reporting.
+
+        The Relative Standard Deviation (RSD) is computed feature-wise 
+        for both Quality Control (QC) and Actual samples. Results are 
+        binned into predefined, strictly ordered percentage categories.
+        """
+        if hasattr(self, "stats") and "rsd_dist" in self.stats:
+            return self.stats["rsd_dist"]
+
+        st_col = self.attrs.get("sample_type", "Sample Type")
+        act_lbl = self.attrs.get("sample_dict", {}).get(
+            "Actual sample", "Sample"
+        )
+
+        def _get_dist(data: pd.DataFrame):
+            """Calculates ordered binned RSD distribution counts."""
+            labels = ["0-10%", "10-20%", "20-30%", ">30%"]
+            if data.empty:
+                return {lbl: 0 for lbl in labels}
+                
+            rsd = data.std(axis=1, ddof=1) / data.mean(axis=1)
+            bins = [-np.inf, 0.1, 0.2, 0.3, np.inf]
+            
+            counts = pd.cut(rsd, bins=bins, labels=labels, right=False)
+            
+            # Use sort=False to strictly preserve the categorical bin order
+            dist_dict = counts.value_counts(sort=False).to_dict()
+            
+            # Explicitly construct the dictionary following the labels list
+            return {lbl: int(dist_dict.get(lbl, 0)) for lbl in labels}
+
+        act_mask = self.columns.get_level_values(st_col) == act_lbl
+        
+        final_res = {
+            "qc": _get_dist(self._qc),
+            "actual": _get_dist(self.loc[:, act_mask])
+        }
+
+        if not hasattr(self, "stats"):
+            self.stats = {}
+            
+        self.stats["rsd_dist"] = final_res
+        return final_res
+
+    def calc_pca_and_outliers(
+        self, features=None, labels=None, n_components=2
+    ):
+        """Execute PCA workflow, outlier detection, and diagnostic metrics."""
+        if hasattr(self, "stats") and "pca_res" in self.stats:
+            return self.stats["pca_res"]
+
+        # Fallback extraction if arguments are omitted
+        st_col = self.attrs.get("sample_type", "Sample Type")
+        sn_col = self.attrs.get("sample_name", "Sample Name")
+        bt_col = self.attrs.get("batch", "Batch")
+        sample_dict = self.attrs.get("sample_dict", {})
+        qc_lbl = sample_dict.get("QC sample", "QC")
+        act_lbl = sample_dict.get("Actual sample", "Sample")
+
+        if features is None or labels is None:
+            features, labels = pca_utils.PCAEngine.extract_features(
+                df=self, st_col=st_col, sn_col=sn_col, 
+                act_lbl=act_lbl, qc_lbl=qc_lbl
+            )
+
         alpha = self.attrs.get("alpha", 0.05)
         od_method = self.attrs.get("od_method", "box")
         
         engine = pca_utils.PCAEngine(
             n_components=n_components, alpha=alpha, od_method=od_method
         )
-        
-        # Execute the unified computation engine
         res = engine.run_pca_workflow(features)
         
         multi_idx = pd.MultiIndex.from_frame(labels)
@@ -117,11 +196,9 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         pca_var = pd.Series(
             res["variance"], index=["PC1", "PC2"], name="Variance"
         )
-
         metrics_df = res["metrics"]
         metrics_df.index = multi_idx
         
-        # Construct the MultiIndex formatted outliers dataframe directly
         outliers = pd.DataFrame({
             ("SPE-DModX", "SPE-DModX"): metrics_df["OD"],
             ("SPE-DModX", "Outliers (SPE-DModX)"): metrics_df["is_od_outlier"],
@@ -129,15 +206,42 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             ("HT2", "Outliers (HT2)"): metrics_df["is_sd_outlier"]
         }, index=multi_idx)
 
-        return {
+        # ---------------------------------------------------------------------
+        # New: Compute diagnostic indices here to establish a single truth
+        # ---------------------------------------------------------------------
+        coords = pca_scatter[["PC1", "PC2"]].values
+        types = pca_scatter.index.get_level_values(st_col).values
+        batches = pca_scatter.index.get_level_values(bt_col).values
+
+        rd_score = pca_utils.PCAEngine.calc_relative_dispersion(
+            coords, types, qc_lbl, act_lbl
+        )
+        sil_score = pca_utils.PCAEngine.calc_qc_batch_silhouette(
+            coords, types, batches, qc_lbl
+        )
+        shift_res = pca_utils.PCAEngine.calc_qc_centrality_shift(
+            coords, types, qc_lbl, act_lbl
+        )
+
+        final_res = {
             "pca_scatter": pca_scatter,
             "pca_variance": pca_var,
             "outliers": outliers,
             "metrics_df": metrics_df,
             "sd_limit": res["sd_limit"],
-            "od_limit": res["od_limit"]
+            "od_limit": res["od_limit"],
+            "diagnostics": {
+                "relative_dispersion": rd_score,
+                "batch_silhouette": sil_score,
+                "centrality_shift": shift_res["rel_shift"]
+            }
         }
-
+        
+        if not hasattr(self, "stats"):
+            self.stats = {}
+            
+        self.stats["pca_res"] = final_res
+        return final_res
     # =========================================================================
     # Pipeline Execution Method
     # =========================================================================
@@ -271,6 +375,88 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         
         logger.info(f"Assessor summary grid saved as: {grid_path}")
         logger.success("Data quality assessment completed.")
+
+    @cached_property
+    def assessment_metrics(self):
+        """Extracts and caches global QA metrics.
+
+        Calculates correlation medians, PCA variance, outlier counts, 
+        diagnostic indices, and RSD distribution for automated reporting.
+        Retrieves data strictly from the pre-computed state cache to 
+        prevent redundant matrix operations.
+
+        Returns:
+            dict: A dictionary containing all calculated QA metrics.
+        """
+
+        st_col = self.attrs.get("sample_type", "Sample Type")
+        sample_dict = self.attrs.get("sample_dict", {})
+        qc_lbl = sample_dict.get("QC sample", "QC")
+        act_lbl = sample_dict.get("Actual sample", "Sample")
+        corr_method = self.attrs.get("corr_method", "spearman")
+
+        metrics = {
+            "correlation": {},
+            "pca": {},
+            "outliers": {},
+            "rsd_distribution": {}
+        }
+
+        # 1. Pooled QC Correlation Metrics (Cached Call)
+        qc_data = self._qc
+        if not qc_data.empty:
+            corr_mat = self.calc_qc_corr_matrix(qc_data, method=corr_method)
+            mask = np.triu(np.ones_like(corr_mat, dtype=bool), k=1)
+            upper_tri = corr_mat.where(mask).values.flatten()
+            valid_corr = upper_tri[~np.isnan(upper_tri)]
+            
+            metrics["correlation"]["method"] = corr_method
+            metrics["correlation"]["median"] = (
+                float(np.median(valid_corr)) if len(valid_corr) > 0 else 0.0
+            )
+
+        # 2. PCA Variance and Diagnostic Indices (Cached Call )
+        try:
+            pca_res = self.calc_pca_and_outliers()
+            diag = pca_res.get("diagnostics", {})
+
+            rd_score = diag.get("relative_dispersion")
+            sil_score = diag.get("batch_silhouette")
+            rel_shift = diag.get("centrality_shift")
+
+            def _safe_float(val):
+                return float(val) if pd.notna(val) else None
+
+            metrics["pca"] = {
+                "pc1_variance": float(pca_res["pca_variance"]["PC1"]),
+                "pc2_variance": float(pca_res["pca_variance"]["PC2"]),
+                "relative_dispersion": _safe_float(rd_score),
+                "batch_silhouette": _safe_float(sil_score),
+                "centrality_shift": _safe_float(rel_shift)
+            }
+            
+            # 3. Outlier Statistics
+            out_df = pca_res["outliers"]
+            act_mask = out_df.index.get_level_values(st_col) == act_lbl
+            act_out = out_df[act_mask]
+            
+            spe_flags = act_out[("SPE-DModX", "Outliers (SPE-DModX)")]
+            ht2_flags = act_out[("HT2", "Outliers (HT2)")]
+            
+            metrics["outliers"] = {
+                "total_tested": int(act_mask.sum()),
+                "spe_count": int(spe_flags.sum()),
+                "ht2_count": int(ht2_flags.sum()),
+                "combined_count": int((spe_flags | ht2_flags).sum())
+            }
+        except Exception as e:
+            logger.warning(f"Failed to extract assessment metrics: {e}")
+
+        # 4. Feature RSD Distribution Statistics (Cached Call)
+        metrics["rsd_distribution"] = self.calc_rsd_distribution()
+
+        return metrics
+
 
 class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     """Visualization suite for metabolomics data quality assessment."""
@@ -438,7 +624,6 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         x_pc="PC1", y_pc="PC2", draw_ce=True, ax=None
     ):
         """Plot PCA scatter plot with confidence ellipses and QA metrics."""
-        # 1. Prepare data following original visual style
         plot_df = pca_df.reset_index().copy()
         plot_df[st_col] = plot_df[st_col].astype("category")
         plot_df = plot_df.sort_values(by=st_col, ascending=False)
@@ -452,33 +637,17 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             
         sns.despine(ax=current_ax)
 
-        # 2. Extract numpy arrays for metric calculations (Safe extraction)
-        coords = pca_df[[x_pc, y_pc]].values
+        # Retrieve pre-calculated diagnostics directly from the engine cache
+        pca_res = getattr(self, "obj").calc_pca_and_outliers()
+        diag = pca_res.get("diagnostics", {})
         
-        def _get_array(col_name):
-            if col_name in pca_df.columns:
-                return pca_df[col_name].values
-            return pca_df.index.get_level_values(col_name).values
+        rd_score = diag.get("relative_dispersion")
+        sil_score = diag.get("batch_silhouette")
+        rel_shift = diag.get("centrality_shift")
 
-        types = _get_array(st_col)
-        batches = _get_array(bt_col)
-
-        # 3. Calculate QA metrics using PCAEngine static methods
-        rd_score = pca_utils.PCAEngine.calc_relative_dispersion(
-            coords=coords, types=types, qc_lbl=qc_lbl, act_lbl=act_lbl
-        )
-        sil_score = pca_utils.PCAEngine.calc_qc_batch_silhouette(
-            coords=coords, types=types, batches=batches, qc_lbl=qc_lbl
-        )
-        shift_res = pca_utils.PCAEngine.calc_qc_centrality_shift(
-            coords=coords, types=types, qc_lbl=qc_lbl, act_lbl=act_lbl
-        )
-        rel_shift = shift_res["rel_shift"]
-
-        # 4. Format annotation text
-        rd_str = f"{rd_score:.4f}" if not pd.isna(rd_score) else "N/A"
-        sil_str = f"{sil_score:.4f}" if not pd.isna(sil_score) else "N/A"
-        shift_str = f"{rel_shift:.4f}" if not pd.isna(rel_shift) else "N/A"
+        rd_str = f"{rd_score:.4f}" if pd.notna(rd_score) else "N/A"
+        sil_str = f"{sil_score:.4f}" if pd.notna(sil_score) else "N/A"
+        shift_str = f"{rel_shift:.4f}" if pd.notna(rel_shift) else "N/A"
         
         annot_text = (
             f"Relative Dispersion: {rd_str}\n"
@@ -486,7 +655,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             f"Centrality Shift: {shift_str}"
         )
 
-        # 5. Render scatter plot following original aesthetic
+        # Render scatter plot following original aesthetic
         sns.scatterplot(
             data=plot_df, x=x_pc, y=y_pc, hue=st_col, style=bt_col,
             s=50, edgecolor="k", palette=pal_dict, linewidth=0.5,
@@ -508,13 +677,14 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         # Add metric annotation box at the bottom right
         current_ax.text(
             0.96, 0.02, annot_text, transform=current_ax.transAxes,
-            fontsize=9, verticalalignment="bottom", 
+            fontsize=10, verticalalignment="bottom", 
             horizontalalignment="right",
             clip_on=False,
             bbox=dict(
-                boxstyle="round,pad=0.4", facecolor="white", alpha=0.6
+                boxstyle="round,pad=0.4", facecolor="white", edgecolor="none",
+                alpha=0.6
             )
-        )
+        ) 
                 
         # 6. Apply standard formatting and axis labels
         var_x = pca_var.loc[x_pc] * 100
@@ -624,7 +794,6 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         
         # Graceful exit if no statistical outliers are detected at all
         if out_df.empty:
-            from loguru import logger
             logger.info("No outliers detected. Skipping barplot generation.")
             return None
         # =====================================================================
@@ -686,42 +855,53 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     # Intra-Run Stability Validation Plots
     # =========================================================================
 
-    def plot_rsd_bar(self, qc_data, act_data, qc_lbl, act_lbl, ax=None):
-        """Plot RSD distribution for QC and Actual samples with dual styles."""
-        def _get_rsd_counts(data, label):
-            """Calculate feature counts across defined RSD bins."""
-            rsd = (data.std(axis=1, ddof=1) / data.mean(axis=1)).rename("RSD")
-            bins = [-np.inf, 0.1, 0.2, 0.3, np.inf]
-            labels = ["0-10%", "10-20%", "20-30%", ">30%"]
-            rsd_range = pd.cut(x=rsd, bins=bins, labels=labels, right=False)
-            
-            df_counts = rsd_range.value_counts().rename("Counts").reset_index()
-            df_counts["Type"] = label
-            return df_counts
+    def plot_rsd_bar(self, ax=None, **kwargs):
+        """Plots the RSD distribution using cached metrics and custom styling.
 
-        qc_df = _get_rsd_counts(qc_data, qc_lbl)
-        act_df = _get_rsd_counts(act_data, act_lbl)
-        plot_df = pd.concat([qc_df, act_df], ignore_index=True)
+        Converts the pre-calculated RSD dictionary into a format suitable 
+        for seaborn. Applies custom RGBA alpha blending, container styling, 
+        and removes zero-height patches to prevent annotation artifacts.
 
+        Args:
+            ax (matplotlib.axes.Axes, optional): The target axes object.
+            **kwargs: Additional formatting parameters.
+
+        Returns:
+            matplotlib.figure.Figure: The rendered figure object.
+        """
+
+        # 1. Retrieve cached metrics using the correct base class attribute
+        rsd_data = self.obj.calc_rsd_distribution()
+        sample_dict = self.obj.attrs.get("sample_dict", {})
+        qc_lbl = sample_dict.get("QC sample", "QC")
+        act_lbl = sample_dict.get("Actual sample", "Sample")
+
+        # 2. Reconstruct seaborn-compatible DataFrame dynamically
+        records = []
+        for r_bin, count in rsd_data.get("qc", {}).items():
+            records.append({"RSD": r_bin, "Counts": count, "Type": qc_lbl})
+        for r_bin, count in rsd_data.get("actual", {}).items():
+            records.append({"RSD": r_bin, "Counts": count, "Type": act_lbl})
+        plot_df = pd.DataFrame(records)
+
+        # 3. Initialize axes hierarchy
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(5.5, 4))
         else:
             current_ax = ax
             fig = current_ax.figure
 
-        # Initialize barplot layout
+        # 4. Initialize barplot layout with strict explicit ordering
+        labels = ["0-10%", "10-20%", "20-30%", ">30%"]
         sns.barplot(
-            data=plot_df, x="RSD", y="Counts", hue="Type", 
-            ax=current_ax, hue_order=[qc_lbl, act_lbl]
+            data=plot_df, x="RSD", y="Counts", hue="Type",
+            ax=current_ax, hue_order=[qc_lbl, act_lbl], order=labels
         )
-
-        import matplotlib.colors as mcolors
-
-        # Apply aesthetics: Use RGBA to ensure stability across PDF backends
+        
+        # 5. Apply aesthetics utilizing RGBA for PDF backend stability
         for i, container in enumerate(current_ax.containers):
             # QC (i=0): Solid-like | Actual (i=1): Ghost-like, dashed
             l_style = "-" if i == 0 else "--"
-            l_width = 1.0
             alpha_val = 1.0 if i == 0 else 0.4
 
             for j, bar in enumerate(container):
@@ -731,46 +911,47 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 bar.set_facecolor(rgba_color)
                 bar.set_edgecolor("black")
                 bar.set_linestyle(l_style)
-                bar.set_linewidth(l_width)
+                bar.set_linewidth(1.0)
 
-        # [CRITICAL]: Physically remove zero-height bars to kill ghost labels
+        # 6. Physically remove zero-height bars to kill ghost labels
         for p in list(current_ax.patches):
             if p.get_height() <= 0:
                 p.remove()
 
-        # Update axis limit and annotate AFTER removing empty patches
+        # 7. Update axis limit and annotate after removing empty patches
         max_c = plot_df["Counts"].max()
         current_ax.set_ylim(0, max_c * 1.3)
         pu.show_values_on_bars(
-            current_ax, show_percentage=True, position="outside",
-            value_format="{:.0f}",pct_type="group",fontsize=8
+            axs=current_ax, show_percentage=True,
+            value_format="{:.0f}", pct_type="group", fontsize=8
         )
 
-        # Manually construct legend to ensure correct style mapping
-        from matplotlib.patches import Patch
+        # 8. Manually construct legend to ensure correct style mapping
         h_type = [
             Patch(
-                facecolor=mcolors.to_rgba("tab:gray", alpha=0.9), 
-                edgecolor="black", linestyle="-", linewidth=1.0, 
-                label=qc_lbl),
+                facecolor=mcolors.to_rgba("tab:gray", alpha=0.9),
+                edgecolor="black", linestyle="-", linewidth=1.0, label=qc_lbl
+            ),
             Patch(
-                facecolor=mcolors.to_rgba("tab:gray", alpha=0.4), 
-                edgecolor="black", linestyle="--", linewidth=1.0, 
-                label=act_lbl)
+                facecolor=mcolors.to_rgba("tab:gray", alpha=0.4),
+                edgecolor="black", linestyle="--", linewidth=1.0, label=act_lbl
+            )
         ]
-        
-        # [FIX]: Directly apply custom legend and bypass auto-formatters
-        # Use existing global LEGEND_KWARGS for visual consistency
-        leg_kwargs = self.LEGEND_KWARGS.copy()
+
+        # Bypass auto-formatters using global LEGEND_KWARGS
+        leg_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
         leg_kwargs.update({"title": "Sample Type", "loc": "best"})
         current_ax.legend(handles=h_type, **leg_kwargs)
-        
-        self._apply_standard_format(
-            ax=current_ax, title="Feature RSD Distribution",
-            xlabel="Relative Standard Deviation (RSD) Bin", 
-            ylabel="Feature Count"
-        )
-        
+
+        # 9. Execute standardized axis formatting
+        if hasattr(self, "_apply_standard_format"):
+            self._apply_standard_format(
+                ax=current_ax,
+                title="Feature Relative Standard Deviation (RSD) Distribution",
+                xlabel="RSD Bin",
+                ylabel="Feature Count"
+            )
+
         return fig
 
     def plot_is_shewhart_chart(
@@ -790,9 +971,6 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             figsize=(7.5 * ncols, 3 * nrows), layout="constrained"
         )
         
-        from .core_classes import MetaboInt
-        dummy_calc = MetaboInt()
-        
         for n, feat in enumerate(valid_is):
             ax = plt.subplot(nrows, ncols, n + 1)
             sns.scatterplot(
@@ -803,7 +981,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             )
 
             int_data = is_data[feat].values
-            solid, lower, upper = dummy_calc.calculate_boundaries(
+            solid, lower, upper = core_classes.MetaboInt.calculate_boundaries(
                 x=int_data, boundary_type=bound_type
             )
             

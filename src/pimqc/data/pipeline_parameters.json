@@ -67,14 +67,17 @@
     },
     "_comment_MetaboIntNormalizer": "Data normalization and scaling parameters",
     "MetaboIntNormalizer": {
-        "col_norm": "PQN",
-        "row_norm": "VSN",
+        "sample_wise_norm": "PQN",
+        "feature_wise_norm": "VSN",
         "quantile_norm": false
     },
 
     "_comment_MetaboIntImputer": "Missing value imputation algorithm and parameters. Options for method: 'probabilistic', 'knn', 'halfmin', 'min'",
     "MetaboIntImputer": {
-        "method": "auto",
-        "knn_neighbors": 5
+        "mnar_method": "row",
+        "mnar_fraction": 0.5,
+        "mar_method": "auto",
+        "knn_neighbors": 5,
+        "sim_mask_ratio": 0.05
     }
 }

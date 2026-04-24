@@ -109,7 +109,13 @@ def build_dataset(
     assert_dict = {
         k: v for k, v in meta_info_dict.items() if v not in meta_info.columns
     }
-    assert len(assert_dict) == 0, f"Incomplete project meta info. Missing columns: {assert_dict}."
+    assert (
+        len(assert_dict) == 0,
+        f"Incomplete project meta info. Missing columns: {assert_dict}.")
+    
+    # Check whether unique-batch project
+    unique_batches = meta_info[batch].unique()
+    is_multi_batch = len(unique_batches) > 1
 
     # 4. Merge int_df and meta_info to construct the multi-index matrix.
     int_df = int_df.rename_axis(index=["Metabolite"], columns=[sample_name])
@@ -139,6 +145,7 @@ def build_dataset(
         logger.info(f"MetaboInt object saved as: {output_path}")
 
     # 7. Instantiate and return the MetaboInt core object.
+    
     metabo_obj = MetaboInt(
         int_df,
         pipeline_params=pipeline_params,
@@ -149,6 +156,9 @@ def build_dataset(
         batch=batch,
         inject_order=inject_order
     )
+    
+    metabo_obj.attrs["is_multi_batch"] = is_multi_batch
+    metabo_obj.attrs["batch_list"] = unique_batches.tolist()
 
     logger.info(f"MetaboInt object built, the shape is: {metabo_obj.shape}")
 

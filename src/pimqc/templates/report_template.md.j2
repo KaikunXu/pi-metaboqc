@@ -1,0 +1,73 @@
+# $\pi$-metaboqc Sequential Pipeline Audit Report
+
+**Report Date:** {{ date }}  |  **Analytical Mode:** {{ step1.mode }}
+**Project Status:** COMPLETED
+
+---
+
+## [Step 1-2] Data Construction & Raw QA
+- **Milestone:** Initializing standardized MetaboInt object.
+- **Raw Features:** {{ step1.raw_feats }} | **Total Samples:** {{ step1.total_samples }}
+- **Batches Identified:** {{ step1.n_batches }}
+
+![Raw Data Quality Assessment](./assets/02_QA_Raw_Grid.png)
+
+### Batch Distribution Summary
+
+| Batch ID | Total Samples | Actual Samples | QC Samples | Blank Samples |
+| :--- | :--- | :--- | :--- | :--- |
+{% for batch in raw_data.batch_hierarchy.ordered_batches %}
+| {{ batch }} | {{ raw_data.batch_hierarchy.distribution[batch].Total }} | {{ raw_data.batch_hierarchy.distribution[batch].Sample }} | {{ raw_data.batch_hierarchy.distribution[batch].QC }} | {{ raw_data.batch_hierarchy.distribution[batch].Blank }} |
+{% endfor %}
+
+---
+
+## [Step 3-4] Missing Value Topology (Stage 1)
+- **Filtering Strategy:** Applied {{ step3.mv_threshold * 100 }}% Missing Value (MV) threshold.
+- **Topology Diagnostics:**
+    - **MAR (Missing At Random):** {{ step3.mar_count }} features.
+    - **MNAR (Missing Not At Random):** {{ step3.mnar_count }} features.
+- **Retained Features:** {{ step3.retained }}
+
+![Stage 1 Filtered QA](./assets/04_QA_Filtered_Stage1_Grid.png)
+
+---
+
+## [Step 5-7] Signal Drift & Batch Correction
+- **Correction Algorithm:** {{ step5.method }}
+- **Reference Samples:** {{ step5.ref_type }}
+- **Status:** Intra-batch drift and inter-batch offsets normalized.
+
+![Inter-Batch Correction QA](./assets/07_QA_Inter_Grid.png)
+
+---
+
+## [Step 8-9] Quality-Driven Filtering (Stage 2)
+- **Blank Filter:** Removed features with intensity < {{ step8.blank_ratio }}x blank levels.
+- **Precision Filter:** Removed features with QC RSD > {{ step8.rsd_threshold * 100 }}%.
+- **Retained Features:** {{ step8.retained }}
+
+---
+
+## [Step 10-11] Simulation-Guided Imputation
+- **Optimization Strategy:** Benchmarked multiple algorithms via MNAR/MAR simulation.
+- **Autonomous Selection:** **{{ step10.method }}** was selected as the optimal imputer.
+- **NRMSE (Low Abundance):** {{ step10.nrmse_low }} (Fidelity check).
+
+![Imputation Diagnostic Grid](./assets/11_QA_Imputed_Data_Grid.png)
+
+---
+
+## [Step 12-14] Final Normalization & QA
+- **Sample Alignment:** {{ step12.col_method }} (Column-wise).
+- **Feature Stabilization:** {{ step12.row_method }} (Row-wise scaling).
+- **Final High-Quality Feature Set:** **{{ step14.final_feats }}**
+
+![Final Normalized QA](./assets/14_QA_Final_Grid.png)
+
+---
+
+## [Step 15] Execution Audit Summary
+- **Initial Features:** {{ step1.raw_feats }}
+- **Final Features:** {{ step14.final_feats }}
+- **Global Retention Rate:** {{ retention_rate }}%

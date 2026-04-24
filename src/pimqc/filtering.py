@@ -7,6 +7,8 @@ import os
 import copy
 import numpy as np
 import pandas as pd
+from functools import cached_property
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -102,38 +104,139 @@ class MetaboIntFilter(core_classes.MetaboInt):
 
         return valid_bio_groups
 
+    @iu._exe_time
+    def classify_missing_types(self):
+        """Classifies features into MAR, MNAR, and strictly dropped."""
+        total_missing = self.isna().sum().sum()
+        empty_idx = self.index[:0]
+        if total_missing == 0:
+            logger.warning(
+                "No missing values detected. Defaulting all features to MAR."
+            )
+            return self.index, empty_idx, empty_idx
+            
+        try:
+            meta_params = self.params.get("MetaboInt", {})
+            grp_col = meta_params.get("bio_group", "Bio Group")
+            qc_col = meta_params.get("sample_type", "Sample Type")
+            qc_lbl = meta_params.get("sample_dict", {}).get("QC sample", "QC")
+            
+            fltr_params = self.params.get("MetaboIntFilter", {})
+            
+            # Extract critical topological filtering thresholds
+            base_mv_tol = fltr_params.get("sample_mv_tol", 0.5) 
+            grp_mv_tol = fltr_params.get("mnar_group_mv_tol", 0.8)
+            qc_mv_tol = fltr_params.get("mnar_qc_mv_tol", 0.2)
+            qc_int_pct = fltr_params.get("mnar_intensity_percentile", 0.1)
+
+            idx_mnar_group = pd.Index([])
+            idx_mnar_qc = pd.Index([])
+            valid_bio_groups = self._get_valid_bio_groups()
+
+            # ================================================================
+            # 1. Identify MNAR candidates (Bio-group truncation)
+            # ================================================================
+            if valid_bio_groups:
+                na_rate_grp = self.isna().T.groupby(level=grp_col).mean().T
+                na_rate_valid = na_rate_grp[valid_bio_groups]
+                
+                cond_grp_mnar = (na_rate_valid >= grp_mv_tol).any(axis=1)
+                idx_mnar_group = self.index[cond_grp_mnar]
+
+            qc_mask = (
+                self.columns.get_level_values(qc_col) == qc_lbl 
+                if qc_col in self.columns.names 
+                else np.zeros(self.shape[1], dtype=bool)
+            )
+            
+            # ================================================================
+            # 2. Identify MNAR candidates (QC low abundance validation)
+            # ================================================================
+            if qc_mask.any() and not self.index.empty:
+                df_qc = self.loc[:, qc_mask]
+                qc_na_rate = df_qc.isna().mean(axis=1)
+                qc_median = df_qc.median(axis=1)
+                int_threshold = qc_median.quantile(qc_int_pct)
+                
+                cond_qc_mv = qc_na_rate > qc_mv_tol
+                cond_qc_int = qc_median <= int_threshold
+                idx_mnar_qc = self.index[cond_qc_mv | cond_qc_int]
+
+            # Consolidate confirmed MNAR features
+            idx_mnar_all = idx_mnar_group.union(idx_mnar_qc)
+            
+            # ================================================================
+            # 3. Identify MAR features (Must meet baseline health criteria)
+            # ================================================================
+            if valid_bio_groups:
+                cond_healthy = (na_rate_valid <= base_mv_tol).any(axis=1)
+            elif qc_mask.any():
+                cond_healthy = self.stats["mv_qc_series"] <= base_mv_tol
+            else:
+                cond_healthy = self.stats["mv_global_series"] <= base_mv_tol
+
+            idx_healthy = self.index[cond_healthy]
+            
+            # MAR features are healthy and mutually exclusive from MNAR
+            idx_mar = idx_healthy.difference(idx_mnar_all)
+            
+            # ================================================================
+            # 4. Identify invalid features to be dropped
+            # ================================================================
+            # Features failing both MAR health and MNAR truncation criteria
+            retained_idx = idx_mar.union(idx_mnar_all)
+            idx_dropped = self.index.difference(retained_idx)
+
+            # Update engine state
+            self.stats["idx_mar"] = idx_mar
+            self.stats["idx_mnar"] = idx_mnar_all
+            self.stats["idx_mnar_group"] = idx_mnar_group
+            self.stats["idx_mnar_qc"] = idx_mnar_qc
+            self.stats["idx_dropped_stage1"] = idx_dropped
+
+            self.attrs["idx_mar"] = idx_mar.tolist()
+            self.attrs["idx_mnar"] = idx_mnar_all.tolist()
+            
+            logger.info(
+                f"Classification: {len(idx_mar)} MAR, {len(idx_mnar_all)} "
+                f"MNAR, Dropping {len(idx_dropped)} invalid features."
+            )
+            
+            return idx_mar, idx_mnar_all, idx_dropped
+
+        except Exception as e:
+            logger.error(f"Classification failed ({e}). Fallback to MAR.")
+            return self.index, empty_idx, empty_idx
+
+
     # =========================================================================
     # Filtering Execution Stream
     # =========================================================================
 
     @iu._exe_time
-    def execute_mv_filtering(self, output_dir=None):
-        """Execute Stage-1 missing value filter with multi-level plotting."""
+    def execute_mv_filtering(self, output_dir: str = None) -> pd.DataFrame:
+        """Executes Stage-1 missing value filter with defined topology.
+
+        This engine orchestrates the missing value filtering process. It 
+        pre-calculates global statistics for visualization, invokes the 
+        topological classification engine (MAR/MNAR routing), physically 
+        truncates invalid features, and exports diagnostic reports.
+        """
+        # 1. Parameter initialization and state tracking
         fc = self.params["MetaboIntFilter"]["feature_counts"]
         if "raw" not in fc:
             fc["raw"] = self.shape[0]
 
         meta_params = self.params.get("MetaboInt", {})
-        
         grp_col = meta_params.get("bio_group", "Bio Group")
         group_order = meta_params.get("group_order", None)
         qc_col = meta_params.get("sample_type", "Sample Type")
-        
         sample_dict = meta_params.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
-        fltr_params = self.params.get("MetaboIntFilter", {})
-
+        
         valid_bio_groups = self._get_valid_bio_groups()
 
-        if qc_col in self.columns.names:
-            raw_types = self.columns.get_level_values(qc_col)
-            valid_mask = np.array([
-                str(t).strip().lower() not in self._INVALID_STRS 
-                for t in raw_types
-            ])
-        else:
-            valid_mask = np.ones(self.shape[1], dtype=bool)
-
+        # 2. Pre-calculate missing value rates for visualization
         qc_mask = (
             self.columns.get_level_values(qc_col) == qc_lbl 
             if qc_col in self.columns.names 
@@ -141,195 +244,190 @@ class MetaboIntFilter(core_classes.MetaboInt):
         )
 
         if qc_mask.any():
-            df_qc = self.loc[:, qc_mask]
-            self.stats["mv_qc_series"] = df_qc.isna().mean(axis=1)
+            qc_na = self.loc[:, qc_mask].isna().mean(axis=1)
+            self.stats["mv_qc_series"] = qc_na
             
-        if valid_mask.any():
-            df_valid = self.loc[:, valid_mask]
-            self.stats["mv_global_series"] = df_valid.isna().mean(axis=1)
-        else:
-            self.stats["mv_global_series"] = pd.Series(1.0, index=self.index)
-
-        filter_level = "Group"
-
+        self.stats["mv_global_series"] = self.isna().mean(axis=1)
+        
         if valid_bio_groups:
-            logger.info(
-                "High missing value features filter (Stage1): "
-                "biological group level")
-            mv_tol = fltr_params.get("mv_group_tol", 0.5)
-            na_rate = self.isna().T.groupby(level=grp_col).mean().T
-            self.stats["mv_group_df"] = na_rate[valid_bio_groups]
-            pass_mask = (na_rate[valid_bio_groups] <= mv_tol).any(axis=1)
-            
+            filter_level = "Group"
+            grp_na = self.isna().T.groupby(level=grp_col).mean().T
+            self.stats["mv_group_df"] = grp_na[valid_bio_groups]
         elif qc_mask.any():
-            logger.info(
-                "High missing value features filter (Stage1): "
-                "pooled QC level")
             filter_level = "QC"
-            mv_tol = fltr_params.get("mv_qc_tol", 0.8)
-            pass_mask = self.stats["mv_qc_series"] <= mv_tol
-            
         else:
-            logger.info(
-                "High missing value features filter (Stage1): "
-                "global sample level")
             filter_level = "Global"
-            mv_tol = fltr_params.get("mv_global_tol", 0.7)
-            pass_mask = self.stats["mv_global_series"] <= mv_tol
 
-        self.classify_missing_types()
-        fc["post_stage1"] = pass_mask.sum()
-        df_final = self.loc[self.index[pass_mask]].copy()
+        logger.info(f"High missing value filter (Stage1): {filter_level}")
 
+        # 3. Execute classification engine for topological routing
+        idx_mar, idx_mnar, idx_dropped = self.classify_missing_types()
+        
+        # 4. Matrix truncation: Retain only verified MAR and MNAR
+        retained_idx = idx_mar.union(idx_mnar)
+        fc["post_stage1"] = len(retained_idx)
+        df_final = self.loc[retained_idx].copy(deep=True)
+
+        # 5. Export and Visualizations
         if output_dir:
-            iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
-            mode = meta_params.get("mode", "POS")
-            # ==========================================================
-            df_final.attrs["pipeline_stage"] = "High-MV features filter"
-            # ==========================================================
-            csv_path = os.path.join(
-                output_dir, f"High-MV_Filter_{filter_level}_{mode}.csv")
-            df_final.to_csv(csv_path, encoding="utf-8-sig", na_rep="NA")
-            logger.info(f"Features after High-MV check: {df_final.shape[0]}")
-            logger.info(
-                "Data after high-missing features filtering saved as: "
-                f"{csv_path}")
-            
-            vis = MetaboVisualizerFilter(engine=df_final)
-            
-            if not self.stats["idx_mar"].empty or not self.stats[
-                "idx_mnar"].empty:
-                fig_mnar = vis.plot_missing_classification()
-                if fig_mnar:
-                    pdf_mnar_path = os.path.join(
-                        output_dir,
-                        f"High-MV_Filter_MNAR_Classification_{mode}.pdf")
-                    vis.save_and_close_fig(fig_mnar, pdf_mnar_path)
+            iu._check_dir_exists(output_dir, handle="makedirs")
+            df_final.to_csv(
+                os.path.join(output_dir, "MV_Filtered_Data.csv")
+            )
 
-            try:
-                combined_report = vis.plot_mv_filtering_summary_grid(
-                    filter_level=filter_level,
-                    group_order=group_order
-                )
-                if combined_report:
-                    report_path = os.path.join(
-                        output_dir, f"MV_FLTR_Grid_{mode}.pdf"
-                    )
-                    vis.save_and_show_pw(
-                        pw_obj=combined_report, file_path=report_path)
-                    logger.info(
-                        f"High-MV features filter summary grid saved as: {report_path}")
-            except Exception as e:
-                logger.error(
-                    f"High-MV features filter summary grids generation failed: {e}")
-
+            vis = MetaboVisualizerFilter(self)
+            
+            # Safely extract filtering parameters for plot thresholds
+            fltr_params = self.params.get(
+                "Filtering", 
+                self.params.get("MetaboIntFilter", {})
+            )
 
             plot_tasks = []
             if valid_bio_groups:
-                g_tol = fltr_params.get("mv_group_tol", 0.5)
+                g_tol = fltr_params.get("mnar_group_mv_tol", 0.8)
                 fig_g = vis.plot_mv_group(
-                    mv_df=self.stats["mv_group_df"], tol=g_tol,
-                    group_order=group_order)
+                    mv_df=self.stats["mv_group_df"], 
+                    tol=g_tol,
+                    group_order=group_order
+                )
                 plot_tasks.append((fig_g, "Group"))
                 
             if qc_mask.any():
-                q_tol = fltr_params.get("mv_qc_tol", 0.8)
+                q_tol = fltr_params.get("mnar_qc_mv_tol", 0.2)
                 fig_q = vis.plot_mv_downgrade(
                     mv_series=self.stats["mv_qc_series"], 
-                    level="QC", tol=q_tol)
+                    level="QC",
+                    tol=q_tol
+                )
                 plot_tasks.append((fig_q, "QC"))
-                
-            gl_tol = fltr_params.get("mv_global_tol", 0.7)
-            fig_gl = vis.plot_mv_downgrade(
+
+            # Global baseline validation
+            base_tol = fltr_params.get("sample_mv_tol", 0.5)
+            fig_glob = vis.plot_mv_downgrade(
                 mv_series=self.stats["mv_global_series"], 
-                level="Global", tol=gl_tol)
-            plot_tasks.append((fig_gl, "Global"))
+                level="Global",
+                tol=base_tol
+            )
+            plot_tasks.append((fig_glob, "Global"))
+
+            # Render and export individual threshold diagnostic plots
+            for fig_obj, lvl in plot_tasks:
+                if fig_obj is not None:
+                    vis.save_and_close_fig(
+                        fig_obj,
+                        os.path.join(output_dir, f"MV_Filter_{lvl}.pdf")
+                    )
+
+            # ================================================================
+            # RESTORED: Summary and Classification Plots
+            # ================================================================
+            # 1. Missing Value Classification Distribution
+            if hasattr(vis, "plot_missing_classification"):
+                fig_class = vis.plot_missing_classification()
+                if fig_class is not None:
+                    vis.save_and_close_fig(
+                        fig_class,
+                        os.path.join(output_dir, "MV_Classification.pdf")
+                    )
+
+            # 2. Comprehensive Patchworklib Summary Grid
+            # Fallback to check multiple naming conventions safely
+            grid_method = getattr(
+                vis, "plot_mv_filtering_summary_grid", 
+                getattr(vis, "plot_quality_filtering_summary_grid", None)
+            )
             
-            for fig, level_name in plot_tasks:
-                if fig:
-                    pdf_path = os.path.join(
-                        output_dir, f"Filter_Stage1_{level_name}_{mode}.pdf")
-                    vis.save_and_close_fig(fig, pdf_path)
+            if grid_method is not None:
+                fig_grid = grid_method(filter_level=filter_level)
+                if fig_grid is not None:
+                    vis.save_and_show_pw(
+                        fig_grid,
+                        os.path.join(output_dir, "MV_Filtering_Summary.pdf")
+                    )
         
         logger.success("High-MV features filtering completed.")
-
         return df_final
 
-    @iu._exe_time
-    def classify_missing_types(self):
-        """Classify features into MAR and MNAR using a hierarchical strategy."""
+    @cached_property
+    def mv_filtering_metrics(self):
+        """Extracts metrics from the Stage-1 missing value filtering.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing thresholds, counts, 
+                retention stats, and explicit lists of dropped/retained 
+                features for downstream audit trails.
+        """
+        # 1. Parameter extraction
         meta_params = self.params.get("MetaboInt", {})
-        grp_col = meta_params.get("bio_group", "Bio Group")
-        qc_col = meta_params.get("sample_type", "Sample Type")
-        
-        sample_dict = meta_params.get("sample_dict", {})
-        qc_lbl = sample_dict.get("QC sample", "QC")
-        
         fltr_params = self.params.get("MetaboIntFilter", {})
-        grp_mv_tol = fltr_params.get("mnar_group_mv_tol", 0.8)
-        qc_mv_tol = fltr_params.get("mnar_qc_mv_tol", 0.0)
-        qc_int_pct = fltr_params.get("mnar_intensity_percentile", 0.1)
-
-        idx_mnar_group = pd.Index([])
-        idx_mnar_qc = pd.Index([])
-        current_idx = self.index
-
-        valid_bio_groups = self._get_valid_bio_groups()
-
-        if valid_bio_groups:
-            na_rate_grp = self.isna().T.groupby(level=grp_col).mean().T
-            na_rate_valid = na_rate_grp[valid_bio_groups]
+        fc = fltr_params.get("feature_counts", {})
+        
+        # 2. Statelessly infer the active filtering level
+        valid_groups = self._get_valid_bio_groups()
+        qc_col = meta_params.get("sample_type", "Sample Type")
+        qc_lbl = meta_params.get("sample_dict", {}).get("QC sample", "QC")
+        
+        has_qc = False
+        if qc_col in self.columns.names:
+            has_qc = (self.columns.get_level_values(qc_col) == qc_lbl).any()
             
-            cond_grp_mnar = (na_rate_valid >= grp_mv_tol).any(axis=1)
-            idx_mnar_group = current_idx[cond_grp_mnar]
-            current_idx = current_idx.difference(idx_mnar_group)
+        if valid_groups:
+            fltr_level = "Group"
+        elif has_qc:
+            fltr_level = "QC"
+        else:
+            fltr_level = "Global"
 
-        qc_mask = (
-            self.columns.get_level_values(qc_col) == qc_lbl 
-            if qc_col in self.columns.names 
-            else np.zeros(self.shape[1], dtype=bool)
-        )
-        
-        if qc_mask.any() and not current_idx.empty:
-            df_qc = self.loc[current_idx, qc_mask]
-            
-            qc_na_rate = df_qc.isna().mean(axis=1)
-            qc_median = df_qc.median(axis=1)
-            int_threshold = qc_median.quantile(qc_int_pct)
-            
-            cond_qc_mv = qc_na_rate > qc_mv_tol
-            cond_qc_int = qc_median <= int_threshold
-            
-            idx_mnar_qc = current_idx[cond_qc_mv | cond_qc_int]
-            current_idx = current_idx.difference(idx_mnar_qc)
+        # 3. Extract indices from the Data Passport (stats)
+        idx_mar = self.stats.get("idx_mar", pd.Index([]))
+        idx_mnar = self.stats.get("idx_mnar", pd.Index([]))
+        idx_mnar_grp = self.stats.get("idx_mnar_group", pd.Index([]))
+        idx_mnar_qc = self.stats.get("idx_mnar_qc", pd.Index([]))
 
-        idx_mar = current_idx
-        idx_mnar_all = idx_mnar_group.union(idx_mnar_qc)
+        dropped_idx = self.stats.get("idx_dropped_stage1", pd.Index([]))
+        retained_idx = idx_mar.union(idx_mnar)
+
+        # 4. Compute retention statistics safely
+        raw_count = int(fc.get("raw", 0))
+        retained_count = len(retained_idx)
+        dropped_count = max(0, raw_count - retained_count)
+        ret_rate = 0.0
+        if raw_count > 0:
+            ret_rate = round((retained_count / raw_count) * 100, 2)
         
-        self.stats["idx_mar"] = idx_mar
-        self.stats["idx_mnar"] = idx_mnar_all
-        self.stats["idx_mnar_group"] = idx_mnar_group
-        self.stats["idx_mnar_qc"] = idx_mnar_qc
+        # 5. Compile structured JSON-serializable dictionary
+        metrics = {
+            "filtering_level": fltr_level,
+            "thresholds": {
+                "sample_mv_tol": fltr_params.get("sample_mv_tol", 0.5),
+                "mnar_group_tol": fltr_params.get("mnar_group_mv_tol", 0.8),
+                "mnar_qc_tol": fltr_params.get("mnar_qc_mv_tol", 0.2)
+            },
+            "missing_classification": {
+                "mar_count": int(len(idx_mar)),
+                "mnar_total": int(len(idx_mnar)),
+                "mnar_group": int(len(idx_mnar_grp)),
+                "mnar_qc": int(len(idx_mnar_qc))
+            },
+            "feature_retention": {
+                "pre_mv_filter_count": raw_count,
+                "after_mv_filter_count": retained_count,
+                "dropped_count": dropped_count,
+                "retention_rate_pct": ret_rate
+            },
+            # "feature_lists": {
+            #     "dropped_features": list(dropped_idx),
+            #     "mar_features": list(idx_mar),
+            #     "mnar_features": list(idx_mnar)
+            # }
+        }
         
-        self.attrs["idx_mar"] = idx_mar
-        self.attrs["idx_mnar"] = idx_mnar_all
-        self.attrs["idx_mnar_group"] = idx_mnar_group
-        self.attrs["idx_mnar_qc"] = idx_mnar_qc
-        
-        logger.info(
-            f"Missing Types: {len(idx_mar)} MAR, {len(idx_mnar_all)} MNAR "
-            f"({len(idx_mnar_group)} Group, {len(idx_mnar_qc)} QC)."
-        )
-        
-        if not idx_mnar_all.empty:
-            preview_num = min(5, len(idx_mnar_all))
-            preview_list = idx_mnar_all[:preview_num].tolist()
-            logger.info(f"MNAR Preview (Top {preview_num}): {preview_list}")
-        
-        return idx_mar, idx_mnar_all
+        return metrics
 
     @iu._exe_time
-    def execute_quality_filtering(self, idx_mar=None, idx_mnar=None, output_dir=None):
+    def execute_quality_filtering(
+        self, idx_mar=None, idx_mnar=None, output_dir=None):
         """Execute Stage-2 quality filter (Blank Ratio & QC RSD)."""
         if idx_mar is None:
             idx_mar = self.attrs.get("idx_mar")
@@ -342,6 +440,10 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 "Warning: If imputation was already applied, this will fail!"
             )
             idx_mar, idx_mnar = self.classify_missing_types()
+        if not isinstance(idx_mar, pd.Index):
+            idx_mar = pd.Index(idx_mar)
+        if not isinstance(idx_mnar, pd.Index):
+            idx_mnar = pd.Index(idx_mnar)
             
         self.stats["idx_mnar_group"] = self.attrs.get(
             "idx_mnar_group", pd.Index([])
@@ -369,9 +471,11 @@ class MetaboIntFilter(core_classes.MetaboInt):
         current_idx = self.index
         logger.info(f"Features before filtering: {len(current_idx)}")
 
+        # ==============================================================
+        # 1. Blank Ratio Quality Check
+        # ==============================================================
         if blk_mask.any() and qc_mask.any():
-            logger.info(
-                "Low quality features filter (Stage2): Blank/QC check.")
+            logger.info("Low quality features filter (Stage2): Blank/QC check.")
 
             qc_m = self.loc[:, qc_mask].mean(axis=1)
             blk_m = self.loc[:, blk_mask].mean(axis=1)
@@ -381,15 +485,21 @@ class MetaboIntFilter(core_classes.MetaboInt):
             
             qc_safe = qc_m.replace(0, np.finfo(float).eps)
             pass_blk = blk_m[blk_m / qc_safe <= max_ratio].index
-            current_idx = current_idx.intersection(pass_blk)
-            logger.info(f"Features after Blank/QC check: {len(current_idx)}")
 
+            next_idx = current_idx.intersection(pass_blk)
+            self.stats["idx_dropped_blank"] = current_idx.difference(next_idx)
+            current_idx = next_idx
+            
+            logger.info(f"Features after Blank/QC check: {len(current_idx)}")
+        else:
+            self.stats["idx_dropped_blank"] = pd.Index([])
         
         fc["post_stage2_blank"] = len(current_idx)
-
+        # ==============================================================
+        # 2. QC RSD Quality Check
+        # ==============================================================
         if qc_mask.any():
-            logger.info(
-                "Low quality features filter (Stage2): QC RSD check.")
+            logger.info("Low quality features filter (Stage2): QC RSD check.")
             df_qc = self.loc[current_idx, qc_mask]
             std_qc = df_qc.std(axis=1, ddof=1)
             mean_qc = df_qc.mean(axis=1)
@@ -400,11 +510,15 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 idx_mar.intersection(current_idx)]
             final_idx = pass_mar[pass_mar <= rsd_tol].index.union(
                 idx_mnar.intersection(current_idx))
+            
+            self.stats["idx_dropped_rsd"] = current_idx.difference(final_idx)
+            
             logger.info(f"Features after QC RSD check: {len(final_idx)}")
-
         else:
             final_idx = current_idx
+            self.stats["idx_dropped_rsd"] = pd.Index([])
 
+        self.stats["idx_retained_stage2"] = final_idx
         fc["post_stage2_rsd"] = len(final_idx)
         df_final = self.loc[final_idx].copy()
 
@@ -412,7 +526,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
             mode = meta_params.get("mode", "POS")
             # ==============================================================
-            df_final.attrs["pipeline_stage"] = "Low-quality features filter"
+            df_final.attrs["pipeline_stage"] = "Low-quality features filtering"
             # ==============================================================
             csv_path = os.path.join(
                 output_dir, f"Filtered_Data_Stage2_{mode}.csv"
@@ -428,7 +542,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 fig_quality_fltr_summary = vis.plot_quality_filtering_summary_grid()
                 if fig_quality_fltr_summary:
                     summary_path = os.path.join(
-                        output_dir, f"Quality_FLTR_Grid_{mode}.pdf"
+                        output_dir, f"Quality_Filtering_Grid_{mode}.pdf"
                     )
                     vis.save_and_show_pw(
                         pw_obj=fig_quality_fltr_summary,file_path=summary_path)
@@ -440,7 +554,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             plot_tasks = [
                 (vis.plot_qc_blank_scatter(), "Blank_Scatter"),
                 (vis.plot_rsd_dist(idx_mnar=idx_mnar), "RSD_Dist"),
-                (vis.plot_filtering_summary(), "Summary")
+                (vis.plot_retained_count_steps(), "Retained_Count")
             ]
             
             for fig, name in plot_tasks:
@@ -451,8 +565,90 @@ class MetaboIntFilter(core_classes.MetaboInt):
                     vis.save_and_close_fig(fig, pdf_path)
 
         logger.success("Low-quality features filtering completed.")
-
         return df_final
+
+    @cached_property
+    def quality_filtering_metrics(self) -> dict:
+        """Extracts metrics from the Stage-2 low-quality feature filtering.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the blank/RSD thresholds,
+                and fine-grained feature retention counts strictly categorized 
+                by MAR and MNAR mechanisms.
+        """
+        fltr_params = self.params.get("MetaboIntFilter", {})
+        fc = fltr_params.get("feature_counts", {})
+        
+        # Extract features dropped in each Stage 2 step from internal states
+        idx_drop_blk = self.stats.get("idx_dropped_blank", pd.Index([]))
+        idx_drop_rsd = self.stats.get("idx_dropped_rsd", pd.Index([]))
+        
+        # Extract classification origins inherited from Stage 1
+        idx_mar = self.stats.get("idx_mar", pd.Index([]))
+        idx_mnar = self.stats.get("idx_mnar", pd.Index([]))
+
+        # --------------------------------------------------------------------
+        # Accurately compute components dropped by Blank Check 
+        # (Globally applies to both MAR and MNAR)
+        # --------------------------------------------------------------------
+        blk_drop_mar = len(idx_drop_blk.intersection(idx_mar))
+        blk_drop_mnar = len(idx_drop_blk.intersection(idx_mnar))
+        
+        # --------------------------------------------------------------------
+        # Accurately compute components dropped by RSD Check 
+        # (Logically applies strictly to MAR only, MNAR exempted)
+        # --------------------------------------------------------------------
+        rsd_drop_mar = len(idx_drop_rsd.intersection(idx_mar))
+        rsd_drop_mnar = len(idx_drop_rsd.intersection(idx_mnar))
+
+        # --------------------------------------------------------------------
+        # Calculate cascading retention counts (Waterfall logic)
+        # --------------------------------------------------------------------
+        pre_mar = len(idx_mar)
+        pre_mnar = len(idx_mnar)
+        
+        post_blk_mar = pre_mar - blk_drop_mar
+        post_blk_mnar = pre_mnar - blk_drop_mnar
+        
+        post_rsd_mar = post_blk_mar - rsd_drop_mar
+        post_rsd_mnar = post_blk_mnar - rsd_drop_mnar
+
+        metrics = {
+            "thresholds": {
+                "blank_ratio_tol": fltr_params.get("blank_qc_ratio", 0.2),
+                "qc_rsd_tol": fltr_params.get("rsd_qc_tol", 0.3)
+            },
+            "feature_retention": {
+                "pre_stage2": {
+                    "total": fc.get("post_stage1", 0),
+                    "mar_count": pre_mar,
+                    "mnar_count": pre_mnar
+                },
+                "post_blank_check": {
+                    "total": fc.get("post_stage2_blank", 0),
+                    "mar_count": post_blk_mar,
+                    "mnar_count": post_blk_mnar
+                },
+                "post_rsd_check": {
+                    "total": fc.get("post_stage2_rsd", 0),
+                    "mar_count": post_rsd_mar,
+                    "mnar_count": post_rsd_mnar
+                }
+            },
+            "filtering_breakdown": {
+                "dropped_by_blank": {
+                    "total": len(idx_drop_blk),
+                    "mar_count": blk_drop_mar,
+                    "mnar_count": blk_drop_mnar
+                },
+                "dropped_by_rsd": {
+                    "total": len(idx_drop_rsd),
+                    "mar_count": rsd_drop_mar,
+                    "mnar_count": rsd_drop_mnar
+                }
+            }
+        }
+        return metrics
 
 
 class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
@@ -467,50 +663,132 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
     # =========================================================================
     # Diagnostic Plots
     # =========================================================================
-
-    def plot_filtering_summary(self, ax=None):
-        """Plot a bar chart showing feature attrition cascade."""
+    def plot_retained_count_steps(self, ax=None):
+        """Plot feature attrition cascade stacked bar chart by MAR/MNAR."""
+        import matplotlib.colors as mcolors
+        
         if ax is None:
-            fig, current_ax = plt.subplots(figsize=(4.5,4))
+            fig, current_ax = plt.subplots(figsize=(4.5, 4))
         else:
             current_ax = ax
             fig = current_ax.figure
-        
+            
         fc = self.fltr_params.get("feature_counts", {})
+        stats = self.engine.stats
         
-        steps = [
-            ("Raw\nData", "raw"), 
-            ("High-MV\nCheck", "post_stage1"), 
-            ("QC/Blank\nCheck", "post_stage2_blank"), 
-            ("QC RSD\nCheck", "post_stage2_rsd")
+        # 1. Determine valid steps to plot based on pipeline stages
+        step_keys = [
+            "raw", "post_stage1", "post_stage2_blank", "post_stage2_rsd"
+        ]
+        step_labels = [
+            "Raw\nData", "High-MV\nCheck", "QC/Blank\nCheck", "QC RSD\nCheck"
         ]
         
-        valid_steps = [(l, k) for l, k in steps if k in fc]
-        if not valid_steps:
+        valid_idx = [i for i, k in enumerate(step_keys) if k in fc]
+        if not valid_idx:
             return fig if ax is None else current_ax
             
-        labels = [item[0] for item in valid_steps]
-        counts = [fc[item[1]] for item in valid_steps]
-
-        bar_colors = pu.extract_linear_cmap(
-            cmap=pu.custom_linear_cmap(["white", "tab:red"], 100), 
-            cmin=0.3, cmax=1.0, n_colors=len(counts)
+        labels = [step_labels[i] for i in valid_idx]
+        
+        # 2. Extract classification origins and Stage 2 drop records
+        idx_mar = stats.get("idx_mar", pd.Index([]))
+        idx_mnar = stats.get("idx_mnar", pd.Index([]))
+        idx_drop_blk = stats.get("idx_dropped_blank", pd.Index([]))
+        idx_drop_rsd = stats.get("idx_dropped_rsd", pd.Index([]))
+        
+        mar_base = len(idx_mar)
+        mnar_base = len(idx_mnar)
+        
+        blk_drop_mar = len(idx_drop_blk.intersection(idx_mar))
+        blk_drop_mnar = len(idx_drop_blk.intersection(idx_mnar))
+        
+        rsd_drop_mar = len(idx_drop_rsd.intersection(idx_mar))
+        rsd_drop_mnar = len(idx_drop_rsd.intersection(idx_mnar))
+        
+        # 3. Build cascading arrays for all possible steps
+        mar_all = np.array([
+            mar_base,
+            mar_base,
+            mar_base - blk_drop_mar,
+            mar_base - blk_drop_mar - rsd_drop_mar
+        ])
+        
+        mnar_all = np.array([
+            mnar_base,
+            mnar_base,
+            mnar_base - blk_drop_mnar,
+            mnar_base - blk_drop_mnar - rsd_drop_mnar
+        ])
+        
+        # Extract invalid features filtered out in Stage 1
+        inv_base = max(0, fc.get("raw", 0) - (mar_base + mnar_base))
+        inv_all = np.array([inv_base, 0, 0, 0])
+        
+        # 4. Generate data arrays and static category colors
+        mar_counts = mar_all[valid_idx]
+        mnar_counts = mnar_all[valid_idx]
+        inv_counts = inv_all[valid_idx]
+        
+        # === COLOR UPDATE: Aligned with assessment logic ===
+        c_mar = "tab:red"
+        c_mnar = mcolors.to_rgba("tab:red", alpha=0.4)
+        c_inv = "tab:gray"
+        
+        x = np.arange(len(labels))
+        width = 0.55
+        
+        # 5. Plot Stacked Bars using category-specific static colors
+        b1 = np.zeros(len(labels))
+        current_ax.bar(
+            x, mar_counts, bottom=b1, label="MAR", 
+            color=c_mar, edgecolor="k", width=width
         )
         
-        sns.barplot(
-            x=list(labels), y=list(counts), ax=current_ax, hue=list(labels), 
-            palette=bar_colors, width=0.6, edgecolor="k", legend=False
+        b2 = b1 + mar_counts
+        current_ax.bar(
+            x, mnar_counts, bottom=b2, label="MNAR", 
+            color=c_mnar, edgecolor="k", width=width
         )
         
+        b3 = b2 + mnar_counts
+        if inv_base > 0:
+            current_ax.bar(
+                x, inv_counts, bottom=b3, label="Invalid", 
+                color=c_inv, edgecolor="k", width=width
+            )
+            totals = b3 + inv_counts
+        else:
+            totals = b3
+            
+        current_ax.set_xticks(x)
+        current_ax.set_xticklabels(labels)
+        
+        # === ANNOTATION UPDATE: Smart thresholding & Auto color ===
         pu.show_values_on_bars(
-            axs=current_ax, show_percentage=False, fontsize=9, 
-            position="outside", value_format="{:.0f}"
+            axs=current_ax,
+            value_format="{:.0f}",
+            fontsize=8,
+            stacked=True,
+            skip_zero=True,
+            threshold_pct=0.05
         )
         
         self._apply_standard_format(
-            ax=current_ax, title="Low-quality Features Removal",
-            xlabel="Filtering Steps", ylabel="Retained Features"
+            ax=current_ax, 
+            title="Feature Retention Across Filtering Steps",
+            xlabel="Filtering Steps", 
+            ylabel="Feature Count"
         )
+        
+        # 7. Customize legend inside upper right 
+        self._format_single_legend(
+            ax=current_ax, title="Feature Type", loc="upper right",
+            bbox_to_anchor=None
+        )
+        
+        # Extend Y-axis limit to prevent label cutoff
+        max_height = totals.max() if len(totals) > 0 else 1
+        current_ax.set_ylim(0, max_height * 1.25)
         
         if ax is None:
             return fig
@@ -554,7 +832,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         df_p = pd.DataFrame({
             "Missing_Rate": qc_na_pct,
             "Log2_Intensity": qc_median,
-            "Type": types
+            "Feature Type": types
         })
         
         if ax is None:
@@ -569,22 +847,22 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             "MNAR (Group)": "tab:blue"
         }
         all_types = ["MAR", "MNAR (Group)", "MNAR (QC)"]
-        hue_order = [t for t in all_types if t in df_p["Type"].unique()]
+        hue_order = [t for t in all_types if t in df_p["Feature Type"].unique()]
         
         sns.scatterplot(
-            data=df_p, x="Log2_Intensity", y="Missing_Rate", hue="Type",
+            data=df_p, x="Log2_Intensity", y="Missing_Rate", hue="Feature Type",
             palette=pal, hue_order=hue_order,
             s=35, edgecolor="k", linewidth=0.5, alpha=0.75, ax=current_ax
         )
         
         self._apply_standard_format(
-            ax=current_ax, title="Missing Value Mechanisms",
+            ax=current_ax, title="Classification based on Missing Values",
             xlabel="Log2(Median QC Intensity + 1)", 
             ylabel="QC Missing Rate (%)"
         )
         
         self._format_single_legend(
-            ax=current_ax, title="Mechanism", loc="upper left",
+            ax=current_ax, title="Feature Type", loc="upper left",
             bbox_to_anchor=(1.05, 1.0)
         )
         
@@ -685,77 +963,88 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         return fig
 
     def plot_qc_blank_scatter(self, ax=None):
-        """Plot Log2 scatter of QC vs Blank intensities with double legends."""
+        """Plots Log2 scatter of QC vs Blank intensities.
+
+        This function visually distinguishes features retained or filtered
+        based on the Blank/QC ratio. It also differentiates the underlying
+        missing value mechanisms (MAR vs. MNAR) inherited from Stage 1.
+
+        Args:
+            ax: Optional matplotlib Axes object for plotting.
+
+        Returns:
+            A matplotlib Figure or Axes object containing the scatter plot.
+        """
         blk_m = self.engine.stats.get("blank_mean")
         qc_m = self.engine.stats.get("qc_mean")
-        
-        if blk_m is None or qc_m is None or blk_m.empty:
-            return None
 
+        # Extract classification indices inherited from Stage 1 stats.
+        idx_mar = self.engine.stats.get("idx_mar", pd.Index([]))
+        idx_mnar = self.engine.stats.get("idx_mnar", pd.Index([]))
+
+        if blk_m is None or qc_m is None or blk_m.empty:
+            return None if ax is None else ax
+
+        # 1. Prepare data frame for plotting.
         df_p = pd.DataFrame({
-            "QC": np.log2(qc_m.astype(float) + 1), 
+            "QC": np.log2(qc_m.astype(float) + 1),
             "Blank": np.log2(blk_m.astype(float) + 1)
         })
+
+        # Assign mechanism categories (Default to MAR).
+        df_p["Feature Type"] = "MAR"
         
+        # Safely label confirmed MNAR features intersecting current index.
+        valid_mnar = idx_mnar.intersection(df_p.index)
+        if not valid_mnar.empty:
+            df_p.loc[valid_mnar, "Feature Type"] = "MNAR"
+
+        # Determine filtering status based on threshold.
         tol_blk = self.fltr_params.get("blank_qc_ratio", 0.2)
-        max_r = tol_blk
-        
         qc_safe = qc_m.replace(0, np.finfo(float).eps)
         df_p["Status"] = np.where(
-            blk_m / qc_safe <= max_r, "Retained", "Filtered"
+            blk_m / qc_safe <= tol_blk, "Retained", "Filtered"
         )
 
+        # 2. Initialize canvas.
         if ax is None:
-            fig, current_ax = plt.subplots(figsize=(4, 4))
+            fig, current_ax = plt.subplots(figsize=(5, 4))
         else:
             current_ax = ax
             fig = current_ax.figure
 
+        # 3. Render scatter plot with dual visual mapping.
+        # Hue maps to Status; Style maps to Feature Type.
         sns.scatterplot(
-            data=df_p, x="QC", y="Blank", ax=current_ax, hue="Status", 
+            data=df_p, x="QC", y="Blank", ax=current_ax, hue="Status",
             palette={"Retained": "tab:gray", "Filtered": "tab:red"},
-            style="Status", markers={"Retained": "o", "Filtered": "X"},
+            style="Feature Type", markers={"MAR": "o", "MNAR": "X"},
             s=50, edgecolor="k", linewidth=0.5, alpha=0.8
         )
-        
+
+        # 4. Draw decision boundary line.
         lims = [
             np.min([current_ax.get_xlim(), current_ax.get_ylim()]),
             np.max([current_ax.get_xlim(), current_ax.get_ylim()])
         ]
         x_l = np.linspace(max(0, lims[0]), lims[1], 200)
-        
         current_ax.plot(
-            x_l, np.log2(((2**x_l - 1) * max_r) + 1), color="k", 
-            linestyle="--", linewidth=1.5, label=f"Blank/QC={tol_blk}"
+            x_l, np.log2(((2**x_l - 1) * tol_blk) + 1), color="k",
+            linestyle="--", linewidth=1.5, label=f"Ratio={tol_blk}"
         )
 
+        # 5. Apply standard formatting.
         self._apply_standard_format(
-            ax=current_ax, title="Stage 2.1: Blank Contamination", 
+            ax=current_ax, title="Stage 2.1: Blank/QC Check",
             xlabel="Log2(Mean QC + 1)", ylabel="Log2(Mean Blank + 1)"
         )
-        
-        handles, labels = current_ax.get_legend_handles_labels()
-        if current_ax.get_legend():
-            current_ax.get_legend().remove()
-        
-        sc_h = [
-            h for h, l in zip(handles, labels) 
-            if l in ["Retained", "Filtered"]
-        ]
-        sc_l = [l for l in labels if l in ["Retained", "Filtered"]]
-        ln_h = [h for h, l in zip(handles, labels) if "Blank/QC" in l]
-        ln_l = [l for l in labels if "Blank/QC" in l]
-        
-        leg1 = current_ax.legend(
-            sc_h, sc_l, title="Status", loc="upper left", 
-            bbox_to_anchor=(0.02, 0.98), **getattr(self, "LEGEND_KWARGS", {})
+
+        # 6. Configure multi-legend layout positioned on the right.
+        self._format_multi_legends(
+            ax=current_ax, group_titles=["Status", "Feature Type"],
+            loc="upper left", start_bbox=(1.05, 1.0)
         )
-        current_ax.add_artist(leg1)
-        
-        current_ax.legend(
-            ln_h, ln_l, loc="lower right", **getattr(self, "LEGEND_KWARGS", {})
-        )
-        
+
         if ax is None:
             return fig
             
@@ -766,7 +1055,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         rsd_all = self.engine.stats.get("qc_rsd_all")
         if rsd_all is None or rsd_all.empty:
             return None if ax is None else ax
-
+        
+        if not isinstance(idx_mnar, pd.Index):
+            idx_mnar = pd.Index(idx_mnar)
+        
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(4, 4))
         else:
@@ -783,16 +1075,17 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             
         df_p = pd.DataFrame({
             "RSD": rsd_all,
-            "Type": types
+            "Feature Type": types
         })
         
         max_rsd = float(rsd_all.max())
         bin_edges = np.linspace(0, max_rsd, 50)
         
         sns.histplot(
-            data=df_p, x="RSD", hue="Type", 
+            data=df_p, x="RSD", hue="Feature Type", 
             palette={"MAR": "tab:gray", "MNAR": "tab:red"},
-            hue_order=[t for t in ["MAR", "MNAR"] if t in df_p["Type"].unique()],
+            hue_order=[t for t in ["MAR", "MNAR"] if t in df_p[
+                "Feature Type"].unique()],
             bins=bin_edges, kde=True, ax=current_ax, legend=False,
             edgecolor="k", alpha=0.6
         )
@@ -803,10 +1096,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         
         # [BUG FIX]: Safe manual handle injection
         handles = []
-        if "MAR" in df_p["Type"].values:
+        if "MAR" in df_p["Feature Type"].values:
             handles.append(mpatches.Patch(
                 facecolor="tab:gray", edgecolor="k", linewidth=1.0, label="MAR"))
-        if "MNAR" in df_p["Type"].values:
+        if "MNAR" in df_p["Feature Type"].values:
             handles.append(mpatches.Patch(
                 facecolor="tab:red", edgecolor="k", linewidth=1.0, label="MNAR"))
             
@@ -1062,7 +1355,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         idx_mnar = self.engine.stats.get("idx_mnar", pd.Index([]))
         self.plot_rsd_dist(idx_mnar=idx_mnar, ax=ax2)
         
-        self.plot_filtering_summary(ax=ax3)
+        self.plot_retained_count_steps(ax=ax3)
 
         # Use patchworklib operator '|' for horizontal concatenation
         # or '/' for vertical stacking. Here we use horizontal.

@@ -104,7 +104,6 @@ class BaseMetaboVisualizer:
             append_stage: Whether to dynamically append the pipeline stage.
             custom_stage: A specific stage label to override the default.
         """
-        import seaborn as sns
 
         sns.despine(top=True, right=True, left=False, bottom=False, ax=ax)
 
@@ -269,7 +268,6 @@ class BaseMetaboVisualizer:
             return
             
         from loguru import logger
-        import matplotlib.pyplot as plt
 
         # Detect if the object belongs to patchworklib (Brick or Layout)
         is_patchwork = type(fig).__module__.startswith("patchworklib")
@@ -302,7 +300,6 @@ class BaseMetaboVisualizer:
             return
 
         import io
-        import matplotlib.pyplot as plt
         import matplotlib.image as mpimg
         from loguru import logger
 

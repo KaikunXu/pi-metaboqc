@@ -90,7 +90,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         svr_kernel="rbf",
         svr_c=1.0,
         svr_gamma="scale",
-        n_jobs=-1,
+        n_jobs=iu.__max_threading__,
         **kwargs
     ):
         """
@@ -139,6 +139,38 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         return self
 
     # =========================================================================
+    # Statistical Utility Methods
+    # =========================================================================
+
+    @staticmethod
+    def extract_qc_rsd_series(df_obj):
+        """Extracts the RSD series for QC samples across all features.
+
+        Args:
+            df_obj: MetaboInt object or standard pandas DataFrame.
+
+        Returns:
+            pd.Series: Feature-wise Relative Standard Deviation (RSD).
+        """
+        if hasattr(df_obj, "_qc") and not df_obj._qc.empty:
+            qc_data = df_obj._qc.astype(float)
+        else:
+            # Fallback for raw DataFrames without internal properties
+            st_col = df_obj.attrs.get("sample_type", "Sample Type")
+            qc_lbl = df_obj.attrs.get("sample_dict", {}).get("QC sample", "QC")
+            mask = df_obj.columns.get_level_values(st_col) == qc_lbl
+            qc_data = df_obj.loc[:, mask].astype(float)
+            
+        return (qc_data.std(axis=1, ddof=1) / qc_data.mean(axis=1)).dropna()
+
+    @staticmethod
+    def calculate_median_qc_rsd(df_obj):
+        """Calculates the scalar median RSD of QC samples."""
+        rsd_series = MetaboIntCorrector.extract_qc_rsd_series(df_obj)
+        if rsd_series.empty:
+            return float("nan")
+        return float(rsd_series.median())
+    # =========================================================================
     # Algorithm Factory & Fitting Logic
     # =========================================================================
 
@@ -184,13 +216,16 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 pred_y = y_scaler.inverse_transform(
                     pred_scaled.reshape(-1, 1)
                 ).ravel()
-            else:
-                # LOESS/RF fitting logic
-                x_fit = qc_x[valid] if "RF" in method.upper() else io_arr[qc_mask]
-                model.fit(x_fit, qc_y[valid])
+            elif "RF" in method.upper():
+                model.fit(qc_x[valid], qc_y[valid])
+                pred_y = model.predict(io_arr.reshape(-1, 1))
+            else: # LOWESS
+                x_fit_loess = io_arr[qc_mask][valid]
+                model.fit(x_fit_loess, qc_y[valid])
                 pred_y = model.predict(io_arr)
             return feat_idx, pred_y
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Feature {feat_idx} fit failed via {method}: {e}")
             return feat_idx, np.full(len(io_arr), np.nan)
 
     # =========================================================================
@@ -318,7 +353,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
 
         inter_path = os.path.join(
             output_dir, f"Inter_Batch_Corrected_{method}_{mode}.csv")
-        inter_df.to_csv(intra_path)
+        inter_df.to_csv(inter_path)
         logger.info(
             f"Inter-correction completed, saved as : {inter_path}")
         logger.info(
@@ -355,16 +390,102 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 fig_pred,
                 os.path.join(output_dir, f"Pred_Base_IS_{method}_{mode}.pdf")
             )
-            
-        logger.success(
-            "Data signal drift and batch-effect correction "
-            "completed.")
+        
         # ==========================================================
+        # Calculate standardized RSD metrics utilizing static method
+        raw_rsd = MetaboIntCorrector.calculate_median_qc_rsd(self)
+        
+        # 1. Update Intra-batch passport
         intra_df.attrs["pipeline_stage"] = "Intra-batch correction"
+        intra_df.attrs["qc_rsd_baseline"] = raw_rsd
+        intra_df.attrs["qc_rsd_current"] = (
+            MetaboIntCorrector.calculate_median_qc_rsd(intra_df)
+        )
+        
+        # 2. Update Inter-batch passport
         inter_df.attrs["pipeline_stage"] = "Inter-batch correction"
+        inter_df.attrs["qc_rsd_baseline"] = raw_rsd
+        inter_df.attrs["qc_rsd_current"] = (
+            MetaboIntCorrector.calculate_median_qc_rsd(inter_df)
+        )
         # ==========================================================
 
+        logger.success(
+            "Data signal drift and batch-effect correction completed."
+        )
         return intra_df, inter_df
+
+    @property
+    def correction_metrics(self):
+        """
+        Extracts drift and batch correction performance metrics.
+        """
+
+        stage = self.attrs.get("pipeline_stage", "Unknown")
+        
+        rsd_base = self.attrs.get("qc_rsd_baseline")
+        rsd_curr = self.attrs.get("qc_rsd_current")
+
+        metrics = {
+            "correction_status": stage,
+            "methodology": {
+                "base_est": self.attrs.get("base_est", "QC-SVR"),
+                "span": self.attrs.get("span", 0.3),
+                "svr_kernel": self.attrs.get("svr_kernel", "rbf"),
+                "n_tree": self.attrs.get("n_tree", 500),
+                "svr_c": self.attrs.get("svr_c", 100.0),
+                "svr_gamma": self.attrs.get("svr_gamma", 1.0),
+            },
+            "performance": {
+                "median_qc_rsd_baseline": rsd_base,
+                "median_qc_rsd_current": rsd_curr,
+                "absolute_rsd_reduction": None,
+                "relative_noise_reduction": None
+            }
+        }
+
+        # Calculate improvement ratio if values exist
+        if rsd_base and rsd_curr and rsd_base > 0:
+            abs_red = rsd_base - rsd_curr
+            rel_red = abs_red / rsd_base
+            metrics["performance"]["absolute_rsd_reduction"] = abs_red
+            metrics["performance"]["relative_noise_reduction"] = rel_red
+        return metrics
+
+    @property
+    def correction_metrics(self):
+        """Extracts drift and batch correction performance metrics."""
+        stage = self.attrs.get("pipeline_stage", "Unknown")
+        
+        rsd_base = self.attrs.get("qc_rsd_baseline")
+        rsd_curr = self.attrs.get("qc_rsd_current")
+
+        metrics = {
+            "correction_status": stage,
+            "methodology": {
+                "base_est": self.attrs.get("base_est", "QC-SVR"),
+                "span": self.attrs.get("span", 0.3),
+                "svr_kernel": self.attrs.get("svr_kernel", "rbf"),
+                "n_tree": self.attrs.get("n_tree", 500),
+                "svr_c": self.attrs.get("svr_c", 100.0),
+                "svr_gamma": self.attrs.get("svr_gamma", 1.0),
+            },
+            "performance": {
+                "median_qc_rsd_baseline": rsd_base,
+                "median_qc_rsd_current": rsd_curr,
+                "absolute_rsd_reduction": None,
+                "relative_noise_reduction": None
+            }
+        }
+
+        # Calculate improvement ratio if valid values exist
+        if rsd_base and rsd_curr and rsd_base > 0:
+            abs_red = rsd_base - rsd_curr
+            rel_red = abs_red / rsd_base
+            metrics["performance"]["absolute_rsd_reduction"] = abs_red
+            metrics["performance"]["relative_noise_reduction"] = rel_red
+            
+        return metrics
 
 
 class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
@@ -379,17 +500,32 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
     # Evaluation & Diagnostic Plotters
     # =========================================================================
 
-    def plot_corr_rsd(self, raw_df, intra_df, inter_df, st_col, qc_lbl, ax=None):
-        """Plot RSD boxplots across different correction stages."""
-        def get_rsd(df):
-            qc = df.loc[:, df.columns.get_level_values(st_col) == qc_lbl]
-            return (qc.std(axis=1, ddof=1) / qc.mean(axis=1)).dropna()
+    def plot_corr_rsd(
+        self, raw_df, intra_df, inter_df, st_col, qc_lbl, ax=None
+    ):
+        """Plots RSD boxplots across different signal correction stages.
 
-        # Aggregate RSD statistics
+        Args:
+            raw_df: Uncorrected MetaboInt object.
+            intra_df: Intra-batch corrected MetaboInt object.
+            inter_df: Inter-batch corrected MetaboInt object.
+            st_col: Column name indicating sample types.
+            qc_lbl: Label used for QC samples.
+            ax: Optional matplotlib Axes object for plotting.
+
+        Returns:
+            A matplotlib Figure or Axes object containing the boxplots.
+        """
+        # 1. Calculate raw RSD series using centralized static method
+        rsd_raw = MetaboIntCorrector.extract_qc_rsd_series(raw_df)
+        rsd_intra = MetaboIntCorrector.extract_qc_rsd_series(intra_df)
+        rsd_inter = MetaboIntCorrector.extract_qc_rsd_series(inter_df)
+
+        # 2. Aggregate RSD statistics into a long-form DataFrame
         plot_df = pd.DataFrame({
-            "Original": get_rsd(raw_df), 
-            "Intra-batch\ncorrected": get_rsd(intra_df),
-            "Inter-batch\ncorrected": get_rsd(inter_df)
+            "Original": rsd_raw,
+            "Intra-batch\ncorrected": rsd_intra,
+            "Inter-batch\ncorrected": rsd_inter
         }).melt(var_name="Stage", value_name="RSD")
 
         if ax is None:
@@ -405,10 +541,36 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             ), ax=current_ax
         )
         
+        # 3. Extract and format median RSD values directly from series.
+        m_raw = rsd_raw.median() * 100
+        m_intra = rsd_intra.median() * 100
+        m_inter = rsd_inter.median() * 100
+
+        annot_text = (
+            f"Median RSD:\n"
+            f"Original: {m_raw:.2f}%\n"
+            f"Intra-batch: {m_intra:.2f}%\n"
+            f"Inter-batch: {m_inter:.2f}%"
+        )
+
+        current_ax.text(
+            0.96, 0.98, annot_text, transform=current_ax.transAxes,
+            fontsize=10, verticalalignment="top",
+            horizontalalignment="right", clip_on=False,
+            bbox=dict(
+                boxstyle="round,pad=0.4", facecolor="white",
+                edgecolor="none", alpha=0.6))
+
+        # 4. Apply standard axis formatting.
         self._apply_standard_format(
-            current_ax, ylabel="RSD (%)",append_stage=False)
+            current_ax, ylabel="RSD (%)", append_stage=False
+        )
         pu.change_axis_format(current_ax, "percentage", "y")
-        return fig
+        
+        if ax is None:
+            return fig
+            
+        return current_ax
 
     def plot_single_is_scatter(
         self, df, feat, st, bt, io, qcl, actl, yl, bnd, ax=None

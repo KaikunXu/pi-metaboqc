@@ -131,75 +131,128 @@ def show_values_on_bars(
     axs: Union[plt.Axes, np.ndarray], 
     value_format: str = "{:.2f}", 
     fontsize: float = 11, 
-    position: str = "outside", 
-    font_color: str = "k", 
     show_percentage: bool = False,
-    pct_type: str = "total"
+    pct_type: str = "total",
+    stacked: bool = False,
+    skip_zero: bool = True,
+    threshold_pct: float = 0.10
 ) -> None:
-    """Annotate bar plots with their values.
+    """Annotate bar plots with their values automatically.
     
     Args:
         axs: A single matplotlib Axes or a numpy array of Axes.
         value_format: Format string for the numerical value.
         fontsize: Font size of the text annotation.
-        position: 'outside' or 'inside' the bar.
-        font_color: Color of the text annotation.
         show_percentage: Whether to calculate and append percentage.
         pct_type: 'total' (plot-level) or 'group' (hue-container-level).
+        stacked: Enable intelligent parsing for stacked bar charts.
+        skip_zero: Do not annotate patches with a height of exactly 0.
+        threshold_pct: Hide annotations if height is less than this
+            percentage of the stack's total height (stacked=True only).
     """
-    def _draw_label(ax: plt.Axes, p: mpl.patches.Patch, total: float):
-        """Internal helper to draw a single text label."""
+    def _get_auto_color(patch: mpl.patches.Patch) -> str:
+        r, g, b, a = patch.get_facecolor()
+        # Blend with white background for perceived luminance
+        r = r * a + 1.0 * (1 - a)
+        g = g * a + 1.0 * (1 - a)
+        b = b * a + 1.0 * (1 - a)
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return "white" if luminance < 0.65 else "k"
+
+    def _draw_label(
+        ax: plt.Axes, 
+        p: mpl.patches.Patch, 
+        total: float, 
+        stack_total: Optional[float] = None
+    ):
         height = p.get_height()
+        if skip_zero and height == 0:
+            return
+            
+        # Check threshold for stacked patches to avoid clutter
+        if stacked and stack_total is not None and stack_total > 0:
+            if (height / stack_total) < threshold_pct:
+                return
+                
         value = value_format.format(height)
-        
         if show_percentage and total > 0:
             value += "\n({:.1f}%)".format(100 * height / total)
-        
+            
         _x = p.get_x() + p.get_width() / 2
         
-        if position == "outside":
-            _y = p.get_y() + height
-        else:
+        # Split color logic based on placement position
+        if stacked:
             _y = p.get_y() + height / 2
+            va = "center"
+            # Inner patches use auto-adaptive color based on background
+            c = _get_auto_color(p)
+        else:
+            _y = p.get_y() + height
+            va = "bottom" if height >= 0 else "top"
+            # Outside annotations must be black against the white canvas
+            c = "k"
             
         ax.text(
-            _x, _y, value, ha="center", 
-            va="bottom" if (
-                position == "outside" and height >= 0) else "center", 
-            rotation=0, fontsize=fontsize, color=font_color
+            _x, _y, value, ha="center", va=va, 
+            rotation=0, fontsize=fontsize, color=c
         )
 
     def _show_on_single_plot(ax: plt.Axes):
-        # Logic 1: Percentage by group (for seaborn barplots with hue)
-        if show_percentage and pct_type == "group" and ax.containers:
+        if stacked and ax.containers:
+            stack_totals = {}
             for container in ax.containers:
-                # Filter out patches that were manually removed
-                valid_patches = [p for p in container if p in ax.patches]
-                if not valid_patches:
-                    continue
-                
-                # Calculate group total using only valid patches
-                group_total = float(
-                    np.sum([p.get_height() for p in valid_patches])
-                )
-                
-                for p in valid_patches:
-                    _draw_label(ax, p, group_total)
+                for p in container:
+                    if skip_zero and p.get_height() == 0:
+                        continue
+                    x_center = p.get_x() + p.get_width() / 2
+                    cur_top = p.get_y() + p.get_height()
+                    if x_center in stack_totals:
+                        stack_totals[x_center] = max(
+                            stack_totals[x_center], cur_top
+                        )
+                    else:
+                        stack_totals[x_center] = cur_top
+                        
+            for container in ax.containers:
+                for p in container:
+                    x_center = p.get_x() + p.get_width() / 2
+                    st_tot = stack_totals.get(x_center, 0)
+                    _draw_label(ax, p, 0, stack_total=st_tot)
                     
-        # Logic 2: Percentage by total across all bars (default legacy)
+            # Total value on top of the stacked bars (Always Black)
+            max_h = max(stack_totals.values()) if stack_totals else 1
+            for x_c, total_h in stack_totals.items():
+                if skip_zero and total_h == 0:
+                    continue
+                ax.text(
+                    x_c, total_h + (max_h * 0.02), 
+                    value_format.format(total_h), 
+                    ha="center", va="bottom", color="k", 
+                    fontsize=fontsize + 1, fontweight="bold"
+                )
         else:
-            valid_patches = ax.patches
-            total_height = float(
-                np.sum([p.get_height() for p in valid_patches])
-            )
-            for p in valid_patches:
-                _draw_label(ax, p, total_height)
-                
+            if show_percentage and pct_type == "group" and ax.containers:
+                for container in ax.containers:
+                    valid_p = [p for p in container if p in ax.patches]
+                    if not valid_p: 
+                        continue
+                    grp_tot = float(
+                        np.sum([p.get_height() for p in valid_p])
+                    )
+                    for p in valid_p:
+                        _draw_label(ax, p, grp_tot)
+            else:
+                v_p = ax.patches
+                tot_h = float(np.sum([p.get_height() for p in v_p]))
+                for p in v_p:
+                    _draw_label(ax, p, tot_h)
+                    
     if isinstance(axs, np.ndarray):
         for _, ax in np.ndenumerate(axs):
             _show_on_single_plot(ax)
     else:
         _show_on_single_plot(axs)
+
 
 def confidence_ellipse(
     x: np.ndarray, 

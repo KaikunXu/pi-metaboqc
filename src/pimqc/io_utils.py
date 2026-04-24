@@ -3,25 +3,18 @@
 Purpose of script: Utility functions for data I/O.
 """
 import os
-import sys
 import json
-import ruamel.yaml
 import zipfile
+
 from datetime import datetime
 from pathlib import Path
+from itertools import islice
 from typing import Any, Callable, Dict, Optional, Union
 from loguru import logger
-import joblib
-
-__max_threading__ = joblib.cpu_count(only_physical_cores=False)
-
-
-# pi-metaboqc/src/pimqc/io_utils.py
-
-import os
-import sys
 from contextlib import redirect_stdout, redirect_stderr
-from typing import Any
+
+__max_threading__ = os.cpu_count()
+
 
 class HiddenPrints:
     """Context manager to completely suppress stdout and stderr.
@@ -77,7 +70,7 @@ def is_jupyter() -> bool:
 
 def get_custom_progress(
     iterable: Any, total: int, desc: str = "Progress", 
-    color: str = None, bar_length: int = 80, position: int = 0
+    color: str = None, bar_length: int = 120, position: int = 0
 ) -> Any:
     """Unified progress bar adapter using tqdm for both CLI and Jupyter.
     
@@ -99,7 +92,9 @@ def get_custom_progress(
         "green", "blue", "red", "yellow", "cyan", "magenta", "white", "black"
     ] else None
     
-    custom_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} [ETA: {remaining}]"
+    custom_format = (
+        "{l_bar}{bar}| {n_fmt}/{total_fmt} [Elapsed: {elapsed} "
+        "| ETA: {remaining}]")
     
     return tqdm(
         iterable, 
@@ -309,3 +304,20 @@ def dir_tree(
     file_tree.append(
         f"\n{directories} directories" + (f", {files} files" if files else ""))
     return "\n".join(file_tree)
+
+def find_ambiguous_attrs(d, path=""):
+    """
+    Recursively scan the dictionary to find all complex types that would trigger
+    truth value ambiguous conditions (which causes error when concat dataframe).
+    """
+    import numpy as np
+    import pandas as pd
+    
+    for k, v in d.items():
+        current_path = f"{path} -> '{k}'" if path else f"'{k}'"
+        
+        if isinstance(v, (np.ndarray, pd.Series, pd.DataFrame, pd.Index)):
+            print(f"🚨Variable: {current_path} | Type: {type(v).__name__}")
+        
+        elif isinstance(v, dict):
+            find_ambiguous_attrs(v, current_path)

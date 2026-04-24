@@ -3,6 +3,9 @@
 pi-metaboqc: A Python-based high-throughput metabolomics data 
 quality control and preprocessing pipeline.
 """
+import sys
+import subprocess
+from loguru import logger
 
 # Core Data Structure
 from .core_classes import MetaboInt
@@ -32,3 +35,23 @@ __all__ = [
 
 # Package Version
 __version__ = "0.0.2.alpha"
+
+# --- Monkey Patch for subprocess UnicodeDecodeError on Windows ----------------
+if sys.platform == "win32":
+    _original_popen = subprocess.Popen
+
+    def _safe_popen(*args, **kwargs):
+        # Log the command being executed to identify the culprit
+        logger.warning(
+            f"Subprocess call intercepted: {args[0] if args else 'Unknown'}")
+        
+        # Force the subprocess to ignore decoding errors
+        if ('encoding' in kwargs) or ('text' in kwargs) or (
+            'universal_newlines' in kwargs):
+            kwargs['errors'] = 'ignore'
+        
+        return _original_popen(*args, **kwargs)
+
+    subprocess.Popen = _safe_popen
+    logger.debug("Windows subprocess patch applied successfully.")
+# ------------------------------------------------------------------------------

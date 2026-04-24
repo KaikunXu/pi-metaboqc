@@ -21,8 +21,6 @@ Built upon a robust Object-Oriented Programming (OOP) architecture, this framewo
 + **Top-tier Variance Stabilization:** Integrates PQN (Probabilistic Quotient Normalization) to address sample dilution bias, and VSN (Variance Stabilizing Normalization) to eliminate feature heteroscedasticity. Outputs production-ready diagnostic plots (RLE, Mean-Variance, MA Plots).
 + **Automated Data Storytelling:** Automatically captures retention rates and statistical metrics across all pipeline stages, leveraging Jinja2 and pypandoc to generate highly readable, expert-level Markdown / Word QC reports.
 
----
-
 ## 📦 Installation
 
 You can install the module via pip:
@@ -85,9 +83,9 @@ We also provide an interactive Jupyter Notebook that walk you through the entire
 Upon executing run_pipeline, the system strictly follows a refinement protocol:
 
 + **Building dataset:** Aligns metadata with the intensity matrix based on JSON configurations to instantiate the MetaboInt object.
-+ **Missing value filtering:** Classifies MAR/MNAR and removes invalid features with globally extreme missing rates.
++ **Missing value filtering:** Classifies MAR/MNAR and removes invalid features with high missing rates.
 + **Signal correction:** Executes Intra-batch and Inter-batch signal drift correction.
-+ **Quality filtering:** Precisely trims low-quality features via Blank/pooled-QC ratios and pooled-QC RSD.
++ **Quality filtering:** Precisely trims low-quality features via Blank/pooled-QC ratio and pooled-QC RSD.
 + **Missing value imputation:** Applies stratified imputation on remaining missing values based on simulation benchmarks or predefined settings.
 + **Normalization:** Performs Sample-level and Feature-level normalization.
 + **Quality assessment (Replicated):** Generates a comprehensive data assessment report, executing during all pipeline stages.
@@ -123,4 +121,5 @@ pi-metaboqc/
 
 ## 🤝 Contributing & License
 
-This project is licensed under the **MIT License**. Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/KaikunXu/pi-metaboqc/issues).
+This project is licensed under the **MIT License**.
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/KaikunXu/pi-metaboqc/issues).

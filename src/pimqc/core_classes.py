@@ -100,13 +100,33 @@ class MetaboInt(pd.DataFrame):
         """Override constructor to return MetaboInt."""
         return MetaboInt
 
+    # def __finalize__(
+    #     self, other: Any, method: Optional[str] = None, **kwargs: Any
+    # ) -> "MetaboInt":
+    #     """Copy custom attributes during object creation."""
+    #     super().__finalize__(other, method=method, **kwargs)
+    #     if hasattr(other, "attrs"):
+    #         self.attrs = copy.deepcopy(other.attrs)
+    #     return self
+
     def __finalize__(
         self, other: Any, method: Optional[str] = None, **kwargs: Any
     ) -> "MetaboInt":
-        """Copy custom attributes during object creation."""
-        super().__finalize__(other, method=method, **kwargs)
-        if hasattr(other, "attrs"):
+        """Copy custom attributes safely, avoiding Pandas array bugs."""
+        try:
+            super().__finalize__(other, method=method, **kwargs)
+        except ValueError:
+            # Bypass Pandas bug: array-like dict values crash pd.concat
+            pass
+
+        if method == "concat" and hasattr(other, "objs"):
+            for obj in other.objs:
+                if hasattr(obj, "attrs") and obj.attrs:
+                    self.attrs = copy.deepcopy(obj.attrs)
+                    break
+        elif hasattr(other, "attrs"):
             self.attrs = copy.deepcopy(other.attrs)
+            
         return self
 
     @cached_property
@@ -135,6 +155,16 @@ class MetaboInt(pd.DataFrame):
                 level=self.attrs["sample_type"]
             ) == self.attrs["sample_dict"]["Actual sample"]
         ]
+
+    @property
+    def is_multi_batch_flag(self) -> bool:
+        """Determine whether the current object contains multiple batches."""
+        bt_col = self.attrs.get("batch", "Batch")
+        
+        if bt_col in self.columns.names:
+            return len(self.columns.get_level_values(bt_col).unique()) > 1
+        return False
+
 
     @cached_property
     def valid_is(self) -> List[str]:
@@ -193,10 +223,9 @@ class MetaboInt(pd.DataFrame):
             ascending=True
         )
         return int_order_df
-
-    def calculate_boundaries(
-        self, x: np.ndarray, boundary_type: str = "IQR"
-    ) -> Tuple[float, float, float]:
+    
+    @staticmethod
+    def calculate_boundaries(x: np.ndarray, boundary_type: str = "IQR"):
         """Calculate statistical boundaries of a 1-dimensional array.
 
         Args:
@@ -221,3 +250,82 @@ class MetaboInt(pd.DataFrame):
             return solid, q1 - 1.5 * iqr, q3 + 1.5 * iqr
             
         return 0.0, 0.0, 0.0
+
+    @cached_property
+    def dataset_metrics(self):
+        """Extracts comprehensive summary metrics of the current dataset.
+
+        Calculates total feature counts, internal standard counts, sample
+        distributions, and an ordered list of analytical batches.
+
+        Returns:
+            Dict[str, Any]: A nested dictionary containing structural
+                metadata, ordered batch names, and sample distributions.
+        """
+        mode = self.attrs.get("mode","")
+        sample_dict = self.attrs.get("sample_dict", {})
+        qc_lbl = sample_dict.get("QC sample", "QC")
+        blk_lbl = sample_dict.get("Blank sample", "Blank")
+        act_lbl = sample_dict.get("Actual sample", "Sample")
+
+        is_count = len(self.valid_is) if hasattr(self, "valid_is") else 0
+        bt_col = self.attrs.get("batch", "Batch")
+        st_col = self.attrs.get("sample_type", "Sample Type")
+        io_col = self.attrs.get("inject_order", "Inject Order")
+
+        ordered_batches = []
+        if bt_col in self.columns.names:
+            bt_vals = self.columns.get_level_values(bt_col)
+            if isinstance(bt_vals.dtype, pd.CategoricalDtype):
+                ordered_batches = bt_vals.unique().sort_values().tolist()
+            else:
+                ordered_batches = sorted(bt_vals.unique().tolist())
+
+        metrics = {
+            "mode":mode,
+            "features": {
+                "total": self.shape[0],
+                "internal_standards": self.valid_is,
+                "internal_standards_count": is_count
+            },
+            "samples": {
+                "total": self.shape[1],
+                "qc": self._qc.shape[1] if hasattr(self, "_qc") else 0,
+                "blank": self._blank.shape[1] if hasattr(
+                    self, "_blank") else 0,
+                "actual": self._actual_sample.shape[1] if hasattr(
+                    self, "_actual_sample") else 0
+            },
+            "batches":{
+                "batch_count":len(ordered_batches),
+                "ordered_batches": ordered_batches,
+                "batch_distribution": {},
+            }
+
+        }
+
+        if bt_col in self.columns.names and st_col in self.columns.names:
+            # Prevent pandas ambiguity ValueError by disabling index generation
+            col_df = self.columns.to_frame(index=False)
+            dist_df = col_df.groupby(
+                [bt_col, st_col]
+            ).size().unstack(fill_value=0)
+
+            for b_id in ordered_batches:
+                if b_id in dist_df.index:
+                    row = dist_df.loc[b_id]
+                    
+                    # Extract injection order range for the current batch
+                    batch_mask = col_df[bt_col] == b_id
+                    orders = col_df.loc[batch_mask, io_col].astype(int)
+                    order_range = f"{orders.min()} ~ {orders.max()}"
+                    
+                    metrics["batches"]["batch_distribution"][str(b_id)] = {
+                        "Total": int(row.sum()),
+                        "QC": int(row.get(qc_lbl, 0)),
+                        "Blank": int(row.get(blk_lbl, 0)),
+                        "Sample": int(row.get(act_lbl, 0)),
+                        "Inject Order": order_range
+                    }
+
+        return metrics

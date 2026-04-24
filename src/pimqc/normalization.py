@@ -7,6 +7,8 @@ import os
 import copy
 import numpy as np
 import pandas as pd
+from functools import cached_property
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -18,6 +20,7 @@ from . import core_classes
 from . import visualizer_classes
 from . import io_utils as iu
 from . import plot_utils as pu
+from . import stat_utils as su
 
 
 class MetaboIntNormalizer(core_classes.MetaboInt):
@@ -28,13 +31,12 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     """
 
     _metadata = ["attrs"]
-
     def __init__(
         self,
         *args,
         pipeline_params=None,
-        col_norm="PQN",
-        row_norm="VSN",
+        sample_wise_norm="PQN",
+        feature_wise_norm="VSN",
         quantile_norm=False,
         **kwargs
     ):
@@ -43,19 +45,20 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         Args:
             *args: Variable length arguments passed to pandas DataFrame.
             pipeline_params: Global settings for the pipeline classes.
-            col_norm: Column normalization method to apply.
-            row_norm: Row normalization method to apply.
+            sample_wise_norm: Sample-wise (column) normalization method.
+            feature_wise_norm: Feature-wise (row) scaling/normalization.
             quantile_norm: Whether to apply quantile normalization.
             **kwargs: Extra arguments passed to pandas DataFrame.
         """
         super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
 
         norm_configs = {
-            "col_norm": col_norm,
-            "row_norm": row_norm,
+            "sample_wise_norm": sample_wise_norm,
+            "feature_wise_norm": feature_wise_norm,
             "quantile_norm": quantile_norm
         }
 
+        # Priority extraction from JSON/pipeline_params
         if pipeline_params and "MetaboIntNormalizer" in pipeline_params:
             norm_configs.update(pipeline_params["MetaboIntNormalizer"])
 
@@ -74,13 +77,44 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         return self
 
     # ====================================================================
+    # Statistical Similarity Metrics
+    # ====================================================================
+    def calculate_normalization_similarity(self, sample_obj, feature_obj):
+        """Compute pairwise JSD metrics across 3 normalization stages."""
+        stages = {
+            "Before": su._extract_log2_target(self),
+            "Sample-Norm": su._extract_log2_target(sample_obj),
+            "Feature-Norm": su._extract_log2_target(feature_obj, check_is_scaled=True)
+        }
+        
+        pairs = [
+            ("Before", "Sample-Norm"),
+            ("Before", "Feature-Norm"),
+            ("Sample-Norm", "Feature-Norm")
+        ]
+        
+        results = {"QC": {}, "Sample": {}}
+        
+        # Isolate columns for specific group evaluation
+        qc_cols = self._qc.columns
+        sam_cols = self._actual_sample.columns
+        
+        for p1, p2 in pairs:
+            if stages[p1] is None or stages[p2] is None:
+                continue
+            
+            p_key = f"{p1} vs {p2}"
+            for grp, cols in [("QC", qc_cols), ("Sample", sam_cols)]:
+                if cols.empty: 
+                    continue
+                d1 = stages[p1][cols].values.flatten()
+                d2 = stages[p2][cols].values.flatten()
+                results[grp][p_key] = su.calc_jsd_similarity(d1, d2)
+                
+        return results
+    # ====================================================================
     # Data Transformation & Matrix Extractors (Static Methods)
     # ====================================================================
-
-    @staticmethod
-    def calc_log2_transform(df):
-        """Perform log2 transformation after replacing zeros with NaNs."""
-        return np.log2(df.astype(float).replace({0: np.nan}))
 
     @staticmethod
     def calc_rle_matrix(df_log):
@@ -106,19 +140,20 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     
     @staticmethod
     def calc_tic_normalization(df):
-        """Apply Total Ion Current (TIC) normalization column-wise."""
+        """Apply Total Ion Current (TIC) normalization sample-wise."""
         col_sums = df.sum(axis="index")
+        col_sums = col_sums.replace(0, 1)
         return df.div(col_sums, axis="columns") * col_sums.median()
 
     @staticmethod
     def calc_median_normalization(df):
-        """Apply Median normalization column-wise."""
+        """Apply Median normalization sample-wise."""
         col_medians = df.median(axis="index")
         return df.div(col_medians, axis="columns") * col_medians.median()
     
     @staticmethod
     def calc_pqn_normalization(df):
-        """Apply Probabilistic Quotient Normalization (PQN) column-wise."""
+        """Apply Probabilistic Quotient Normalization (PQN) sample-wise."""
         df_safe = df.replace({0: np.nan})
         ref_spectrum = df_safe.median(axis="columns")
         quotients = df_safe.div(ref_spectrum, axis="index")
@@ -207,16 +242,21 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     
     @staticmethod
     def calc_auto_scaling(df):
-        """Apply Auto Scaling (Z-score) row-wise."""
+        """Apply Auto Scaling (Z-score) feature-wise."""
         row_means = df.mean(axis="columns")
         row_stds = df.std(axis="columns", ddof=1)
+        # [CRITICAL] To prevent division by zero from resulting in NaN, 
+        # replace the denominator of the constant feature (variance=0) with 1.
+        row_stds = row_stds.replace(0, 1)
         return df.sub(row_means, axis="index").div(row_stds, axis="index")
     
     @staticmethod
     def calc_pareto_scaling(df):
-        """Apply Pareto Scaling row-wise."""
+        """Apply Pareto Scaling feature-wise."""
         row_means = df.mean(axis="columns")
         row_stds = np.sqrt(df.std(axis="columns", ddof=1))
+        # [CRITICAL] Same as calc_auto_scaling.
+        row_stds = row_stds.replace(0, 1)
         return df.sub(row_means, axis="index").div(row_stds, axis="index")
 
     # ====================================================================
@@ -270,72 +310,129 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     # ====================================================================
 
     def apply_normalization(
-        self, col_norm=None, row_norm=None, quantile_norm=None
+        self, sample_wise_norm=None, feature_wise_norm=None, quantile_norm=None
     ):
         """Execute normalizations and return intermediate & final objects.
 
         Args:
-            col_norm: Override for column normalization method.
-            row_norm: Override for row normalization method.
+            sample_wise_norm: Override for sample-wise method.
+            feature_wise_norm: Override for feature-wise method.
             quantile_norm: Override for quantile normalization flag.
         
         Returns:
-            tuple: (Column-normalized object or None, Final-normalized object).
+            tuple: (Sample-wise obj or None, Feature-wise obj).
         """
         blank_cols = self._blank.columns
         target_cols = self.columns.difference(blank_cols)
-
         df_target = self[target_cols].copy()
 
         if df_target.empty:
             raise ValueError("No target samples available for normalization.")
 
-        c_norm = col_norm or self.attrs.get("col_norm")
-        r_norm = row_norm or self.attrs.get("row_norm")
-        is_qnt = quantile_norm
-        if is_qnt is None:
-            is_qnt = self.attrs.get("quantile_norm", False)
+        s_norm = sample_wise_norm or self.attrs.get("sample_wise_norm")
+        f_norm = feature_wise_norm or self.attrs.get("feature_wise_norm")
+        is_qnt = (
+            quantile_norm if quantile_norm is not None 
+            else self.attrs.get("quantile_norm", False)
+        )
 
         if is_qnt:
             df_target = self.calc_quantile_normalization(df_target)
-            obj_col = None
+            logger.info("Quantile normalization completed.")
+            obj_sample = None
         else:
-            # Stage 1: Column (Sample-wise) Normalization
-            if c_norm in ("TIC", "tic"):
+            # Stage 1: Sample-Wise (Column) Normalization
+            if s_norm in ("TIC", "tic"):
                 df_target = self.calc_tic_normalization(df_target)
-            elif c_norm in ("Median", "median"):
+            elif s_norm in ("Median", "median"):
                 df_target = self.calc_median_normalization(df_target)
-            elif c_norm in ("PQN", "pqn"):
+            elif s_norm in ("PQN", "pqn"):
                 df_target = self.calc_pqn_normalization(df_target)
             
-            df_col = df_target.copy()
-            obj_col = self._constructor(df_col).__finalize__(self)
+            obj_sample = self._constructor(df_target.copy()).__finalize__(self)
+            logger.info("Sample-wise normalization completed.")
 
-            # Stage 2: Row (Feature-wise) Scaling/Normalization
-            if r_norm in ("VSN", "vsn"):
+            # Stage 2: Feature-Wise (Row) Scaling/Normalization
+            vsn_meta = {}
+            if f_norm in ("VSN", "vsn"):
                 df_target, vsn_meta = self.calc_vsn_normalization(df_target)
-                self.attrs.update(vsn_meta)
-            elif r_norm in ("Auto", "auto"):
+                # self.attrs.update(vsn_meta)
+            elif f_norm in ("Auto", "auto"):
                 df_target = self.calc_auto_scaling(df_target)
-            elif r_norm in ("Pareto", "pareto"):
+            elif f_norm in ("Pareto", "pareto"):
                 df_target = self.calc_pareto_scaling(df_target)
+            logger.info("Feature-wise normalization completed.")
 
-        obj_final = self._constructor(df_target).__finalize__(self)
+        obj_feature = self._constructor(df_target).__finalize__(self)
+        if vsn_meta:
+            obj_feature.attrs.update(vsn_meta)
         
-        return obj_col, obj_final
+        return obj_sample, obj_feature
+
+    @cached_property
+    def normalization_metrics(self):
+        """Extracts metrics and configurations from the normalization process.
+
+        Dynamically checks the 'pipeline_stage' attribute to determine whether
+        the current object represents the sample-wise or feature-wise stage,
+        and returns the corresponding metadata and similarity metrics.
+
+        Returns:
+            Dict[str, Any]: A structured dictionary containing applied 
+                strategies, stage identifiers, and KDE similarities.
+        """
+        # 1. Identify current pipeline stage from the data passport
+        curr_stage = self.attrs.get("pipeline_stage", "Unknown")
+
+        # 2. Extract normalization strategies
+        s_norm = self.attrs.get("sample_wise_norm", "None")
+        f_norm = self.attrs.get("feature_wise_norm", "None")
+        is_qnt = self.attrs.get("quantile_norm", False)
+
+        # 3. Build the core strategy payload
+        metrics = {
+            "current_stage": curr_stage,
+            "strategies": {
+                "quantile_norm_active": is_qnt,
+            }
+        }
+
+        if not is_qnt:
+            metrics["strategies"]["sample_wise_method"] = s_norm
+            metrics["strategies"]["feature_wise_method"] = f_norm
+
+        # 4. Stage-specific payload injection
+        # Only inject heavy metrics if object has completed feature scaling
+        if curr_stage == "Feature-wise normalization" or is_qnt:
+            
+            # Extract VSN parameters (Exclude the massive 'vsn_offsets' array
+            # to prevent JSON bloat in downstream Markdown rendering)
+            if f_norm.upper() == "VSN":
+                metrics["vsn_parameters"] = {
+                    "vsn_scale": self.attrs.get("vsn_scale", float("nan")),
+                    "vsn_shift": self.attrs.get("vsn_shift", float("nan"))
+                }
+
+            # Extract Jensen-Shannon Divergence (JSD) similarities
+            kde_jsd = self.attrs.get("kde_similarity_metrics", {})
+            if kde_jsd:
+                metrics["distribution_similarity"] = kde_jsd
+
+        return metrics
+
 
     @iu._exe_time
     def execute_normalization(
-        self, output_dir, col_norm=None, row_norm=None, quantile_norm=None
+        self, output_dir, sample_wise_norm=None, 
+        feature_wise_norm=None, quantile_norm=None
     ):
         """Execute normalization workflow, save outputs, and generate plots.
 
         Args:
             output_dir: Directory path to save output files.
-            col_norm: Optional column normalization method override.
-            row_norm: Optional row normalization method override.
-            quantile_norm: Optional quantile normalization flag override.
-
+            sample_wise_norm: Optional sample-wise normalization method.
+            feature_wise_norm: Optional feature-wise normalization method.
+            quantile_norm: Optional quantile normalization flag.
         Returns:
             tuple: (Column-normalized MetaboInt, Final-normalized MetaboInt).
         """
@@ -343,16 +440,16 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
 
         mode = self.attrs.get("mode", "POS")
         st_col = self.attrs.get("sample_type", "Sample Type")
-        
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
         act_lbl = sample_dict.get("Actual sample", "Sample")
         
-        c_norm = col_norm or self.attrs.get("col_norm", "None")
-        r_norm = row_norm or self.attrs.get("row_norm", "None")
-        is_qnt = quantile_norm
-        if is_qnt is None:
-            is_qnt = self.attrs.get("quantile_norm", False)
+        s_norm = sample_wise_norm or self.attrs.get("sample_wise_norm", "None")
+        f_norm = feature_wise_norm or self.attrs.get("feature_wise_norm", "None")
+
+        is_qnt = (
+            quantile_norm if quantile_norm is not None 
+            else self.attrs.get("quantile_norm", False))
 
         blank_count = len(self._blank.columns)
         if blank_count > 0:
@@ -362,37 +459,43 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             suffix = f"Quantile_{mode}"
             logger.info("Applying Standalone Quantile Normalization.")
         else:
-            suffix = f"Col_{c_norm}_Row_{r_norm}_{mode}"
+            suffix = f"Sample_{s_norm}_Feature_{f_norm}_{mode}"
             logger.info(
-                f"Applying Normalization | Col: {c_norm} | Row: {r_norm}"
+                f"Applying Normalization | Sample: {s_norm} | Feature: {f_norm}"
             )
 
-        col_data, final_data = self.apply_normalization(
-            col_norm=c_norm, row_norm=r_norm, quantile_norm=is_qnt
-        )
+        sample_obj, feature_obj = self.apply_normalization(
+            sample_wise_norm=s_norm, 
+            feature_wise_norm=f_norm, 
+            quantile_norm=is_qnt)
+        
+        if not is_qnt and sample_obj is not None:
+            file_path_sample = os.path.join(
+                output_dir, f"Normalized_Data_Sample_Only_{s_norm}_{mode}.csv")
+            sample_obj.attrs["pipeline_stage"] = "Sample-wise normalization"
+            sample_obj.to_csv(
+                path_or_buf=file_path_sample, na_rep="NA", encoding="utf-8-sig")
 
-        if not is_qnt and col_data is not None:
-            col_suffix = f"Col_Only_{c_norm}_{mode}"
-            file_path_col = os.path.join(
-                output_dir, f"Normalized_Data_{col_suffix}.csv"
-            )
-            col_data.attrs["pipeline_stage"] = "Column normalization"
-            col_data.to_csv(
-                path_or_buf=file_path_col, na_rep="NA", encoding="utf-8-sig"
-            )
-
-        file_path_final = os.path.join(
+        file_path_feature = os.path.join(
             output_dir, f"Normalized_Data_{suffix}.csv"
         )
-        final_data.attrs["pipeline_stage"] = "Final normalization"
-        final_data.to_csv(
-            path_or_buf=file_path_final, na_rep="NA", encoding="utf-8-sig"
+        feature_obj.attrs["pipeline_stage"] = "Feature-wise normalization"
+        feature_obj.to_csv(
+            path_or_buf=file_path_feature, na_rep="NA", encoding="utf-8-sig"
         )
 
+        # Calculate similarity metrics
+        sim_metrics = self.calculate_normalization_similarity(
+            sample_obj, feature_obj)
+        
+        # Store metrics in Data Passport for normalization_metrics property
+        feature_obj.attrs["kde_similarity_metrics"] = sim_metrics
+        
         # Build visualizer utilizing 3-stage objects
         vis = MetaboVisualizerNormalizer(
-            raw_obj=self, col_obj=col_data, norm_obj=final_data
+            raw_obj=self, sample_obj=sample_obj, feature_obj=feature_obj
         )
+
 
         fig_rle = vis.plot_rle_boxplot(
             st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl
@@ -408,14 +511,14 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             file_path=os.path.join(output_dir, f"Norm_MA_3Stage_{suffix}.pdf")
         )
 
-        fig_kde = vis.plot_density_kde()
+        fig_kde = vis.plot_density_kde(metrics=sim_metrics)
         vis.save_and_close_fig(
             fig=fig_kde, 
             file_path=os.path.join(output_dir, f"Norm_KDE_Split_{suffix}.pdf")
         )
         
         fig_grid = vis.plot_normalization_summary_grid(
-            st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl
+            st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl, metrics=sim_metrics
         )
         if fig_grid:
             grid_path = os.path.join(
@@ -423,53 +526,20 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             )
             vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
 
-        fig_var = vis.plot_variance_stabilization_grid()
-        if fig_var is not None:
-            var_path = os.path.join(
-                output_dir, f"Norm_Variance_Check_{suffix}.pdf"
-            )
-            vis.save_and_show_pw(pw_obj=fig_var, file_path=var_path)
-            
         logger.success("Data normalization completed successfully.")
 
-        return col_data, final_data
+        return sample_obj, feature_obj
 
 
 class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
     """Visualization suite for evaluating 3-stage data normalization."""
 
-    def __init__(self, raw_obj, col_obj, norm_obj):
-        """Initialize the visualizer with raw, col-normalized, and final data.
-
-        Args:
-            raw_obj: MetaboInt object representing data before normalization.
-            col_obj: MetaboInt object representing data after column norm.
-            norm_obj: MetaboInt object representing fully normalized data.
-        """
-        super().__init__(metabo_obj=norm_obj)
+    def __init__(self, raw_obj, sample_obj, feature_obj):
+        """Initialize with raw, sample-wise, and feature-wise data."""
+        super().__init__(metabo_obj=feature_obj)
         self.raw_obj = raw_obj
-        self.col_obj = col_obj
-        self.norm_obj = norm_obj
-
-    def _get_log_target(self, obj, check_vsn=False):
-        """Extract target columns and conditionally apply log2 transform.
-        
-        Args:
-            obj: The MetaboInt object to process.
-            check_vsn: If True, blocks double-logging for VSN-scaled objects.
-            
-        Returns:
-            pd.DataFrame: Log-scaled target data, or None if obj is None.
-        """
-        if obj is None:
-            return None
-            
-        target_cols = obj.columns.difference(obj._blank.columns)
-        
-        if check_vsn and obj.attrs.get("row_norm") in ("VSN", "vsn"):
-            return obj[target_cols].astype(float)
-            
-        return obj.calc_log2_transform(obj[target_cols])
+        self.sample_obj = sample_obj
+        self.feature_obj = feature_obj
 
     # ====================================================================
     # Plotting Methods
@@ -479,8 +549,8 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         """Plot multi-stage RLE boxplot combining QC and target samples."""
         stages = [
             (self.raw_obj, "Before"),
-            (self.col_obj, "Col-Norm"),
-            (self.norm_obj, "Final")
+            (self.sample_obj, "Sample-Norm"),
+            (self.feature_obj, "Feature-Norm")
         ]
         
         long_dfs = []
@@ -488,8 +558,10 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             if obj is None: 
                 continue
             
-            # VSN checking is strictly assigned to the 'Final' stage
-            log_data = self._get_log_target(obj, check_vsn=(label == "Final"))
+            # VSN checking is strictly assigned to the 'Feature-Norm' stage
+            log_data = su._extract_log2_target(
+                obj, check_is_scaled=(label == "Feature-Norm")
+            )
             rle = obj.calc_rle_matrix(log_data)
             
             df_flat = rle.T.reset_index()
@@ -520,7 +592,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         
         plot_df["Stage"] = pd.Categorical(
             plot_df["Stage"], 
-            categories=["Before", "Col-Norm", "Final"], 
+            categories=["Before", "Sample-Norm", "Feature-Norm"],  # Updated order
             ordered=True
         )
 
@@ -547,10 +619,11 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
     def plot_ma_scatter(self, ax_list=None, cax=None):
         """Plot multi-stage MA scatter to assess intensity bias reduction."""
         stages = [
-            (self._get_log_target(self.raw_obj), "Before"),
-            (self._get_log_target(self.col_obj), "Col-Norm"),
-            (self._get_log_target(self.norm_obj, True), "Final")
-        ]
+            (su._extract_log2_target(self.raw_obj), "Before"),
+            (su._extract_log2_target(self.sample_obj), "Sample-Norm"),
+            (
+                su._extract_log2_target(self.feature_obj, check_is_scaled=True),
+                "Feature-Norm")]
         
         active_stages = [(obj, lbl) for obj, lbl in stages if obj is not None]
         n_stages = len(active_stages)
@@ -566,10 +639,9 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             axes = ax_list
             fig = axes[0].figure
 
-        # Compute global bounds for consistency across stages
-        all_a_vals = np.concatenate(
-            [self.raw_obj.calc_ma_arrays(log_df)[0] for log_df, _ in active_stages]
-        )
+        all_a_vals = np.concatenate([
+            self.raw_obj.calc_ma_arrays(log_df)[0] 
+            for log_df, _ in active_stages])
         a_min, a_max = np.nanmin(all_a_vals), np.nanmax(all_a_vals)
         margin_x = (a_max - a_min) * 0.08
         extent = (a_min - margin_x, a_max + margin_x, -5, 5)
@@ -582,7 +654,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             a_vals, m_vals = self.raw_obj.calc_ma_arrays(log_df)
             hb = axes[i].hexbin(
                 x=a_vals, y=m_vals, gridsize=40, extent=extent,
-                cmap=color_map, mincnt=1, # bins="log"
+                cmap=color_map, mincnt=1,
             )
             axes[i].axhline(0, color="k", linestyle="--", linewidth=1.5)
             self._apply_standard_format(
@@ -593,31 +665,21 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             axes[i].set_xlim(extent[0], extent[1])
             axes[i].set_ylim(extent[2], extent[3])
 
-            # sample_size = min(len(a_vals), 2000)
-            # idx = np.random.choice(len(a_vals), sample_size, replace=False)
-
-            # sns.regplot(
-            #     x=a_vals[idx], y=m_vals[idx], 
-            #     scatter=False, lowess=True, 
-            #     color="k", line_kws={
-            #         "linewidth": 2, "zorder": 5, "linestyle":"dashdot"}, 
-            #     ax=axes[i])
-
         if cax is not None and hb is not None:
             cb = fig.colorbar(hb, cax=cax)
             cb.set_label("Log10(Count)")
         elif ax_list is None and hb is not None:
-            cb = fig.colorbar(hb, ax=axes) # pyright: ignore
+            cb = fig.colorbar(hb, ax=axes)
             cb.set_label("Log10(Count)")
             
         if ax_list is None:
             return fig
         return axes
 
-    def plot_density_kde(self, ax_qc=None, ax_sample=None):
-        """Plot KDE overlay split into QC and Sample subplots across stages."""
+    def plot_density_kde(self, metrics=None, ax_qc=None, ax_sample=None):
+        """Plot KDE overlay with quantitative similarity annotations."""
         if ax_qc is None or ax_sample is None:
-            fig, (ax_qc, ax_sample) = plt.subplots(1, 2, figsize=(10, 4))
+            fig, (ax_qc, ax_sample) = plt.subplots(1, 2, figsize=(12, 5))
             return_fig = True
         else:
             fig = ax_qc.figure
@@ -625,74 +687,71 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
 
         stages = [
             (self.raw_obj, "Before", "tab:gray"),
-            (self.col_obj, "Col-Norm", "tab:blue"),
-            (self.norm_obj, "Final", "tab:red")
+            (self.sample_obj, "Sample-Norm", "tab:blue"),
+            (self.feature_obj, "Feature-Norm", "tab:red")
         ]
 
+        # 1. Plot the KDE Curves
         for obj, label, color in stages:
-            if obj is None: 
-                continue
-                
-            log_df = self._get_log_target(obj, check_vsn=(label == "Final"))
+            if obj is None: continue
+            is_vsn = (label == "Feature-Norm")
+            log_df = su._extract_log2_target(obj, check_is_scaled=is_vsn)
             
-            qc_cols = obj._qc.columns
-            exclude = qc_cols.union(obj._blank.columns)
-            sam_cols = obj.columns.difference(exclude)
-            
-            splits = [
-                (qc_cols, ax_qc, "QC"), 
-                (sam_cols, ax_sample, "Sample")
-            ]
-            
-            for cols, ax, group_name in splits:
-                if cols.empty: 
-                    continue
-                    
-                data_to_plot = log_df[cols].values.flatten()
-                data_to_plot = data_to_plot[~np.isnan(data_to_plot)]
-                
-                if len(data_to_plot) > 1:
+            for cols, ax, name in [
+                (obj._qc.columns, ax_qc, "QC"), 
+                (obj._actual_sample.columns, ax_sample, "Sample")
+            ]:
+                if not cols.empty:
+                    data = log_df[cols].values.flatten()
                     sns.kdeplot(
-                        data=data_to_plot, ax=ax, color=color, 
+                        data[~np.isnan(data)], ax=ax, color=color, 
                         label=label, lw=2, alpha=0.7
                     )
-                    
-                self._apply_standard_format(
-                    ax=ax, title=f"Density Overlay ({group_name})",
-                    xlabel="Log2 Intensity", ylabel="Density", 
-                    append_stage=False
-                )
+
+        # 2. Annotate with Metrics (JSD Only)
+        for ax, name in [(ax_qc, "QC"), (ax_sample, "Sample")]:
+            if metrics and name in metrics:
+                # Construct 4-line text: Header + 3 comparisons
+                lines = ["Jensen-Shannon Divergence"]
                 
-                if ax.get_legend_handles_labels()[0]:
-                    ax.legend(loc="best")
-                    self._format_single_legend(ax=ax, title="Stage")
+                for pair, vals in metrics[name].items():
+                    # Safely extract JSD value whether it's a dict or float
+                    jsd_val = vals.get("jsd", vals) if isinstance(
+                        vals, dict) else vals
+                    lines.append(f"{pair}: {jsd_val:.3f}")
+                
+                m_str = "\n".join(lines)
+                
+                # Render text box in the upper right corner
+                ax.text(
+                    0.96, 0.02, m_str, transform=ax.transAxes, 
+                    fontsize=10, verticalalignment="bottom", 
+                    horizontalalignment="right", clip_on=False,
+                    bbox=dict(
+                        boxstyle="round,pad=0.4", facecolor="white", 
+                        edgecolor="none", alpha=0.6))
+
+            self._apply_standard_format(
+                ax=ax, title=f"Density Overlay ({name})", 
+                xlabel="Log2 Intensity", ylabel="Density", append_stage=False
+            )
+            
+            # Move legend to the upper left to avoid overlapping the text box
+            if ax.get_legend_handles_labels()[0]:
+                self._format_single_legend(ax=ax)
 
         if return_fig:
-            plt.tight_layout()
-            return fig # pyright: ignore
-            
+            # plt.tight_layout()
+            return fig
         return ax_qc, ax_sample
 
     def plot_mean_variance_dependency(self, target_obj, label, ax=None):
-        """Plot Mean vs Standard Deviation to validate variance stabilization.
-
-        Homoscedasticity is a key goal of normalization. This plot checks
-        if the standard deviation remains constant across intensity levels.
-
-        Args:
-            target_obj: MetaboInt object (raw, col-norm, or finalized).
-            label: Stage name to display in the title (e.g., 'Before').
-            ax: Matplotlib axis object.
-
-        Returns:
-            plt.Axes: The axis containing the diagnostic plot.
-        """
+        """Plot Mean vs Standard Deviation to validate stabilization."""
         if ax is None:
             fig, ax = plt.subplots(figsize=(5, 4))
         
-        # Use the safe wrapper to handle VSN vs Log2 logic
-        is_norm = (label == "Final")
-        log_df = self._get_log_target(target_obj, check_vsn=is_norm)
+        is_norm = (label == "Feature-Norm") # Updated parameter check
+        log_df = su._extract_log2_target(target_obj, check_is_scaled=is_norm)
         
         if log_df is None:
             return ax
@@ -711,7 +770,6 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         ax.scatter(
             x_val, y_val, color="tab:gray", alpha=0.3, s=5, label="Features"
         )
-        # Apply LOWESS smoothing to visualize the mean-variance trend
         sns.regplot(
             x=x_val, y=y_val, scatter=False, lowess=True, 
             color="tab:red", line_kws={"linewidth": 2}, 
@@ -729,24 +787,20 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         
         return ax
 
-    def plot_variance_stabilization_grid(self):
-        """Combine 3-stage Mean-Variance plots into a diagnostic grid.
-        
-        Returns:
-            patchworklib.Brick: Combined grid object or None.
-        """
+    def plot_variance_stabilization_grid(self, clear_pw=True):
+        """Combine 3-stage Mean-Variance plots into a diagnostic grid."""
         try:
             import patchworklib as pw
         except ImportError:
             return None
+        
+        if clear_pw:
+            pw.clear()  
 
-        pw.clear()
-
-        # Define active stages based on the normalization workflow
         stages = [(self.raw_obj, "Before")]
-        if self.col_obj is not None:
-            stages.append((self.col_obj, "Col-Norm"))
-        stages.append((self.norm_obj, "Final"))
+        if self.sample_obj is not None:
+            stages.append((self.sample_obj, "Sample-Norm"))
+        stages.append((self.feature_obj, "Feature-Norm"))
 
         bricks = []
         for obj, label in stages:
@@ -756,24 +810,29 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             )
             bricks.append(brick)
 
-        # Assemble the grid horizontally (1x2 or 1x3)
+        # Pad with a spacer to ensure alignment when n_stages == 2
+        if len(bricks) == 2:
+            spacer = pw.Brick(figsize=(4, 4), label="Var_Spacer")
+            spacer.axis("off")
+            bricks.append(spacer)
+
         res_grid = bricks[0]
         for b in bricks[1:]:
             res_grid = res_grid | b
             
         return res_grid
 
-    def plot_normalization_summary_grid(self, st_col, qc_lbl, act_lbl):
-        """Combine RLE, KDE, and MA plots into a dynamic global grid."""
+    def plot_normalization_summary_grid(
+        self, st_col, qc_lbl, act_lbl, metrics=None):
+        """Combine RLE, KDE, MA, and Variance plots into a global grid."""
         try:
             import patchworklib as pw
         except ImportError:
-            logger.warning("patchworklib not found. Skipping summary grid.")
             return None
 
         pw.clear()
 
-        # Top Row: RLE | KDE QC | KDE Sample
+        # Row 1: RLE | KDE QC | KDE Sample
         ax_rle = pw.Brick(figsize=(4, 4), label="RLE")
         self.plot_rle_boxplot(
             st_col=st_col, qc_lbl=qc_lbl, act_lbl=act_lbl, ax=ax_rle
@@ -781,12 +840,12 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
 
         ax_qc = pw.Brick(figsize=(4, 4), label="KDE_QC")
         ax_sam = pw.Brick(figsize=(4, 4), label="KDE_SAM")
-        self.plot_density_kde(ax_qc=ax_qc, ax_sample=ax_sam)
+        self.plot_density_kde(ax_qc=ax_qc, ax_sample=ax_sam, metrics=metrics)
         
         row1 = ax_rle | ax_qc | ax_sam
 
-        # Bottom Row: MA Scatters (Variable length based on active stages)
-        n_stages = 2 if self.col_obj is None else 3
+        # Row 2: MA Scatters
+        n_stages = 2 if self.sample_obj is None else 3
         ax_ma_list = [
             pw.Brick(figsize=(4, 4), label=f"MA_{i}") for i in range(n_stages)
         ]
@@ -799,10 +858,14 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             row2 = row2 | ax
         row2 = row2 | ax_cb
         
-        # Pad row2 if needed to match row1 width visually
         if n_stages == 2:
-            ax_spacer = pw.Brick(figsize=(4, 4), label="Spacer")
+            ax_spacer = pw.Brick(figsize=(4, 4), label="MA_Spacer")
             ax_spacer.axis("off")
             row2 = row2 | ax_spacer
 
+        # Row 3: Variance Stabilization
+        row3 = self.plot_variance_stabilization_grid(clear_pw=False)
+
+        if row3 is not None:
+            return (row1 / row2) / row3
         return row1 / row2

@@ -33,11 +33,18 @@ class PCAEngine:
         
         # Transpose to (samples, features) and ensure float type
         feat_df = df.loc[:, valid_mask].transpose().astype(float)
-
-        # Apply log transformation with half-minimum imputation
-        feat_df = feat_df.replace({0: np.nan})
-        feat_df = feat_df.fillna(feat_df.min().min() / 2)
-        feat_df = np.log(feat_df)
+        
+        # [Core Fix]: Added a negative number detection interceptor.
+        # Pareto scaling (centralization) or VSN processing will always produce 
+        # negative numbers.
+        # If negative numbers exist, it means the data has undergone advanced 
+        # transformation and should absolutely not be logarithmed; otherwise, 
+        # NaN will be generated.
+        if not (feat_df < 0).any().any():
+            # Apply log transformation with half-minimum imputation
+            feat_df = feat_df.replace({0: np.nan})
+            feat_df = feat_df.fillna(feat_df.min().min() / 2)
+            feat_df = np.log(feat_df)
 
         labels = feat_df.index.to_frame().reset_index(drop=True)
         feat_cols = list(set(feat_df.index.names) - {sn_col})
