@@ -1,4 +1,4 @@
-# `pi-metaboqc`: π-Metabolomics-Quality Control
+# `pi-metaboqc`: $\pi$-Metabolomics-Quality Control
 
 [![Status](https://badgen.net/badge/status/active-development/orange)](https://github.com/KaikunXu/pi-metaboqc)
 [![Status](https://badgen.net/badge/stage/alpha/red)](https://github.com/KaikunXu/pi-metaboqc)
@@ -23,59 +23,43 @@ Built upon a robust Object-Oriented Programming (OOP) architecture, this framewo
 
 ## 📦 Installation
 
-You can install the module via pip:
+We strongly recommend installing `pi-metaboqc` within a **Conda** virtual environment. 
 
-Option 1: Install directly from pypi or GitHub (Recommended for most users)
+The comprehensive HTML/PDF reporting module in this package relies on `WeasyPrint` for high-quality academic rendering. WeasyPrint requires complex system-level C libraries (such as GTK3, Pango, and Cairo) which are notoriously difficult to configure via standard `pip` on Windows. **Using Conda resolves these graphical dependencies automatically.**
 
-```bash
-# Install module from The Python Package Index (PyPI)
-pip install pi-metaboqc #  <-- Not valid now
-
-# Or you can choose install module from GitHub
-pip install git+https://github.com/KaikunXu/pi-metaboqc.git
-``` 
-
-Option 2: Install from source (For developers)
-
-If you want to contribute to the project, modify the algorithm, or explore the source code, you can clone the repository and install it in "editable" mode. This means any changes you make to the local code will immediately take effect without needing to reinstall the package.
+### Step 1: Create and Activate Conda Environment
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/KaikunXu/pi-metaboqc.git
-
-# 2. Navigate into the project directory
-cd pi-metaboqc
-
-# 3. Install in editable mode
-pip install -e .
+conda create -n pimqc_env python=3.13
+conda activate pimqc_env
 ```
+
+### Step 2: Install Rendering Engine via Conda
+
+Install `WeasyPrint` via conda-forge to ensure all necessary system graphical libraries are correctly linked before installing the Python package:
+
+```bash
+conda install -c conda-forge weasyprint
+```
+
+### Step 3: Install `pi-metaboqc`
+
+Once the environment is ready, install the package directly from the GitHub repository using `pip`:
+
+```bash
+pip install git+https://github.com/KaikunXu/pi-metaboqc.git
+```
+
+### 💡 Note on Fallback Rendering
+
+If you choose to skip `Step 2` or if WeasyPrint fails to load properly on your specific system, `pi-metaboqc` features a built-in multi-stage defense mechanism. It will automatically attempt to download and use TinyTeX (XeLaTeX) for academic-grade PDF rendering, or fall back to generating a fully styled HTML report. You will always get your data!
+
 
 ## 🚀 Quickstart & Tutorials
 
-You only need three files to trigger the fully automated pipeline: a sample metadata table, a raw intensity matrix, and a JSON configuration file.
+You only need three files to trigger the fully automated pipeline: a sample metadata table, a raw intensity matrix, and a JSON/YAML configuration file. We provide an interactive Jupyter Notebook that walk you through the entire quality control workflow:
 
-```python
-import pandas as pd
-from pimqc.pipeline import run_pipeline
-
-# 1. Load metadata, intensity matrix and pipeline parameters
-meta_df = pd.read_csv("src/pimqc/data/project_meta.csv")
-int_df = pd.read_csv("src/pimqc/data/project_intensity.csv", index_col=[0])
-params_path = "src/pimqc/data/pipeline_parameters.json"
-
-# 2. Execute the fully automated pi-metaboqc pipeline
-run_pipeline(
-    meta_df=meta_df,
-    int_df=int_df,
-    params_path=params_path,
-    output_dir="./Output_Results",
-    compress_output=True
-)
-```
-
-We also provide an interactive Jupyter Notebook that walk you through the entire quality control workflow:
-
-+ **[Quickstart Tutorial](https://github.com/KaikunXu/pi-metaboqc/blob/main/examples/quickstart.ipynb)**: A End-to-End workflow guide from data building to normalization.
++ **[Quickstart Tutorial](https://github.com/KaikunXu/pi-metaboqc/blob/main/examples/quickstart.ipynb)**: A End-to-End workflow guide from data building to report generation.
 
 
 ## 🛠️ Pipeline Workflow
@@ -114,9 +98,12 @@ pi-metaboqc/
 │       ├── io_utils.py           # I/O operations
 │       ├── plot_utils.py         # Plotting utilities
 │       ├── pca_utils.py          # Underlying PCA dimensionality reduction
-│       ├── report_utils.py       # Automated markdown reporting
-│       └── data/                 # Demo and testing datasets...
-└── tests/                        # Unit testing and E2E stress testing...
+│       ├── stat_utils.py         # Shared statistical utility functions
+│       ├── report_utils.py       # Automated markdown and pdf report rendering
+│       ├── data/...              # Demo and testing datasets...
+│       └── templates/...         # Template file for generating reports...
+│── tests/                        # Unit testing and E2E stress testing...
+└── ...                           # Other files required by this module...
 ```
 
 ## 🤝 Contributing & License

@@ -80,7 +80,6 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         self,
         *args,
         pipeline_params=None,
-        mode="POS",
         batch="Batch",
         inject_order="Inject Order",
         base_est="QC-RLSC",
@@ -99,7 +98,6 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         Args:
             *args: Variable length arguments for pandas DataFrame.
             pipeline_params: Configuration dictionary for the pipeline.
-            mode: MS Polarity ("POS" or "NEG").
             batch: Column name representing batch information.
             inject_order: Column name representing injection order.
             base_est: Estimator type ("QC-RLSC", "QC-RFSC", or "QC-SVR").
@@ -115,10 +113,10 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
 
         sc_configs = {
-            "mode": mode, "batch": batch, "inject_order": inject_order,
+            "batch": batch, "inject_order": inject_order,
             "base_est": base_est, "span": span, "n_tree": n_tree,
-            "random_state": random_state, "svr_kernel": svr_kernel,
-            "svr_c": svr_c, "svr_gamma": svr_gamma, "n_jobs": n_jobs
+            "svr_kernel": svr_kernel, "svr_c": svr_c, "svr_gamma": svr_gamma,
+            "n_jobs": n_jobs
         }
 
         if pipeline_params and "MetaboIntCorrector" in pipeline_params:
@@ -175,7 +173,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
     # =========================================================================
 
     def build_correction_pipeline(
-        self, method, span, n_tree, random_state, svr_kernel, svr_c, svr_gamma
+        self, method, span, n_tree, global_seed, svr_kernel, svr_c, svr_gamma
     ):
         """Construct the ML pipeline based on explicit hyperparameters."""
         name = method.upper()
@@ -184,7 +182,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         elif name in ("RF", "RANDOM FOREST", "QC-RFSC"):
             # Revert: Remove StandardScaler for RF to match alpha version
             return RandomForestRegressor(
-                n_estimators=n_tree, random_state=random_state
+                n_estimators=n_tree, random_state=global_seed
             )
         elif name in ("SVR", "QC-SVR"):
             # Maintain Scaling for SVR to ensure numerical stability
@@ -293,7 +291,6 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         qc_lbl = sample_dict.get("QC sample", "QC")
         act_lbl = sample_dict.get("Actual sample", "Sample")
         
-        mode = self.attrs.get("mode", "POS")
         method = self.attrs.get("base_est", "QC-RLSC")
         n_jobs = self.attrs.get("n_jobs", -1)
         
@@ -302,7 +299,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         
         kwargs_dict = {
             "span": self.attrs.get("span"), "n_tree": self.attrs.get("n_tree"),
-            "random_state": self.attrs.get("random_state"),
+            "global_seed": self.attrs.get("global_seed", 123),
             "svr_kernel": self.attrs.get("svr_kernel"),
             "svr_c": self.attrs.get("svr_c"), 
             "svr_gamma": self.attrs.get("svr_gamma")
@@ -317,7 +314,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         )
         
         pred_df.to_csv(os.path.join(
-            output_dir, f"QC_Fit_Baseline_{method}_{mode}.csv"
+            output_dir, f"QC_Fit_Baseline_{method}.csv"
         ))
         logger.info("Baseline fitting completed")
         
@@ -329,7 +326,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             ).__finalize__(self)
 
         intra_path = os.path.join(
-            output_dir, f"Intra_Batch_Corrected_{method}_{mode}.csv")
+            output_dir, f"Intra_Batch_Corrected_{method}.csv")
         intra_df.to_csv(intra_path)
         logger.info(
             f"Intra-correction completed, saved as : {intra_path}")
@@ -352,7 +349,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 )
 
         inter_path = os.path.join(
-            output_dir, f"Inter_Batch_Corrected_{method}_{mode}.csv")
+            output_dir, f"Inter_Batch_Corrected_{method}.csv")
         inter_df.to_csv(inter_path)
         logger.info(
             f"Inter-correction completed, saved as : {inter_path}")
@@ -365,7 +362,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         fig_rsd = vis.plot_corr_rsd(self, intra_df, inter_df, st_col, qc_lbl)
         vis.save_and_close_fig(
             fig_rsd, os.path.join(
-                output_dir, f"QC_RSD_Boxplot_{method}_{mode}.pdf")
+                output_dir, f"QC_RSD_Boxplot_{method}")
         )
         
         if len(self.valid_is) > 0:
@@ -375,10 +372,10 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 bt_col, io_col, qc_lbl, act_lbl, bound_type
             )
             for feat, fig in fig_dict.items():
-                safe_feat = re.sub(r'[^a-zA-Z0-9]', '_', feat)
+                safe_feat = re.sub(r"[^a-zA-Z0-9]", "_", feat)
                 vis.save_and_close_fig(
                     fig,
-                    os.path.join(output_dir, f"Scatter_{safe_feat}_{mode}.pdf")
+                    os.path.join(output_dir, f"Scatter_{safe_feat}")
                 )
             
             # 4.3: Predicted Baseline Overlay Grid
@@ -388,7 +385,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             )
             vis.save_and_close_fig(
                 fig_pred,
-                os.path.join(output_dir, f"Pred_Base_IS_{method}_{mode}.pdf")
+                os.path.join(output_dir, f"Pred_Base_IS_{method}")
             )
         
         # ==========================================================
@@ -450,41 +447,6 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             rel_red = abs_red / rsd_base
             metrics["performance"]["absolute_rsd_reduction"] = abs_red
             metrics["performance"]["relative_noise_reduction"] = rel_red
-        return metrics
-
-    @property
-    def correction_metrics(self):
-        """Extracts drift and batch correction performance metrics."""
-        stage = self.attrs.get("pipeline_stage", "Unknown")
-        
-        rsd_base = self.attrs.get("qc_rsd_baseline")
-        rsd_curr = self.attrs.get("qc_rsd_current")
-
-        metrics = {
-            "correction_status": stage,
-            "methodology": {
-                "base_est": self.attrs.get("base_est", "QC-SVR"),
-                "span": self.attrs.get("span", 0.3),
-                "svr_kernel": self.attrs.get("svr_kernel", "rbf"),
-                "n_tree": self.attrs.get("n_tree", 500),
-                "svr_c": self.attrs.get("svr_c", 100.0),
-                "svr_gamma": self.attrs.get("svr_gamma", 1.0),
-            },
-            "performance": {
-                "median_qc_rsd_baseline": rsd_base,
-                "median_qc_rsd_current": rsd_curr,
-                "absolute_rsd_reduction": None,
-                "relative_noise_reduction": None
-            }
-        }
-
-        # Calculate improvement ratio if valid values exist
-        if rsd_base and rsd_curr and rsd_base > 0:
-            abs_red = rsd_base - rsd_curr
-            rel_red = abs_red / rsd_base
-            metrics["performance"]["absolute_rsd_reduction"] = abs_red
-            metrics["performance"]["relative_noise_reduction"] = rel_red
-            
         return metrics
 
 

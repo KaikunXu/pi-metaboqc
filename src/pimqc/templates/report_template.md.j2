@@ -1,73 +1,64 @@
-# $\pi$-metaboqc Sequential Pipeline Audit Report
+#  🐈Metabolomics Quality Control Report via $\pi$-metaboqc
 
-**Report Date:** {{ date }}  |  **Analytical Mode:** {{ step1.mode }}
-**Project Status:** COMPLETED
-
----
-
-## [Step 1-2] Data Construction & Raw QA
-- **Milestone:** Initializing standardized MetaboInt object.
-- **Raw Features:** {{ step1.raw_feats }} | **Total Samples:** {{ step1.total_samples }}
-- **Batches Identified:** {{ step1.n_batches }}
-
-![Raw Data Quality Assessment](./assets/02_QA_Raw_Grid.png)
-
-### Batch Distribution Summary
-
-| Batch ID | Total Samples | Actual Samples | QC Samples | Blank Samples |
-| :--- | :--- | :--- | :--- | :--- |
-{% for batch in raw_data.batch_hierarchy.ordered_batches %}
-| {{ batch }} | {{ raw_data.batch_hierarchy.distribution[batch].Total }} | {{ raw_data.batch_hierarchy.distribution[batch].Sample }} | {{ raw_data.batch_hierarchy.distribution[batch].QC }} | {{ raw_data.batch_hierarchy.distribution[batch].Blank }} |
-{% endfor %}
+> **Date Generated:** {{ metadata.date }}<br>
+> **Ionization Mode:** {{ metadata.mode }}<br>
+> **Quality-control Engine:** [pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc) (v{{ raw_dataset.pipeline_params["pi-metaboqc_version"] | default('1.0.0') }})<br>
 
 ---
 
-## [Step 3-4] Missing Value Topology (Stage 1)
-- **Filtering Strategy:** Applied {{ step3.mv_threshold * 100 }}% Missing Value (MV) threshold.
-- **Topology Diagnostics:**
-    - **MAR (Missing At Random):** {{ step3.mar_count }} features.
-    - **MNAR (Missing Not At Random):** {{ step3.mnar_count }} features.
-- **Retained Features:** {{ step3.retained }}
+## 1 Performance during total quality-control pipeline steps
 
-![Stage 1 Filtered QA](./assets/04_QA_Filtered_Stage1_Grid.png)
+###  1.1 Experimental configuration & cohort profiling
 
----
+The initial uncorrected analytical dataset, acquired in **{{ metadata.mode }}** ionization mode, comprises a total of **{{ raw_dataset.pipeline_params.features.total }}** detected mass spectral features across **{{ raw_dataset.pipeline_params.samples.total }}** injections. {% if raw_dataset.pipeline_params.features.internal_standards_count > 0 %}To ensure quantification fidelity and monitor system stability, a suite of **{{ raw_dataset.pipeline_params.features.internal_standards_count }}** internal standards (including {{ raw_dataset.pipeline_params.features.internal_standards|join(', ') }}) was stably integrated into the experimental design. {% endif %}
 
-## [Step 5-7] Signal Drift & Batch Correction
-- **Correction Algorithm:** {{ step5.method }}
-- **Reference Samples:** {{ step5.ref_type }}
-- **Status:** Intra-batch drift and inter-batch offsets normalized.
+The sample cohort is strategically distributed across **{{ raw_dataset.pipeline_params.batches.batch_count }}** analytical batches{% if raw_dataset.pipeline_params.batches.batch_count > 1 %}, processed in the sequential order of **{{ raw_dataset.pipeline_params.batches.ordered_batches|join(' → ') }}**{% endif %}. Specifically, the cohort consists of **{{ raw_dataset.pipeline_params.samples.actual }}** actual biological samples, **{{ raw_dataset.pipeline_params.samples.qc }}** pooled Quality Control (QC) samples, and **{{ raw_dataset.pipeline_params.samples.blank }}** blank samples, establishing a robust foundation for downstream noise removal.
 
-![Inter-Batch Correction QA](./assets/07_QA_Inter_Grid.png)
+**Detailed Batch & Injection Distribution:**
+{{ raw_dataset.batch_table }}
 
 ---
 
-## [Step 8-9] Quality-Driven Filtering (Stage 2)
-- **Blank Filter:** Removed features with intensity < {{ step8.blank_ratio }}x blank levels.
-- **Precision Filter:** Removed features with QC RSD > {{ step8.rsd_threshold * 100 }}%.
-- **Retained Features:** {{ step8.retained }}
+### 1.2 High missing malue features filtering
 
----
+To ensure the statistical power of downstream differential analysis, a multi-stage missing value filtering strategy was applied at the **{{ high_mv_feature_filtering.pipeline_params.filtering_level }}** level. 
 
-## [Step 10-11] Simulation-Guided Imputation
-- **Optimization Strategy:** Benchmarked multiple algorithms via MNAR/MAR simulation.
-- **Autonomous Selection:** **{{ step10.method }}** was selected as the optimal imputer.
-- **NRMSE (Low Abundance):** {{ step10.nrmse_low }} (Fidelity check).
+The filtering process strictly adhered to a sample-wise tolerance of **{{ "%.1f"|format(high_mv_feature_filtering.pipeline_params.thresholds.sample_mv_tol * 100) }}%**. 
 
-![Imputation Diagnostic Grid](./assets/11_QA_Imputed_Data_Grid.png)
+Features were categorized into Missing At Random (MAR) and Missing Not At Random (MNAR) based on their distribution patterns across groups and QC samples. Specifically, the pipeline utilized a group-wise MNAR tolerance of **{{ "%.1f"|format(high_mv_feature_filtering.pipeline_params.thresholds.mnar_group_tol * 100) }}%** and a QC-specific tolerance of **{{ "%.1f"|format(high_mv_feature_filtering.pipeline_params.thresholds.mnar_qc_tol * 100) }}%** to prevent the premature loss of potentially biologically significant biomarkers that exhibit group-specific presence.
 
----
+### 1.3 Intra-batch data correction (signal drift smoothing)
+To mitigate time-dependent instrument drift and within-batch intensity fluctuations, the pipeline employed the **{{ intra_signal_correction.pipeline_params.methodology.base_est }}** algorithm as the primary smoothing engine. The model was configured with the following parameters: {% if intra_signal_correction.pipeline_params.methodology.base_est in ("QC-RLSC", "LOESS", "loess") %}a smoothing span of **{{ intra_signal_correction.pipeline_params.methodology.span }}**.{% endif %}{% if intra_signal_correction.pipeline_params.methodology.base_est in ("QC-RFSC", "RF", "rf") %}an ensemble of **{{ intra_signal_correction.pipeline_params.methodology.n_tree }}** decision trees.{% endif %}{% if intra_signal_correction.pipeline_params.methodology.base_est in ("QC-SVR", "SVR") %}a **{{ intra_signal_correction.pipeline_params.methodology.svr_kernel }}** kernel, a regularization parameter (C) of **{{ intra_signal_correction.pipeline_params.methodology.svr_c }}**, and a kernel coefficient (gamma) of **{{ intra_signal_correction.pipeline_params.methodology.svr_gamma }}**.{% endif %}
 
-## [Step 12-14] Final Normalization & QA
-- **Sample Alignment:** {{ step12.col_method }} (Column-wise).
-- **Feature Stabilization:** {{ step12.row_method }} (Row-wise scaling).
-- **Final High-Quality Feature Set:** **{{ step14.final_feats }}**
+This stage achieved a substantial improvement in data stability. The median Relative Standard Deviation (RSD) across all QC samples was reduced from a baseline of **{{ "%.2f"|format(intra_signal_correction.pipeline_params.performance.median_qc_rsd_baseline * 100) }}%** down to **{{ "%.2f"|format(intra_signal_correction.pipeline_params.performance.median_qc_rsd_current * 100) }}%**, effectively eliminating **{{ "%.2f"|format(intra_signal_correction.pipeline_params.performance.relative_noise_reduction * 100) }}%** of the estimated systemic noise.
 
-![Final Normalized QA](./assets/14_QA_Final_Grid.png)
+### 1.4 Inter-batch data correction (batch effect remval)
 
----
 
-## [Step 15] Execution Audit Summary
-- **Initial Features:** {{ step1.raw_feats }}
-- **Final Features:** {{ step14.final_feats }}
-- **Global Retention Rate:** {{ retention_rate }}%
+## 2 Qualtiy assessment during total quality-control pipeline steps
+
+####  2.1 Quality Assessment on Raw Data
+Prior to any algorithmic intervention, a baseline quality assessment was executed to evaluate the inherent instrument drift and uncorrected systemic noise. 
+
+The global Principal Component Analysis (PCA) reveals an intrinsic batch silhouette score of **{{ "%.4f"|format(raw_dataset.qa_assessments.pca.batch_silhouette) }}** and a relative analytical dispersion of **{{ "%.4f"|format(raw_dataset.qa_assessments.pca.relative_dispersion) }}**. Furthermore, initial multi-variate outlier diagnosis has flagged **{{ raw_dataset.qa_assessments.outliers.combined_count }}** injections as potential extreme outliers based on combined Squared Prediction Error (SPE) and Hotelling's T² tests.
+
+**Baseline Principal Component Metrics:**
+{{ raw_dataset.pca_table }}
+
+**Baseline Relative Standard Deviation (RSD) Distribution:**
+The proportion of robust features (RSD < 30%) in QC samples reflects the raw state of instrument stability before analytical correction:
+{{ raw_dataset.rsd_table }}
+
+###  2.2 Feature Retention & Sparsity Reduction
+
+Following the classification, the dataset contained **{{ high_mv_feature_filtering.pipeline_params.missing_classification.mar_count }}** MAR features and a total of **{{ high_mv_feature_filtering.pipeline_params.missing_classification.mnar_total }}** MNAR features (comprising **{{ high_mv_feature_filtering.pipeline_params.missing_classification.mnar_group }}** group-specific and **{{ high_mv_feature_filtering.pipeline_params.missing_classification.mnar_qc }}** QC-specific features). 
+
+After the execution of the high-sparsity filter, **{{ high_mv_feature_filtering.pipeline_params.feature_retention.dropped_count }}** features were pruned, resulting in a post-filtering count of **{{ high_mv_feature_filtering.pipeline_params.feature_retention.after_mv_filter_count }}** high-quality features. This represents a robust feature retention rate of **{{ high_mv_feature_filtering.pipeline_params.feature_retention.retention_rate_pct }}%**, significantly enhancing the data density for subsequent signal correction.
+
+###  2.3 Inter-Batch Alignment & Variance Integration
+
+For multi-batch datasets, the **{{ inter_signal_correction.pipeline_params.methodology.base_est }}** algorithm was further utilized to harmonize intensity scales across different analytical runs. By integrating information from the cross-batch QC samples, the inter-batch variance was significantly suppressed, reaching a final post-alignment QC RSD of **{{ "%.2f"|format(inter_signal_correction.pipeline_params.performance.median_qc_rsd_current * 100) }}%**.
+
+**Post-Correction PCA Multivariate Metrics:**
+The elimination of batch effects is quantitatively reflected in the updated PCA scores:
+{{ inter_signal_correction.pca_table }}

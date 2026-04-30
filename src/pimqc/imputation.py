@@ -107,30 +107,30 @@ class MetaboIntImputer(core_classes.MetaboInt):
     # Core Algorithms (Log2 Space)
     # ====================================================================
     @staticmethod
-    def impute_by_constant(df_log, fraction = 1.0, mode = "row"):
+    def impute_by_constant(df_log, fraction = 1.0, imp_mode = "row"):
         """Imputes missing values using a constant LOD heuristic.
 
         Args:
             df: The dataset (typically log-transformed).
             fraction: The heuristic multiplier (e.g., 0.5 for half-minimum).
-            mode: 'row' (feature-wise), 'column' (sample-wise), or 'global'.
+            imp_mode: "row" (feature-wise), "column" (sample-wise), or "global".
             is_log2: If True, executes fractional math in linear space safely.
 
         Returns:
             Dataframe with constant imputation applied.
         """
-        if mode in ("row","row-wise","row min"):
+        if imp_mode in ("row","row-wise","row min"):
             raw_mins = df_log.min(axis=1)
-        elif mode in ("column","column-wise","column min"):
+        elif imp_mode in ("column","column-wise","column min"):
             raw_mins = df_log.min(axis=0)
-        else: # elif mode in ("global", "global min"):
+        else: # elif imp_mode in ("global", "global min"):
             raw_mins = df_log.min().min()
 
         linear_mins = np.exp2(raw_mins) - 1.0
         target_mins = np.log2((linear_mins * fraction) + 1.0)
 
         # 3. Broadcast the computed minimums to fill NaNs
-        if mode in ("row", "row-wise", "row min"):
+        if imp_mode in ("row", "row-wise", "row min"):
             return df_log.apply(lambda x: x.fillna(target_mins[x.name]), axis=1)
         else:
             return df_log.fillna(target_mins)
@@ -146,13 +146,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
         )
 
     @staticmethod
-    def impute_by_prob(df_log):
+    def impute_by_prob(df_log, global_seed = 123):
         """Impute using a normal distribution to simulate values below LOD.
         
         This method adopts a left-shifted Gaussian distribution (Perseus style)
         without hard clipping, preserving the natural variance of the unobserved
         low-abundance tail.
         """
+        rng = np.random.default_rng(global_seed)
         res_df = df_log.copy()
         for col in res_df.columns:
             s = res_df[col]
@@ -168,11 +169,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
             shift_std = max(0.3 * sd, 0.01)
             
             # Draw random values simulating noise below the detection limit
-            drawn = np.random.normal(
-                loc=shift_mean, 
-                scale=shift_std, 
-                size=s.isna().sum()
-            )
+            drawn = rng.normal(
+                loc=shift_mean, scale=shift_std, size=s.isna().sum())
             
             # [CRITICAL FIX]: Prevent negative intensities in linear space
             # Log2 values must be >= 0 so that exp2(x) - 1.0 >= 0
@@ -219,7 +217,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
     def generate_gmm_noise_mask(
         df_log: pd.DataFrame, 
         mask_ratio: float, 
-        noise_factor: float = 0.7
+        noise_factor: float = 0.7,
+        global_seed: int = 123
     ) -> pd.DataFrame:
         """Generate a MNAR mask using GMM probability scoring with added noise.
         
@@ -230,7 +229,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
         detected, and some moderate signals might be missed).
         """
         from sklearn.mixture import GaussianMixture
-        np.random.seed(42)
+        rng = np.random.default_rng(global_seed)
+        
         shape = df_log.shape
 
         # Extract valid data (exclude pre-existing NaNs to avoid GMM errors)
@@ -244,7 +244,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 False, index=df_log.index, columns=df_log.columns)
             
         # Fit GMM to resolve the bimodal distribution (noise vs. true signal)
-        gmm = GaussianMixture(n_components=2, random_state=42)
+        gmm = GaussianMixture(n_components=2, random_state=global_seed)
         gmm.fit(valid_data)
         lower_cluster_idx = np.argmin(gmm.means_)
         
@@ -253,7 +253,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         
         # Introduce randomness: Generate uniform noise.
         # The generated noise strictly ranges from 0 to noise_factor
-        noise = np.random.uniform(0, noise_factor, size=base_prob.shape)
+        noise = rng.uniform(0, noise_factor, size=base_prob.shape)
         
         # Calculate final score = baseline probability + uniform noise
         final_score = base_prob + noise
@@ -307,23 +307,25 @@ class MetaboIntImputer(core_classes.MetaboInt):
         idx_mar: pd.Index,
         target_cols: pd.Index,
         method: str,
-        ratio: float = 0.05
+        ratio: float = 0.05,
+        global_seed: int = 123
     ) -> tuple:
         """Runs MNAR/MAR mask simulation strictly on MAR features."""
         # 1. Isolate the MAR subset for benchmarking
         mar_data = df_log.loc[idx_mar, target_cols].astype(float)
         
         # 2. Generate the boolean mask (True where values should be removed)
-        mask = self.generate_gmm_noise_mask(mar_data, ratio)
+        mask = self.generate_gmm_noise_mask(
+            mar_data, ratio, global_seed=global_seed)
         
         # 3. Apply the mask to create the simulated missing dataset
         masked_df = mar_data.copy()
         masked_df[mask] = np.nan
         
         # 4. Execute imputation on the masked subset
-        if method == "probabilistic":
-            imp_res = self.impute_by_prob(masked_df)
-        elif method == "knn":
+        if method in ("Probabilistic", "probabilistic", "Prob", "prob"):
+            imp_res = self.impute_by_prob(masked_df, global_seed=global_seed)
+        elif method in ("knn", "KNN"):
             k_val = self.attrs.get("knn_neighbors", 5)
             imp_res = self.impute_by_knn(masked_df, k_val)
         else:
@@ -346,7 +348,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
         df_log: pd.DataFrame,
         idx_mar: pd.Index,
         target_cols: pd.Index,
-        ratio: float = 0.05
+        ratio: float = 0.05,
+        global_seed: int =123
     ) -> tuple:
         """Autonomously selects the best algorithm using MAR-only subset."""
         candidates = ["knn", "probabilistic","median"]
@@ -355,9 +358,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
         cache = {}
 
         for cand in candidates:
-            logger.info(f"Simulating '{cand}' on MAR subset...")
+            logger.info(f'Simulating "{cand}" on MAR subset...')
             emet, tv, pv = self.run_benchmark_simulation(
-                df_log, idx_mar, target_cols, cand, ratio
+                df_log, idx_mar, target_cols, cand, ratio, global_seed
             )
             cache[cand] = (emet, tv, pv)
             
@@ -383,8 +386,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
         """Executes hybrid imputation and exports complete visualizations.
 
         Args:
-            mar_method: Strategy for MAR features ('auto', 'knn', 'prob').
-            mnar_method: LOD calculation axis ('row', 'column', 'global').
+            mar_method: Strategy for MAR features ("auto", "knn", "prob").
+            mnar_method: LOD calculation axis ("row-wise", "column-wise", "global").
             mnar_fraction: Multiplier for minimum value (default 0.5).
             knn_neighbors: Number of neighbors for KNN algorithm.
             sim_ratio: Masking ratio for autonomous benchmarking.
@@ -396,7 +399,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         # ====================================================================
         # 1. Parameter Extraction & Priority Fallback
         # ====================================================================
-        _mnar = mnar_method or self.attrs.get("mnar_method", "row")
+        _mnar = mnar_method or self.attrs.get("mnar_method", "row-wise")
         _frac = (
             mnar_fraction if mnar_fraction is not None 
             else self.attrs.get("mnar_fraction", 0.5))
@@ -409,7 +412,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
             sim_ratio if sim_ratio is not None 
             else self.attrs.get("sim_mask_ratio", 0.05))
 
-        mode = self.attrs.get("mode", "POS")
+        # Extract the global random seed securely from the metadata passport
+        _seed = self.attrs.get("global_seed", 123)
+
         target_cols = self.columns.difference(self._blank.columns)
 
         logger.info(
@@ -431,7 +436,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
             mnar_imp = MetaboIntImputer.impute_by_constant(
                 df_log=df_log.loc[idx_mnar, target_cols],
                 fraction=_frac,
-                mode=_mnar,
+                imp_mode=_mnar,
             )
             df_log.loc[idx_mnar, target_cols] = mnar_imp
         else:
@@ -443,30 +448,32 @@ class MetaboIntImputer(core_classes.MetaboInt):
         idx_mar = pd.Index(self.attrs.get("idx_mar", [])).intersection(
             df_log.index)
         cache, eval_met, t_vals, p_vals = {}, {}, [], []
-        is_auto = (_mar == "auto")
+        is_auto = (_mar in ("auto", "Auto", "Best", "best"))
+        
         if len(idx_mar) > 0:
             if is_auto:
+                # Pass seed to autonomous selector
                 _mar, cache = self.select_best_algorithm(
-                    df_log, idx_mar, target_cols, _ratio
-                )
+                    df_log, idx_mar, target_cols, _ratio, _seed)
                 eval_met, t_vals, p_vals = cache[_mar]
             else:
+                # Pass seed to direct simulation
                 eval_met, t_vals, p_vals = self.run_benchmark_simulation(
-                    df_log, idx_mar, target_cols, _mar, _ratio
-                )
+                    df_log, idx_mar, target_cols, _mar, _ratio, _seed)
                 cache = {_mar: (eval_met, t_vals, p_vals)}
                 
-            logger.info(f"Executing '{_mar}' on {len(idx_mar)} MAR features.")
+            logger.info(f'Executing "{_mar}" on {len(idx_mar)} MAR features.')
             mar_slice = df_log.loc[idx_mar, target_cols]
             
-            if _mar == "probabilistic":
-                mar_imp = MetaboIntImputer.impute_by_prob(mar_slice)
-            elif _mar == "knn":
+            if _mar in ("Probabilistic", "probabilistic", "Prob", "prob"):
+                # Ensure final execution also uses the global seed
+                mar_imp = MetaboIntImputer.impute_by_prob(
+                    mar_slice, global_seed=_seed)
+            elif _mar in ("knn", "KNN"):
                 mar_imp = MetaboIntImputer.impute_by_knn(mar_slice, _knn_k)
             else:
                 mar_imp = mar_slice.apply(
-                    lambda x: x.fillna(x.median()), axis=1
-                )
+                    lambda x: x.fillna(x.median()), axis=1)
                 
             df_log.loc[idx_mar, target_cols] = mar_imp
 
@@ -481,7 +488,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         res_val = np.exp2(final_log) - 1.0
         imputed_obj = self._constructor(res_val).__finalize__(self)
         
-        # Update the 'Data Passport'
+        # Update the "Data Passport"
         imputed_obj.attrs["pipeline_stage"] = "Imputation"
         imputed_obj.attrs["imputation_status"] = "Completed"
         imputed_obj.attrs["selected_mar_method"] = _mar
@@ -510,14 +517,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
         if output_dir:
             iu._check_dir_exists(output_dir, handle="makedirs")
             imputed_obj.to_csv(
-                os.path.join(output_dir, f"Imputed_Data_{_mar}_{mode}.csv")
+                os.path.join(output_dir, f"Imputed_Data_{_mar}.csv")
             )
             
             vis = MetaboVisualizerImputer(self, imputed_obj)
             
             vis.save_and_close_fig(
                 vis.plot_imputed_kde_overlay(metrics=sim_metrics),
-                os.path.join(output_dir, f"Impute_KDE_{mode}.pdf")
+                os.path.join(output_dir, f"Impute_KDE")
             )
             
             # Ensure MAR metrics exist before plotting simulation charts
@@ -526,7 +533,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                     vis.save_and_show_pw(
                         vis.plot_multi_nrmse_scatters(cache),
                         os.path.join(
-                            output_dir, f"Imputer_Candidates_{mode}.pdf"
+                            output_dir, f"Imputer_Candidates"
                         )
                     )
                 
@@ -535,7 +542,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                         t_vals, p_vals, eval_met, _mar
                     ),
                     os.path.join(
-                        output_dir, f"Impute_Summary_{_mar}_{mode}.pdf"
+                        output_dir, f"Impute_Summary_{_mar}"
                     )
                 )
 
@@ -710,9 +717,7 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
                     bbox=dict(
                         boxstyle="round,pad=0.4", facecolor="white", 
                         edgecolor="none", alpha=0.6))
-
-            # [REFACTORED]: Fixed the loop variable leak by using 'name' 
-            # instead of 'grp' from the previous loop.
+                
             self._apply_standard_format(
                 ax=ax, title=f"Density Overlay ({name})",
                 xlabel="Log2 Intensity", ylabel="Density"

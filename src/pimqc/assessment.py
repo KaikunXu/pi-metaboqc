@@ -34,17 +34,16 @@ warnings.filterwarnings(action="ignore", category=RuntimeWarning)
 class MetaboIntAssessor(core_classes.MetaboInt):
     """Data quality assessment computational class for metabolomics."""
     
-    # Register 'stats' for pandas metadata propagation
+    # Register "stats" for pandas metadata propagation
     _metadata = ["attrs", "stats"]
     
     def __init__(
         self,
         *args,
         pipeline_params=None,
-        mode="POS",
         corr_method="spearman",
         mask=True,
-        stat_outlier="All",
+        stat_outlier="both",
         **kwargs
     ):
         """
@@ -53,7 +52,6 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         Args:
             *args: Variable length arguments passed to pandas DataFrame.
             pipeline_params: Configuration dictionary for the pipeline.
-            mode: MS Polarity ("POS" or "NEG").
             corr_method: Correlation method for QC samples.
             mask: Whether to apply an upper triangle mask to corr matrix.
             stat_outlier: Specific statistical outlier detection scope.
@@ -66,7 +64,6 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             self.stats = {}
 
         qa_configs = {
-            "mode": mode,
             "corr_method": corr_method,
             "mask": mask,
             "stat_outlier": stat_outlier
@@ -91,47 +88,50 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         return self
 
     # =========================================================================
-    # Core Statistical Calculations
+    # Core Statistical Calculations (Refactored to Cached Properties)
     # =========================================================================
 
-    def calc_qc_corr_matrix(self, qc_data, method="spearman"):
-        """Calculate correlation matrix with internal state caching."""
-        if hasattr(self, "stats") and "corr_mat" in self.stats:
-            return self.stats["corr_mat"]
-            
-        corr_mat = qc_data.corr(method=method)
-        self.stats["corr_mat"] = corr_mat
-        return corr_mat
-
-    def calc_batch_qc_corr_matrix(self, corr_mat, qc_data, bt_col):
-        """Aggregate QC correlation matrix into batch-level median matrix."""
-        if hasattr(self, "stats") and "batch_corr" in self.stats:
-            return self.stats["batch_corr"]
+    @cached_property
+    def qc_corr_matrix(self):
+        """Calculates and natively caches the QC sample correlation matrix.
         
-        batches = qc_data.columns.get_level_values(bt_col)
+        Relies on internal instance state (self._qc and attrs) to avoid 
+        unhashable DataFrame arguments, enabling @cached_property usage.
+        """
+        method = self.attrs.get("corr_method", "spearman")
+        qc_data = self._qc
+        
+        if qc_data.empty:
+            return pd.DataFrame()
+            
+        return qc_data.corr(method=method)
+
+    @cached_property
+    def batch_qc_corr_matrix(self):
+        """Aggregates QC correlation matrix into a batch-level median matrix."""
+        corr_mat = self.qc_corr_matrix
+        
+        if corr_mat.empty:
+            return pd.DataFrame()
+            
+        bt_col = self.attrs.get("batch", "Batch")
+        batches = self._qc.columns.get_level_values(bt_col)
+        
         # Compress rows and columns sequentially to extract medians
         batch_corr = corr_mat.groupby(batches).median()
         batch_corr = batch_corr.transpose().groupby(batches).median().transpose()
-        self.stats["batch_corr"] = batch_corr
+        
         return batch_corr
 
-    def calc_rsd_distribution(self):
-        """Calculates and caches the RSD distribution for QA reporting.
-
-        The Relative Standard Deviation (RSD) is computed feature-wise 
-        for both Quality Control (QC) and Actual samples. Results are 
-        binned into predefined, strictly ordered percentage categories.
-        """
-        if hasattr(self, "stats") and "rsd_dist" in self.stats:
-            return self.stats["rsd_dist"]
-
+    @cached_property
+    def rsd_distribution(self):
+        """Calculates and caches the RSD distribution for QA reporting."""
         st_col = self.attrs.get("sample_type", "Sample Type")
         act_lbl = self.attrs.get("sample_dict", {}).get(
             "Actual sample", "Sample"
         )
 
         def _get_dist(data: pd.DataFrame):
-            """Calculates ordered binned RSD distribution counts."""
             labels = ["0-10%", "10-20%", "20-30%", ">30%"]
             if data.empty:
                 return {lbl: 0 for lbl in labels}
@@ -140,34 +140,19 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             bins = [-np.inf, 0.1, 0.2, 0.3, np.inf]
             
             counts = pd.cut(rsd, bins=bins, labels=labels, right=False)
-            
-            # Use sort=False to strictly preserve the categorical bin order
             dist_dict = counts.value_counts(sort=False).to_dict()
-            
-            # Explicitly construct the dictionary following the labels list
             return {lbl: int(dist_dict.get(lbl, 0)) for lbl in labels}
 
         act_mask = self.columns.get_level_values(st_col) == act_lbl
         
-        final_res = {
+        return {
             "qc": _get_dist(self._qc),
             "actual": _get_dist(self.loc[:, act_mask])
         }
 
-        if not hasattr(self, "stats"):
-            self.stats = {}
-            
-        self.stats["rsd_dist"] = final_res
-        return final_res
-
-    def calc_pca_and_outliers(
-        self, features=None, labels=None, n_components=2
-    ):
+    @cached_property
+    def pca_res(self):
         """Execute PCA workflow, outlier detection, and diagnostic metrics."""
-        if hasattr(self, "stats") and "pca_res" in self.stats:
-            return self.stats["pca_res"]
-
-        # Fallback extraction if arguments are omitted
         st_col = self.attrs.get("sample_type", "Sample Type")
         sn_col = self.attrs.get("sample_name", "Sample Name")
         bt_col = self.attrs.get("batch", "Batch")
@@ -175,27 +160,26 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         qc_lbl = sample_dict.get("QC sample", "QC")
         act_lbl = sample_dict.get("Actual sample", "Sample")
 
-        if features is None or labels is None:
-            features, labels = pca_utils.PCAEngine.extract_features(
-                df=self, st_col=st_col, sn_col=sn_col, 
-                act_lbl=act_lbl, qc_lbl=qc_lbl
-            )
+        # Automatically extract features from internal state
+        features, labels = pca_utils.PCAEngine.extract_features(
+            df=self, st_col=st_col, sn_col=sn_col, 
+            act_lbl=act_lbl, qc_lbl=qc_lbl
+        )
 
         alpha = self.attrs.get("alpha", 0.05)
         od_method = self.attrs.get("od_method", "box")
+        # [MODIFIED]: Extract the global random seed securely
+        _seed = self.attrs.get("global_seed", 12345)
         
         engine = pca_utils.PCAEngine(
-            n_components=n_components, alpha=alpha, od_method=od_method
-        )
+            n_components=2, alpha=alpha, od_method=od_method, global_seed=_seed)
         res = engine.run_pca_workflow(features)
         
         multi_idx = pd.MultiIndex.from_frame(labels)
         pca_scatter = pd.DataFrame(
-            res["scores"], index=multi_idx, columns=["PC1", "PC2"]
-        )
+            res["scores"], index=multi_idx, columns=["PC1", "PC2"])
         pca_var = pd.Series(
-            res["variance"], index=["PC1", "PC2"], name="Variance"
-        )
+            res["variance"], index=["PC1", "PC2"], name="Variance")
         metrics_df = res["metrics"]
         metrics_df.index = multi_idx
         
@@ -206,24 +190,18 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             ("HT2", "Outliers (HT2)"): metrics_df["is_sd_outlier"]
         }, index=multi_idx)
 
-        # ---------------------------------------------------------------------
-        # New: Compute diagnostic indices here to establish a single truth
-        # ---------------------------------------------------------------------
         coords = pca_scatter[["PC1", "PC2"]].values
         types = pca_scatter.index.get_level_values(st_col).values
         batches = pca_scatter.index.get_level_values(bt_col).values
 
         rd_score = pca_utils.PCAEngine.calc_relative_dispersion(
-            coords, types, qc_lbl, act_lbl
-        )
+            coords, types, qc_lbl, act_lbl)
         sil_score = pca_utils.PCAEngine.calc_qc_batch_silhouette(
-            coords, types, batches, qc_lbl
-        )
+            coords, types, batches, qc_lbl)
         shift_res = pca_utils.PCAEngine.calc_qc_centrality_shift(
-            coords, types, qc_lbl, act_lbl
-        )
+            coords, types, qc_lbl, act_lbl)
 
-        final_res = {
+        return {
             "pca_scatter": pca_scatter,
             "pca_variance": pca_var,
             "outliers": outliers,
@@ -236,12 +214,6 @@ class MetaboIntAssessor(core_classes.MetaboInt):
                 "centrality_shift": shift_res["rel_shift"]
             }
         }
-        
-        if not hasattr(self, "stats"):
-            self.stats = {}
-            
-        self.stats["pca_res"] = final_res
-        return final_res
     # =========================================================================
     # Pipeline Execution Method
     # =========================================================================
@@ -249,8 +221,7 @@ class MetaboIntAssessor(core_classes.MetaboInt):
     @iu._exe_time
     def execute_assessment(self, output_dir):
         """Execute the entire QA workflow, save tables, and render plots."""
-        # 1. Configuration metadata extraction
-        mode = self.attrs.get("mode", "POS")
+        # Configuration metadata extraction
         st_col = self.attrs.get("sample_type", "Sample Type")
         bt_col = self.attrs.get("batch", "Batch")
         io_col = self.attrs.get("inject_order", "Inject Order")
@@ -261,44 +232,36 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         act_lbl = sample_dict.get("Actual sample", "Sample")
         
         corr_method = self.attrs.get("corr_method", "spearman")
-        stat_outlier = self.attrs.get("stat_outlier", "All")
+        stat_outlier = self.attrs.get("stat_outlier", "both")
         
         pipe_params = self.attrs.get("pipeline_parameters", {})
         bound_type = pipe_params.get("MetaboInt", {}).get("boundary", "IQR")
 
         iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
 
-        # 2. Compute correlation matrices and data splits
+        # Compute correlation matrices and data splits
         qc_data = self._qc
         act_mask = self.columns.get_level_values(st_col) == act_lbl
         act_data = self.loc[:, act_mask]
         
-        corr_mat = self.calc_qc_corr_matrix(qc_data, method=corr_method)
-        batch_corr = self.calc_batch_qc_corr_matrix(corr_mat, qc_data, bt_col)
-
-        # 3. Multivariate PCA metrics via PCAEngine
-        # Use explicit engine delegation for feature extraction
-        features, labels = pca_utils.PCAEngine.extract_features(
-            df=self, 
-            st_col=st_col, 
-            sn_col=sn_col, 
-            act_lbl=act_lbl, 
-            qc_lbl=qc_lbl
-        )
-        pca_res = self.calc_pca_and_outliers(features, labels)
-
-        # 4. Serialize metrics to CSV
-        scat_path = os.path.join(output_dir, f"PCA_Scatter_{mode}.csv")
+        # [CRITICAL]: Directly access the cached properties
+        corr_mat = self.qc_corr_matrix
+        batch_corr = self.batch_qc_corr_matrix
+        pca_res = self.pca_res
+        rsd_data = self.rsd_distribution
+        # Serialize metrics to CSV
+        
+        scat_path = os.path.join(output_dir, f"PCA_Scatter.csv")
         pca_res["pca_scatter"].to_csv(
             scat_path, encoding="utf-8-sig", na_rep="NA"
         )
         
-        out_path = os.path.join(output_dir, f"PCA_Outliers_{mode}.csv")
+        out_path = os.path.join(output_dir, f"PCA_Outliers.csv")
         pca_res["outliers"].to_csv(
             out_path, encoding="utf-8-sig", na_rep="NA"
         )
 
-        # 5. Initialize Visualizer and generate plots
+        # Initialize Visualizer and generate plots
         vis = MetaboVisualizerAssessor(self)
         batches = qc_data.columns.get_level_values(bt_col).unique()
         
@@ -311,30 +274,33 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             fig=vis.plot_qc_corr_heatmap(
                 corr_matrix=corr_mat, corr_mask=qc_mask, batches=batches, 
                 method=corr_method),
-            file_path=os.path.join(output_dir, f"QC_Corr_HM_{mode}.pdf"))
+            file_path=os.path.join(output_dir, f"QC_Corr_HM"))
 
         vis.save_and_close_fig(
             fig=vis.plot_batch_corr_heatmap(
                 batch_corr_matrix=batch_corr, method=corr_method),
-            file_path=os.path.join(output_dir, f"Batch_Corr_HM_{mode}.pdf"))
+            file_path=os.path.join(output_dir, f"Batch_Corr_HM"))
 
         vis.save_and_close_fig(
             fig=vis.plot_qc_corr_trend(
                 qc_data=qc_data, method=corr_method, bt_col=bt_col, 
                 io_col=io_col),
-            file_path=os.path.join(output_dir, f"QC_Corr_Trend_{mode}.pdf"))
+            file_path=os.path.join(output_dir, f"QC_Corr_Trend"))
 
         vis.save_and_close_fig(
             fig=vis.plot_pca_scatter(
-                pca_df=pca_res["pca_scatter"], pca_var=pca_res["pca_variance"],
-                st_col=st_col, bt_col=bt_col, qc_lbl=qc_lbl, act_lbl=act_lbl),
-            file_path=os.path.join(output_dir, f"QC_AS_PCA_Scatter_{mode}.pdf"))
+                pca_df=pca_res["pca_scatter"], 
+                pca_var=pca_res["pca_variance"],
+                pca_diagnostics=pca_res["diagnostics"],
+                st_col=st_col, bt_col=bt_col, qc_lbl=qc_lbl, act_lbl=act_lbl
+            ),
+            file_path=os.path.join(output_dir, f"QC_AS_PCA_Scatter"))
 
         vis.save_and_close_fig(
             fig=vis.plot_sd_od_scatter(
                 metrics_df=pca_res["metrics_df"], 
                 sd_limit=pca_res["sd_limit"], od_limit=pca_res["od_limit"]),
-            file_path=os.path.join(output_dir, f"Outlier_Scatter_{mode}.pdf"))
+            file_path=os.path.join(output_dir, f"Outlier_Scatter"))
 
         # Optional statistical outlier barplot
         fig_stat = vis.plot_stat_outliers_bar(
@@ -344,14 +310,14 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             vis.save_and_close_fig(
                 fig=fig_stat, 
                 file_path=os.path.join(
-                    output_dir, f"Statistical_Outliers_Barplot_{mode}.pdf"))
+                    output_dir, f"Statistical_Outliers_Barplot"))
 
         # QC & Actual Sample RSD distribution
         vis.save_and_close_fig(
             fig=vis.plot_rsd_bar(
-                qc_data=qc_data, act_data=act_data, qc_lbl=qc_lbl, 
-                act_lbl=act_lbl),
-            file_path=os.path.join(output_dir, f"RSD_Barplot_{mode}.pdf"))
+                rsd_data=rsd_data, qc_lbl=qc_lbl, act_lbl=act_lbl
+            ),
+            file_path=os.path.join(output_dir, f"RSD_Barplot"))
 
         # Internal Standards control chart
         if len(self.valid_is) > 0:
@@ -359,101 +325,148 @@ class MetaboIntAssessor(core_classes.MetaboInt):
             vis.save_and_close_fig(
                 fig=vis.plot_is_shewhart_chart(
                     is_data=is_data, valid_is=self.valid_is, st_col=st_col, 
-                    bt_col=bt_col, io_col=io_col, qc_lbl=qc_lbl, act_lbl=act_lbl,
-                    bound_type=bound_type),
-                file_path=os.path.join(output_dir, f"Shewhart_IS_{mode}.pdf"))
+                    bt_col=bt_col, io_col=io_col, qc_lbl=qc_lbl, 
+                    act_lbl=act_lbl, bound_type=bound_type),
+                file_path=os.path.join(output_dir, f"Shewhart_IS"))
 
-        # 6. Generate Master Summary Grid via patchworklib
+        # Generate Master Summary Grid via patchworklib
         fig_summary = vis.plot_assessor_summary_grid(
-            pca_res=pca_res, qc_data=qc_data, act_data=act_data, 
-            batch_corr=batch_corr, corr_mat=corr_mat, qc_mask=qc_mask, 
-            batches=batches, method=corr_method, st_col=st_col, bt_col=bt_col,
+            pca_res=pca_res, rsd_data=rsd_data, batch_corr=batch_corr, 
+            corr_mat=corr_mat, qc_mask=qc_mask, batches=batches, 
+            method=corr_method, st_col=st_col, bt_col=bt_col,
             qc_lbl=qc_lbl, act_lbl=act_lbl)
         
-        grid_path = os.path.join(output_dir, f"Assessor_Grid_{mode}.pdf")
+        grid_path = os.path.join(output_dir, f"Assessor_Grid")
         vis.save_and_show_pw(pw_obj=fig_summary, file_path=grid_path)   
         
         logger.info(f"Assessor summary grid saved as: {grid_path}")
         logger.success("Data quality assessment completed.")
 
-    @cached_property
-    def assessment_metrics(self):
-        """Extracts and caches global QA metrics.
+    def _extract_correlation_metrics(
+        self, qc_corr_mat, batch_qc_corr_mat, qc_batch_labels
+    ) -> dict:
+        """Extracts partitioned correlation metrics (inner vs cross batch)."""
+        import numpy as np
+        
+        metrics = {
+            "method": self.attrs.get("corr_method", "spearman"),
+            "sample_level": {},
+            "batch_level": {"is_multi_batch": False}
+        }
 
-        Calculates correlation medians, PCA variance, outlier counts, 
-        diagnostic indices, and RSD distribution for automated reporting.
-        Retrieves data strictly from the pre-computed state cache to 
-        prevent redundant matrix operations.
+        # --- 1. Sample-level: Inner-batch vs Cross-batch ---
+        if qc_corr_mat is not None and not qc_corr_mat.empty:
+            b_arr = np.array(qc_batch_labels)
+            is_same_batch = (b_arr[:, None] == b_arr[None, :])
+            is_diff_batch = (b_arr[:, None] != b_arr[None, :])
+            np.fill_diagonal(is_same_batch, False)
+            upper_tri = np.triu(np.ones(qc_corr_mat.shape, dtype=bool), k=1)
+            
+            inner_vals = qc_corr_mat.values[is_same_batch & upper_tri]
+            cross_vals = qc_corr_mat.values[is_diff_batch & upper_tri]
+            
+            metrics["sample_level"] = {
+                "inner_batch_median": float(np.median(inner_vals)) 
+                if len(inner_vals) > 0 else "N/A",
+                "cross_batch_median": float(np.median(cross_vals)) 
+                if len(cross_vals) > 0 else "N/A"
+            }
+
+        # --- 2. Batch-level: Qualitative Diagnostic ---
+        if batch_qc_corr_mat is not None and len(batch_qc_corr_mat) > 1:
+            metrics["batch_level"]["is_multi_batch"] = True
+            b_mask = ~np.eye(batch_qc_corr_mat.shape[0], dtype=bool)
+            masked_mat = batch_qc_corr_mat.values.copy()
+            masked_mat[~b_mask] = 100.0 
+            
+            min_idx = np.unravel_index(
+                np.argmin(masked_mat), batch_qc_corr_mat.shape)
+            b_names = batch_qc_corr_mat.columns
+            worst_pair = f"{b_names[min_idx[0]]} vs {b_names[min_idx[1]]}"
+            
+            metrics["batch_level"]["worst_batch_pair"] = worst_pair
+            metrics["batch_level"]["worst_correlation"] = float(
+                batch_qc_corr_mat.iloc[min_idx])
+
+        return metrics
+
+    @cached_property
+    def assessment_metrics(self) -> dict:
+        """Extracts and caches global QA metrics for reporting.
+
+        Aggregates partitioned correlation medians, PCA variance, outlier 
+        counts, and RSD distribution. Data is retrieved via cached 
+        properties to ensure zero redundant computation.
 
         Returns:
-            dict: A dictionary containing all calculated QA metrics.
+            dict: Comprehensive QA metrics optimized for Jinja2 rendering.
         """
-
+        # Metadata extraction
         st_col = self.attrs.get("sample_type", "Sample Type")
+        bt_col = self.attrs.get("batch", "Batch")
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
         act_lbl = sample_dict.get("Actual sample", "Sample")
-        corr_method = self.attrs.get("corr_method", "spearman")
 
         metrics = {
-            "correlation": {},
-            "pca": {},
-            "outliers": {},
-            "rsd_distribution": {}
+            "correlation": {}, "pca": {}, 
+            "outliers": {}, "rsd_distribution": {}
         }
 
-        # 1. Pooled QC Correlation Metrics (Cached Call)
+        # 1. Pooled QC Correlation Metrics (Cached Call & Dual-level)
         qc_data = self._qc
         if not qc_data.empty:
-            corr_mat = self.calc_qc_corr_matrix(qc_data, method=corr_method)
-            mask = np.triu(np.ones_like(corr_mat, dtype=bool), k=1)
-            upper_tri = corr_mat.where(mask).values.flatten()
-            valid_corr = upper_tri[~np.isnan(upper_tri)]
+            # [CRITICAL]: Access properties natively
+            corr_mat = self.qc_corr_matrix
+            batch_corr = self.batch_qc_corr_matrix
+            qc_batch_labels = qc_data.columns.get_level_values(bt_col)
             
-            metrics["correlation"]["method"] = corr_method
-            metrics["correlation"]["median"] = (
-                float(np.median(valid_corr)) if len(valid_corr) > 0 else 0.0
+            # Delegate logic to the specialized extraction method
+            metrics["correlation"] = self._extract_correlation_metrics(
+                qc_corr_mat=corr_mat, 
+                batch_qc_corr_mat=batch_corr, 
+                qc_batch_labels=qc_batch_labels
             )
+        else:
+            metrics["correlation"]["method"] = corr_method
 
-        # 2. PCA Variance and Diagnostic Indices (Cached Call )
+        # 2. PCA and Multivariate Diagnostics
         try:
-            pca_res = self.calc_pca_and_outliers()
-            diag = pca_res.get("diagnostics", {})
-
-            rd_score = diag.get("relative_dispersion")
-            sil_score = diag.get("batch_silhouette")
-            rel_shift = diag.get("centrality_shift")
+            # Access the cached PCA result dictionary
+            res = self.pca_res
+            diag = res.get("diagnostics", {})
 
             def _safe_float(val):
                 return float(val) if pd.notna(val) else None
 
             metrics["pca"] = {
-                "pc1_variance": float(pca_res["pca_variance"]["PC1"]),
-                "pc2_variance": float(pca_res["pca_variance"]["PC2"]),
-                "relative_dispersion": _safe_float(rd_score),
-                "batch_silhouette": _safe_float(sil_score),
-                "centrality_shift": _safe_float(rel_shift)
+                "pc1_variance": float(res["pca_variance"]["PC1"]),
+                "pc2_variance": float(res["pca_variance"]["PC2"]),
+                "relative_dispersion": _safe_float(
+                    diag.get("relative_dispersion")),
+                "batch_silhouette": _safe_float(diag.get("batch_silhouette")),
+                "centrality_shift": _safe_float(diag.get("centrality_shift"))
             }
             
-            # 3. Outlier Statistics
-            out_df = pca_res["outliers"]
+            # 3. Statistical Outlier Statistics
+            out_df = res["outliers"]
             act_mask = out_df.index.get_level_values(st_col) == act_lbl
             act_out = out_df[act_mask]
             
-            spe_flags = act_out[("SPE-DModX", "Outliers (SPE-DModX)")]
-            ht2_flags = act_out[("HT2", "Outliers (HT2)")]
+            spe_f = act_out[("SPE-DModX", "Outliers (SPE-DModX)")]
+            ht2_f = act_out[("HT2", "Outliers (HT2)")]
             
             metrics["outliers"] = {
                 "total_tested": int(act_mask.sum()),
-                "spe_count": int(spe_flags.sum()),
-                "ht2_count": int(ht2_flags.sum()),
-                "combined_count": int((spe_flags | ht2_flags).sum())
+                "spe_count": int(spe_f.sum()),
+                "ht2_count": int(ht2_f.sum()),
+                "combined_count": int((spe_f | ht2_f).sum())
             }
         except Exception as e:
-            logger.warning(f"Failed to extract assessment metrics: {e}")
+            logger.warning(f"QA metrics extraction encountered an error: {e}")
 
-        # 4. Feature RSD Distribution Statistics (Cached Call)
-        metrics["rsd_distribution"] = self.calc_rsd_distribution()
+        # 4. Feature RSD Distribution Statistics
+        metrics["rsd_distribution"] = self.rsd_distribution
 
         return metrics
 
@@ -620,7 +633,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     # =========================================================================
 
     def plot_pca_scatter(
-        self, pca_df, pca_var, st_col, bt_col, qc_lbl, act_lbl,
+        self, pca_df, pca_var, pca_diagnostics, st_col, bt_col, qc_lbl, act_lbl,
         x_pc="PC1", y_pc="PC2", draw_ce=True, ax=None
     ):
         """Plot PCA scatter plot with confidence ellipses and QA metrics."""
@@ -637,13 +650,10 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             
         sns.despine(ax=current_ax)
 
-        # Retrieve pre-calculated diagnostics directly from the engine cache
-        pca_res = getattr(self, "obj").calc_pca_and_outliers()
-        diag = pca_res.get("diagnostics", {})
-        
-        rd_score = diag.get("relative_dispersion")
-        sil_score = diag.get("batch_silhouette")
-        rel_shift = diag.get("centrality_shift")
+        # Retrieve pre-calculated diagnostics explicitly from parameters
+        rd_score = pca_diagnostics.get("relative_dispersion")
+        sil_score = pca_diagnostics.get("batch_silhouette")
+        rel_shift = pca_diagnostics.get("centrality_shift")
 
         rd_str = f"{rd_score:.4f}" if pd.notna(rd_score) else "N/A"
         sil_str = f"{sil_score:.4f}" if pd.notna(sil_score) else "N/A"
@@ -678,15 +688,14 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         current_ax.text(
             0.96, 0.02, annot_text, transform=current_ax.transAxes,
             fontsize=10, verticalalignment="bottom", 
-            horizontalalignment="right",
-            clip_on=False,
+            horizontalalignment="right", clip_on=False,
             bbox=dict(
                 boxstyle="round,pad=0.4", facecolor="white", edgecolor="none",
                 alpha=0.6
             )
         ) 
                 
-        # 6. Apply standard formatting and axis labels
+        # Apply standard formatting and axis labels
         var_x = pca_var.loc[x_pc] * 100
         var_y = pca_var.loc[y_pc] * 100
         self._apply_standard_format(
@@ -739,7 +748,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         )
         
         self._apply_standard_format(
-            ax=current_ax, xlabel="Score Distance (Hotelling's $T^2$)", 
+            ax=current_ax, xlabel="Score Distance (Hotelling's T2)", 
             ylabel="Orthogonal Distance (SPE / DModX)",
             title="PCA Outlier Diagnosis"
         )
@@ -784,7 +793,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         out_df = out_df.rename_axis(index=["Sample ID"])
         
         # =====================================================================
-        # Filter to retain only samples flagged as 'Filtered' (True) 
+        # Filter to retain only samples flagged as "Filtered" (True) 
         # in at least one of the two metrics. This prevents the barplot 
         # from becoming unreadable due to excessive normal samples.
         # =====================================================================
@@ -855,28 +864,24 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     # Intra-Run Stability Validation Plots
     # =========================================================================
 
-    def plot_rsd_bar(self, ax=None, **kwargs):
-        """Plots the RSD distribution using cached metrics and custom styling.
+    def plot_rsd_bar(self, rsd_data, qc_lbl, act_lbl, ax=None, **kwargs):
+        """Plots the RSD distribution using explicitly provided data.
 
         Converts the pre-calculated RSD dictionary into a format suitable 
         for seaborn. Applies custom RGBA alpha blending, container styling, 
         and removes zero-height patches to prevent annotation artifacts.
 
         Args:
+            rsd_data (dict): Pre-calculated RSD distribution dictionary.
+            qc_lbl (str): Label for QC samples.
+            act_lbl (str): Label for actual samples.
             ax (matplotlib.axes.Axes, optional): The target axes object.
             **kwargs: Additional formatting parameters.
 
         Returns:
             matplotlib.figure.Figure: The rendered figure object.
         """
-
-        # 1. Retrieve cached metrics using the correct base class attribute
-        rsd_data = self.obj.calc_rsd_distribution()
-        sample_dict = self.obj.attrs.get("sample_dict", {})
-        qc_lbl = sample_dict.get("QC sample", "QC")
-        act_lbl = sample_dict.get("Actual sample", "Sample")
-
-        # 2. Reconstruct seaborn-compatible DataFrame dynamically
+        # Reconstruct seaborn-compatible DataFrame dynamically
         records = []
         for r_bin, count in rsd_data.get("qc", {}).items():
             records.append({"RSD": r_bin, "Counts": count, "Type": qc_lbl})
@@ -884,21 +889,21 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             records.append({"RSD": r_bin, "Counts": count, "Type": act_lbl})
         plot_df = pd.DataFrame(records)
 
-        # 3. Initialize axes hierarchy
+        # Initialize axes hierarchy
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(5.5, 4))
         else:
             current_ax = ax
             fig = current_ax.figure
 
-        # 4. Initialize barplot layout with strict explicit ordering
+        # Initialize barplot layout with strict explicit ordering
         labels = ["0-10%", "10-20%", "20-30%", ">30%"]
         sns.barplot(
             data=plot_df, x="RSD", y="Counts", hue="Type",
             ax=current_ax, hue_order=[qc_lbl, act_lbl], order=labels
         )
         
-        # 5. Apply aesthetics utilizing RGBA for PDF backend stability
+        # Apply aesthetics utilizing RGBA for PDF backend stability
         for i, container in enumerate(current_ax.containers):
             # QC (i=0): Solid-like | Actual (i=1): Ghost-like, dashed
             l_style = "-" if i == 0 else "--"
@@ -913,12 +918,12 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 bar.set_linestyle(l_style)
                 bar.set_linewidth(1.0)
 
-        # 6. Physically remove zero-height bars to kill ghost labels
+        # Physically remove zero-height bars to kill ghost labels
         for p in list(current_ax.patches):
             if p.get_height() <= 0:
                 p.remove()
 
-        # 7. Update axis limit and annotate after removing empty patches
+        # Update axis limit and annotate after removing empty patches
         max_c = plot_df["Counts"].max()
         current_ax.set_ylim(0, max_c * 1.3)
         pu.show_values_on_bars(
@@ -926,7 +931,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             value_format="{:.0f}", pct_type="group", fontsize=8
         )
 
-        # 8. Manually construct legend to ensure correct style mapping
+        # Manually construct legend to ensure correct style mapping
         h_type = [
             Patch(
                 facecolor=mcolors.to_rgba("tab:gray", alpha=0.9),
@@ -943,7 +948,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         leg_kwargs.update({"title": "Sample Type", "loc": "best"})
         current_ax.legend(handles=h_type, **leg_kwargs)
 
-        # 9. Execute standardized axis formatting
+        # Execute standardized axis formatting
         if hasattr(self, "_apply_standard_format"):
             self._apply_standard_format(
                 ax=current_ax,
@@ -1012,7 +1017,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     # =========================================================================
 
     def plot_assessor_summary_grid(
-        self, pca_res, qc_data, act_data, batch_corr, corr_mat, qc_mask, batches,
+        self, pca_res, rsd_data, batch_corr, corr_mat, qc_mask, batches,
         method, st_col, bt_col, qc_lbl, act_lbl
     ):
         """Plot a 2x2 grid summary of key QA metrics using patchworklib."""
@@ -1022,20 +1027,21 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             logger.warning("patchworklib not found. Skipping summary grid.")
             return None
         
-        # [CRITICAL]: Clear global patchworklib state to prevent data residue
+        # Clear global patchworklib state to prevent data residue
         pw.clear()
         
-        # [0, 0]: QC & Actual RSD Barplot
+        # [0, 0]: QC & Actual RSD Barplot (Explicit passing)
         ax1 = pw.Brick(figsize=(4, 4))
         self.plot_rsd_bar(
-            qc_data=qc_data, act_data=act_data, qc_lbl=qc_lbl, act_lbl=act_lbl, 
-            ax=ax1
+            rsd_data=rsd_data, qc_lbl=qc_lbl, act_lbl=act_lbl, ax=ax1
         )
         
-        # [0, 1]: PCA Scatter
+        # [0, 1]: PCA Scatter (Explicit passing)
         ax2 = pw.Brick(figsize=(4, 4))
         self.plot_pca_scatter(
-            pca_df=pca_res["pca_scatter"], pca_var=pca_res["pca_variance"],
+            pca_df=pca_res["pca_scatter"], 
+            pca_var=pca_res["pca_variance"],
+            pca_diagnostics=pca_res["diagnostics"],
             st_col=st_col, bt_col=bt_col, qc_lbl=qc_lbl, act_lbl=act_lbl,
             ax=ax2
         )

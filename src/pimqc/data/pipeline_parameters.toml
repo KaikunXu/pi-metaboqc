@@ -1,0 +1,175 @@
+﻿# ==============================================================================
+# pi-metaboqc Pipeline Global Configuration File
+# Format: TOML
+# Description: Fully documented configuration for metabolomics data quality control.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Core Dataset Construction
+# ------------------------------------------------------------------------------
+[MetaboInt]
+# [String] Mass spectrometry polarity mode. Used for titles and file naming ("POS" or "NEG").
+mode = "POS"
+
+# [String] Column name in your metadata mapping to unique sample identifiers.
+sample_name = "Sample Name"
+
+# [String] Column name mapping to the type of the sample (e.g., QC, Blank, Sample).
+sample_type = "Sample Type"
+
+# [String] Column name mapping to the biological or clinical grouping.
+bio_group = "Bio Group"
+
+# [Array] Explicit sequence for rendering biological groups in plots.
+# Use an empty list [] for automatic alphabetical sorting. Example: ["Control", "Disease"]
+# Leave as an empty list [] to apply default ASCII sorting to groups.
+group_order = []
+
+# [String] Column name mapping to the analytical batch number/ID.
+batch = "Batch"
+
+# [String] Column name mapping to the machine injection sequence/order.
+inject_order = "Inject Order"
+
+# [String] Statistical method for determining outliers in Boxplots. Options: "IQR" or "sigma".
+boundary = "IQR"
+
+# [Integer] Global random seed. Ensures 100% reproducibility across Random Forest, GMM, PCA, etc.
+global_seed = 123
+
+# [Array] Target feature IDs acting as internal standards for drift tracking and outlier detection.
+internal_standard = [
+    "Phenylalanine-d5",
+    "Choline-d4",
+    "CA-d4",
+    "CDCA-d4",
+    "Carnitine C10:0-d3",
+    "FFA 18:0-d3",
+    "FFA 16:0-d3",
+    "IS-PC",
+    "IS-TG",
+    "IS-CER",
+    "IS-SM",
+    "IS-PE",
+    "IS-LPC",
+    "IS_PC 38:0+AcO",
+    "IS_PE 30:0-H",
+    "IS_LPC 19:0+AcO",
+    "IS_SM 30:1;2+AcO",
+    "IS_FFA C16:0-d3",
+    "IS_FFA C18:0-d3"
+]
+
+# [Array] Optional list of features manually designated as Outlier Identification Features (OIFs). 
+# These features are biologically or analytically expected to exhibit stable abundances across all sample classes. 
+# A significant deviation of these OIFs beyond control chart boundaries serves as a primary diagnostic indicator for potential sample-level outliers.
+# Leave empty [] if not applicable.
+outlier_id_feats = []
+
+# [String] Strategy to handle duplicated or missing injection orders. Options: "auto" or "none".
+resort_inject_order = "auto"
+
+# [Table] Dictionary mapping your raw metadata string values to the pipeline's internal standards.
+# The keys ("Actual sample", etc.) are your data's strings; the values ("Sample", etc.) must remain fixed.
+[MetaboInt.sample_dict]
+"Actual sample" = "Sample"
+"Blank sample" = "Blank"
+"QC sample" = "QC"
+
+# ------------------------------------------------------------------------------
+# Quality Assessment (PCA & Correlations)
+# ------------------------------------------------------------------------------
+[MetaboIntAssessor]
+# [String] Method for calculating sample-to-sample correlations. Options: "spearman", "pearson".
+corr_method = "spearman"
+
+# [Boolean] Whether to mask the upper triangle of the correlation heatmap (true or false).
+mask = true
+
+# [String] Statistical criteria to define a PCA outlier. Options: "HT2" (Hotelling's), "SPE-DModX", "All".
+stat_outlier = "both"
+
+# ------------------------------------------------------------------------------
+# Filtering Thresholds (Missing Values & RSD)
+# ------------------------------------------------------------------------------
+[MetaboIntFilter]
+# [Float] Maximum allowed missing value ratio across all samples combined. Range: 0.0 - 1.0.
+mv_global_tol = 0.7
+
+# [Float] Maximum allowed missing value ratio strictly within QC samples. Range: 0.0 - 1.0.
+mv_qc_tol = 0.8
+
+# [Float] Maximum allowed missing value ratio within at least ONE biological group. Range: 0.0 - 1.0.
+mv_group_tol = 0.5
+
+# [Float] Maximum allowed Relative Standard Deviation (RSD) for a feature in QC samples (e.g., 0.3 = 30%).
+rsd_qc_tol = 0.3
+
+# [Float] Maximum allowed mean intensity ratio of Blank samples vs QC samples (Background noise filter).
+blank_qc_ratio = 0.2
+
+# [Float] Maximum allowed missing value ratio for a single SAMPLE (Sample-wise filtering). Range: 0.0 - 1.0.
+sample_mv_tol = 0.5
+
+# [Float] Missing ratio threshold to define a feature as MNAR (Missing Not At Random) based on Biology.
+mnar_group_mv_tol = 0.8
+
+# [Float] Missing ratio threshold to define a feature as MNAR based on analytical QC failure.
+mnar_qc_mv_tol = 0.2
+
+# [Float] Percentile of lowest intensities to check if a missing value is abundance-dependent (LOD issue).
+mnar_intensity_percentile = 0.1
+
+# ------------------------------------------------------------------------------
+# Signal Drift Correction
+# ------------------------------------------------------------------------------
+[MetaboIntCorrector]
+# [String] Primary algorithm for intra/inter-batch signal drift correction. Options: "QC-SVR", "QC-RFSC", "QC-RLSC".
+base_est = "QC-SVR"
+
+# [Float] Smoothing span parameter, used strictly if base_est is "loess".
+span = 0.3
+
+# [Integer] Number of decision trees, used strictly if base_est is "QC-RFSC" (Random Forest).
+n_tree = 500
+
+# [String] Kernel function, used strictly if base_est is "QC-SVR". Options: "rbf", "linear", "poly".
+svr_kernel = "rbf"
+
+# [Float] Regularization parameter (C) for the Support Vector Regression algorithm.
+svr_c = 100.0
+
+# [Float] Kernel coefficient (gamma) for the Support Vector Regression algorithm.
+svr_gamma = 1.0
+
+# ------------------------------------------------------------------------------
+# Normalization & Scaling
+# ------------------------------------------------------------------------------
+[MetaboIntNormalizer]
+# [String] Sample-wise (column) normalization to remove dilution effects. Options: "PQN", "TIC", "Median".
+sample_wise_norm = "PQN"
+
+# [String] Feature-wise (row) scaling to adjust for heteroscedasticity. Options: "VSN", "Auto-scaling", "Pareto-scaling".
+feature_wise_norm = "VSN"
+
+# [Boolean] If true, applies strict Quantile Normalization, completely overriding sample/feature wise settings.
+quantile_norm = false
+
+# ------------------------------------------------------------------------------
+# Missing Value Imputation
+# ------------------------------------------------------------------------------
+[MetaboIntImputer]
+# [String] Imputation algorithm specifically for MNAR (LOD/Detection failure) values. Options: "row-wise", "column-wise", "global".
+mnar_method = "row-wise"
+
+# [Float] Fraction of the minimum value to be used for mnar_method constant imputation (e.g., 0.5 = 50% of min).
+mnar_fraction = 0.5
+
+# [String] Algorithm for MAR (random) missing values. Options: "auto", "probabilistic", "knn", "median".
+mar_method = "auto"
+
+# [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "knn".
+knn_neighbors = 5
+
+# [Float] Ratio of known data to artificially mask for internal simulation and auto-evaluating the best MAR method via NRMSE metric.
+sim_mask_ratio = 0.05

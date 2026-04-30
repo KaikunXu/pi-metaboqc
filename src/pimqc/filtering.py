@@ -229,7 +229,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
 
         meta_params = self.params.get("MetaboInt", {})
         grp_col = meta_params.get("bio_group", "Bio Group")
-        group_order = meta_params.get("group_order", None)
+        group_order = meta_params.get("group_order", [])
         qc_col = meta_params.get("sample_type", "Sample Type")
         sample_dict = meta_params.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
@@ -271,6 +271,10 @@ class MetaboIntFilter(core_classes.MetaboInt):
         # 5. Export and Visualizations
         if output_dir:
             iu._check_dir_exists(output_dir, handle="makedirs")
+            # ==============================================================
+            df_final.attrs[
+                "pipeline_stage"] = "High-missing value features filtering"
+            # ==============================================================
             df_final.to_csv(
                 os.path.join(output_dir, "MV_Filtered_Data.csv")
             )
@@ -316,7 +320,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 if fig_obj is not None:
                     vis.save_and_close_fig(
                         fig_obj,
-                        os.path.join(output_dir, f"MV_Filter_{lvl}.pdf")
+                        os.path.join(output_dir, f"MV_Filter_{lvl}")
                     )
 
             # ================================================================
@@ -328,7 +332,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 if fig_class is not None:
                     vis.save_and_close_fig(
                         fig_class,
-                        os.path.join(output_dir, "MV_Classification.pdf")
+                        os.path.join(output_dir, "MV_Classification")
                     )
 
             # 2. Comprehensive Patchworklib Summary Grid
@@ -343,7 +347,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 if fig_grid is not None:
                     vis.save_and_show_pw(
                         fig_grid,
-                        os.path.join(output_dir, "MV_Filtering_Summary.pdf")
+                        os.path.join(output_dir, "MV_Filtering_Summary")
                     )
         
         logger.success("High-MV features filtering completed.")
@@ -524,12 +528,11 @@ class MetaboIntFilter(core_classes.MetaboInt):
 
         if output_dir:
             iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
-            mode = meta_params.get("mode", "POS")
             # ==============================================================
             df_final.attrs["pipeline_stage"] = "Low-quality features filtering"
             # ==============================================================
             csv_path = os.path.join(
-                output_dir, f"Filtered_Data_Stage2_{mode}.csv"
+                output_dir, f"Filtered_Data_Stage2.csv"
             )
             df_final.to_csv(csv_path, encoding="utf-8-sig", na_rep="NA")
             logger.info(
@@ -542,7 +545,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 fig_quality_fltr_summary = vis.plot_quality_filtering_summary_grid()
                 if fig_quality_fltr_summary:
                     summary_path = os.path.join(
-                        output_dir, f"Quality_Filtering_Grid_{mode}.pdf"
+                        output_dir, f"Quality_Filtering_Grid"
                     )
                     vis.save_and_show_pw(
                         pw_obj=fig_quality_fltr_summary,file_path=summary_path)
@@ -560,7 +563,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             for fig, name in plot_tasks:
                 if fig:
                     pdf_path = os.path.join(
-                        output_dir, f"Filter_Stage2_{name}_{mode}.pdf"
+                        output_dir, f"Filter_Stage2_{name}"
                     )
                     vis.save_and_close_fig(fig, pdf_path)
 
@@ -871,7 +874,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             
         return current_ax
 
-    def plot_mv_group(self, mv_df, tol, group_order=None, ax=None):
+    def plot_mv_group(self, mv_df, tol, group_order=[], ax=None):
         """Plot histograms of MV ratios across biological groups.
 
         Args:
@@ -887,7 +890,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             return None if ax is None else ax
 
         # Reorder columns based on the provided categorical group_order
-        if group_order is not None:
+        if group_order:
             valid_order = [g for g in group_order if g in mv_df.columns]
             missing = [g for g in mv_df.columns if g not in valid_order]
             final_order = valid_order + missing
@@ -1192,7 +1195,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
     # Patchworklib Multi-panel Summary Plots
     # =========================================================================
 
-    def plot_mv_filtering_summary_grid(self, filter_level, group_order=None):
+    def plot_mv_filtering_summary_grid(self, filter_level, group_order=[]):
         """Combine Stage 1 MV distribution plots based on filter level.
         
         The layout dynamically adjusts according to the active filter level:
@@ -1226,7 +1229,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             mv_df = stats.get("mv_group_df")
             
             # [BUG FIX]: Apply categorical or ASCII sorting before grid building
-            if group_order is not None:
+            if group_order:
                 valid_order = [g for g in group_order if g in mv_df.columns]
                 missing = [g for g in mv_df.columns if g not in valid_order]
                 missing_order = sorted(missing)
@@ -1357,8 +1360,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         
         self.plot_retained_count_steps(ax=ax3)
 
-        # Use patchworklib operator '|' for horizontal concatenation
-        # or '/' for vertical stacking. Here we use horizontal.
+        # Use patchworklib operator "|"" for horizontal concatenation
+        # or "/" for vertical stacking. Here we use horizontal.
         combined_brick = (ax1 | ax2 | ax3)
         
         return combined_brick

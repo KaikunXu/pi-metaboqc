@@ -11,7 +11,8 @@ from scipy.stats import f, chi2
 class PCAEngine:
     """Core engine for PCA-based metabolomics data analysis."""
 
-    def __init__(self, n_components=2, alpha=0.05, od_method="box"):
+    def __init__(
+        self, n_components=2, alpha=0.05, od_method="box", global_seed=123):
         """
         Initialize the PCA computational engine.
 
@@ -23,6 +24,7 @@ class PCAEngine:
         self.n_comps = n_components
         self.alpha = alpha
         self.od_method = od_method
+        self.global_seed = global_seed
 
     @staticmethod
     def extract_features(df, st_col, sn_col, act_lbl, qc_lbl):
@@ -57,7 +59,7 @@ class PCAEngine:
         scaler = StandardScaler()
         scaled_arr = scaler.fit_transform(features)
         
-        model = PCA(n_components=self.n_comps)
+        model = PCA(n_components=self.n_comps, random_state=self.global_seed)
         scores = model.fit_transform(scaled_arr)
         
         metrics, sd_lim, od_lim = self._compute_exact_limits(

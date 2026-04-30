@@ -348,6 +348,8 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 df_target = self.calc_median_normalization(df_target)
             elif s_norm in ("PQN", "pqn"):
                 df_target = self.calc_pqn_normalization(df_target)
+            else: # s_norm = "None"
+                df_target = df_target
             
             obj_sample = self._constructor(df_target.copy()).__finalize__(self)
             logger.info("Sample-wise normalization completed.")
@@ -357,10 +359,13 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             if f_norm in ("VSN", "vsn"):
                 df_target, vsn_meta = self.calc_vsn_normalization(df_target)
                 # self.attrs.update(vsn_meta)
-            elif f_norm in ("Auto", "auto"):
+            elif f_norm in ("Auto-scaling", "auto-scaling", "Auto", "auto"):
                 df_target = self.calc_auto_scaling(df_target)
-            elif f_norm in ("Pareto", "pareto"):
+            elif f_norm in (
+                "Pareto", "Pareto-scaling", "pareto", "pareto-scaling"):
                 df_target = self.calc_pareto_scaling(df_target)
+            else: # s_norm = "None"
+                df_target = df_target
             logger.info("Feature-wise normalization completed.")
 
         obj_feature = self._constructor(df_target).__finalize__(self)
@@ -373,7 +378,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     def normalization_metrics(self):
         """Extracts metrics and configurations from the normalization process.
 
-        Dynamically checks the 'pipeline_stage' attribute to determine whether
+        Dynamically checks the "pipeline_stage" attribute to determine whether
         the current object represents the sample-wise or feature-wise stage,
         and returns the corresponding metadata and similarity metrics.
 
@@ -405,7 +410,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         # Only inject heavy metrics if object has completed feature scaling
         if curr_stage == "Feature-wise normalization" or is_qnt:
             
-            # Extract VSN parameters (Exclude the massive 'vsn_offsets' array
+            # Extract VSN parameters (Exclude the massive "vsn_offsets" array
             # to prevent JSON bloat in downstream Markdown rendering)
             if f_norm.upper() == "VSN":
                 metrics["vsn_parameters"] = {
@@ -438,7 +443,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         """
         iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
 
-        mode = self.attrs.get("mode", "POS")
         st_col = self.attrs.get("sample_type", "Sample Type")
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
@@ -456,10 +460,10 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             logger.info(f"Permanently dropping {blank_count} Blank samples.")
 
         if is_qnt:
-            suffix = f"Quantile_{mode}"
+            suffix = f"Quantile"
             logger.info("Applying Standalone Quantile Normalization.")
         else:
-            suffix = f"Sample_{s_norm}_Feature_{f_norm}_{mode}"
+            suffix = f"Sample_{s_norm}_Feature_{f_norm}"
             logger.info(
                 f"Applying Normalization | Sample: {s_norm} | Feature: {f_norm}"
             )
@@ -471,7 +475,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         
         if not is_qnt and sample_obj is not None:
             file_path_sample = os.path.join(
-                output_dir, f"Normalized_Data_Sample_Only_{s_norm}_{mode}.csv")
+                output_dir, f"Normalized_Data_Sample_Only_{s_norm}.csv")
             sample_obj.attrs["pipeline_stage"] = "Sample-wise normalization"
             sample_obj.to_csv(
                 path_or_buf=file_path_sample, na_rep="NA", encoding="utf-8-sig")
@@ -502,19 +506,19 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         )
         vis.save_and_close_fig(
             fig=fig_rle, 
-            file_path=os.path.join(output_dir, f"Norm_RLE_3Stage_{suffix}.pdf")
+            file_path=os.path.join(output_dir, f"Norm_RLE_3Stage_{suffix}")
         )
 
         fig_ma = vis.plot_ma_scatter()
         vis.save_and_close_fig(
             fig=fig_ma, 
-            file_path=os.path.join(output_dir, f"Norm_MA_3Stage_{suffix}.pdf")
+            file_path=os.path.join(output_dir, f"Norm_MA_3Stage_{suffix}")
         )
 
         fig_kde = vis.plot_density_kde(metrics=sim_metrics)
         vis.save_and_close_fig(
             fig=fig_kde, 
-            file_path=os.path.join(output_dir, f"Norm_KDE_Split_{suffix}.pdf")
+            file_path=os.path.join(output_dir, f"Norm_KDE_Split_{suffix}")
         )
         
         fig_grid = vis.plot_normalization_summary_grid(
@@ -522,7 +526,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         )
         if fig_grid:
             grid_path = os.path.join(
-                output_dir, f"Normalizer_Summary_Grid_{mode}.pdf"
+                output_dir, f"Normalizer_Summary_Grid"
             )
             vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
 
@@ -558,7 +562,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             if obj is None: 
                 continue
             
-            # VSN checking is strictly assigned to the 'Feature-Norm' stage
+            # VSN checking is strictly assigned to the "Feature-Norm" stage
             log_data = su._extract_log2_target(
                 obj, check_is_scaled=(label == "Feature-Norm")
             )
@@ -694,8 +698,8 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         # 1. Plot the KDE Curves
         for obj, label, color in stages:
             if obj is None: continue
-            is_vsn = (label == "Feature-Norm")
-            log_df = su._extract_log2_target(obj, check_is_scaled=is_vsn)
+            is_scaled = (label == "Feature-Norm")
+            log_df = su._extract_log2_target(obj, check_is_scaled=is_scaled)
             
             for cols, ax, name in [
                 (obj._qc.columns, ax_qc, "QC"), 

@@ -49,13 +49,15 @@ classifiers = [
 # ==============================================================================
 dependencies = [
     # --- Infrastructure & Configuration ---
-    "ruamel.yaml>=0.17.0",   # Advanced YAML parsing with comment preservation
-    
+    "pydantic>=2.4.0",                          # Framework for type-checking
+    "tomli>=2.0.1; python_version < '3.11'",    # Fallback for TOML parsing
+
     # --- Scientific Computing & Data Processing ---
     "numpy>=1.21.0",         # N-dim arrays and linear algebra operations
-    "pandas>=1.3.0",         # Core DataFrame structures for metabolomics data
+    "pandas>=2.0.0",         # Core DataFrame structures for metabolomics data
     "scipy>=1.7.0",          # Scientific algorithms and statistical testing
     "scikit-learn>=1.0.2",   # Machine learning for PCA and imputation tasks
+    "statsmodels>=0.13.0",   # Advanced statistical modeling like LOWESS
     
     # --- Performance & Engineering ---
     "joblib>=1.3.0",         # Lightweight pipelining and parallel processing
@@ -69,21 +71,21 @@ dependencies = [
     
     # --- Report Assembly & Image Handling ---
     "patchworklib>=0.6.2",   # Composition tool for matplotlib subplots
-    "pypdf>=3.0.0",          # Pure-Python PDF merging and page transformation
-    "pymupdf>=1.22.0",       # High-performance PDF rendering (fitz)
+    "svgutils>=0.3.4",       # Composition and layout manipulation for SVG grids
     "ipython>=7.0.0",        # Interactive display support for Jupyter
+    # "pypdf>=3.0.0",          # Pure-Python PDF merging and page transformation
+    # "pymupdf>=1.22.0",       # High-performance PDF rendering (fitz)
 
-    # --- Markdown & Report Generation ---
+    # --- Markdown & PDF Report Generation ---
     "Jinja2>=3.1.0",         # Templating for dynamic MD reports
-    "tabulate>=0.9.0",       # Converts DataFrames to MD tables
-    "mdutils>=1.6.0",        # Structured MD file creation via Python API
-    "pypandoc>=1.11"         # Convert MD to PDF/DOCX/HTML
+    "tabulate>=0.10.0",      # Converts DataFrames to MD tables
+    "pypandoc[tinytex]>=1.11"# MD to PDF engine with automated LaTeX fallback
 ]
 
 # ==============================================================================
 # PROJECT URLS
 # External links for source code, documentation, and issue tracking.
-# ==============================================================================
+# ============================================================================== 
 [project.urls]
 "Homepage" = "https://github.com/KaikunXu/pi-metaboqc"
 "Bug Tracker" = "https://github.com/KaikunXu/pi-metaboqc/issues"
@@ -111,5 +113,7 @@ readme = {file = "README.md", content-type = "text/markdown"}
 test = [
     "pytest>=7.0.0",            # Core testing framework
     "rpy2>=3.5.0",              # R-interface for algorithm benchmarking
-    "tabulate>=0.10.0"          # Enhanced table support for test reports
+]
+pdf = [
+    "weasyprint>=61.0"          # Primary HTML-to-PDF rendering engine
 ]

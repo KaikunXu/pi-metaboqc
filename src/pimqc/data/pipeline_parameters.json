@@ -5,7 +5,7 @@
         "sample_name": "Sample Name",
         "sample_type": "Sample Type",
         "bio_group": "Bio Group",
-        "group_order": null,
+        "group_order": [],
         "batch": "Batch",
         "inject_order": "Inject Order",
         "boundary": "IQR",
@@ -35,15 +35,17 @@
             "IS_FFA C16:0-d3",
             "IS_FFA C18:0-d3"
         ],
-        "outlier_marker": []
+        "outlier_id_feats": [],
+        "resort_inject_order": "auto",
+        "global_seed" : 123
     },
-    "_comment_MetaboIntAssessor": "Quality assessment parameters (PCA & IS Outliers)",
+    "_comment_MetaboIntAssessor": "Quality assessment parameters",
     "MetaboIntAssessor": {
         "corr_method": "spearman",
         "mask": true,
-        "stat_outlier": "All"
+        "stat_outlier": "both"
     },
-    "_comment_MetaboIntFilter": "Feature and sample filtering thresholds",
+    "_comment_MetaboIntFilter": "Feature filtering thresholds",
     "MetaboIntFilter": {
         "mv_global_tol": 0.7,
         "mv_qc_tol": 0.8,
@@ -60,7 +62,6 @@
         "base_est": "QC-SVR",
         "span": 0.3,
         "n_tree": 500,
-        "random_state": 12345,
         "svr_kernel": "rbf",
         "svr_c": 100.0,
         "svr_gamma": 1.0
@@ -72,9 +73,9 @@
         "quantile_norm": false
     },
 
-    "_comment_MetaboIntImputer": "Missing value imputation algorithm and parameters. Options for method: 'probabilistic', 'knn', 'halfmin', 'min'",
+    "_comment_MetaboIntImputer": "Missing value imputation algorithm and parameters.",
     "MetaboIntImputer": {
-        "mnar_method": "row",
+        "mnar_method": "row-wise",
         "mnar_fraction": 0.5,
         "mar_method": "auto",
         "knn_neighbors": 5,

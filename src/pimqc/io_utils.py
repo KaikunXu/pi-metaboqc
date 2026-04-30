@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, Optional, Union
 from loguru import logger
 from contextlib import redirect_stdout, redirect_stderr
 
+from pydantic import ValidationError
+from .config_schema import PipelineConfig
 __max_threading__ = os.cpu_count()
 
 
@@ -121,6 +123,34 @@ def _load_json_file(input_file_path: str) -> Dict[str, Any]:
         content = json.load(json_file)
     return content
 
+def _load_toml_file(input_file_path: str) -> Dict[str, Any]:
+    """Load TOML file content with environment compatibility.
+
+    Args:
+        input_file_path: The absolute or relative path to the TOML file.
+
+    Returns:
+        Dict[str, Any]: Parsed TOML content.
+        
+    Raises:
+        ImportError: If the 'tomli' package is missing in Python < 3.11.
+    """
+    try:
+        import tomllib  # Built-in in Python 3.11+
+    except ImportError:
+        try:
+            import tomli as tomllib  # Fallback for Python < 3.11
+        except ImportError:
+            logger.critical(
+                "Missing 'tomli'. Please run `pip install tomli`."
+            )
+            raise ImportError("Missing 'tomli' package for TOML support.")
+            
+    with open(file=input_file_path, mode="r", encoding="utf-8-sig") as toml_file:
+        content_str = toml_file.read()
+    return tomllib.loads(content_str)
+
+
 def _save_json_file(content: Dict[str, Any], output_file_path: str) -> None:
     """Save dictionary content to a JSON file.
 
@@ -134,39 +164,47 @@ def _save_json_file(content: Dict[str, Any], output_file_path: str) -> None:
             obj=content, fp=json_file, indent=4, allow_nan=False,
             sort_keys=False)
 
-def _load_yaml_file(input_file_path: str) -> Any:
-    """Load YAML file content while preserving comments.
 
-    This function uses ruamel.yaml to parse the YAML file, ensuring that
-    any comments are kept intact in the loaded ordered dictionary structure.
+def load_pipeline_config(config_path: str) -> Dict[str, Any]:
+    """Automatically detect and load the pipeline configuration file.
+
+    Supports .json and .toml formats based on file extension.
 
     Args:
-        input_file_path: The absolute or relative path to the YAML file.
+        config_path: Path to the configuration file.
 
     Returns:
-        Any: Parsed YAML content with comments preserved.
-    """
-    from ruamel.yaml import YAML
-    yaml_parser = YAML()
-    with open(
-        file=input_file_path, 
-        mode="r", 
-        encoding="utf-8-sig"
-    ) as yaml_file:
-        content = yaml_parser.load(stream=yaml_file)
-    return content
+        Dict[str, Any]: Parsed configuration dictionary.
 
-def _save_yaml_file(content: Any, output_file_path: str) -> None:
-    """Save content to a YAML file while preserving its original comments.
-
-    Args:
-        content: Data to be saved (usually parsed by ruamel.yaml).
-        output_file_path: Target file path.
+    Raises:
+        ValueError: If the file format is not supported.
     """
-    from ruamel.yaml import YAML
-    yaml_parser = YAML()
-    with open(file=output_file_path, mode="w") as yaml_file:
-        yaml_parser.dump(data=content, stream=yaml_file)
+    _check_file_exists(config_path)
+    ext = os.path.splitext(config_path)[1].lower()
+    
+    # 1. Parse raw configuration based on file extension
+    if ext == ".json":
+        raw_config = _load_json_file(config_path)
+    elif ext == ".toml":
+        raw_config = _load_toml_file(config_path)
+    else:
+        err_msg = f"Unsupported config format: {ext}. Use json/toml/yaml."
+        logger.error(err_msg)
+        raise ValueError(err_msg)
+    
+    # 2. Strict type checking and automatic default imputation via Pydantic
+    try:
+        validated_config = PipelineConfig.model_validate(raw_config)
+    except ValidationError as e:
+        logger.critical(
+            f"Pipeline configuration validation failed in {config_path}!"
+        )
+        logger.error(f"Validation Details:\n{e}")
+        raise ValueError("Configuration File Error. See logs for details.")
+
+    # 3. Log success and return the native Python dictionary
+    logger.success("Pipeline configuration successfully loaded and validated.")
+    return validated_config.model_dump()
 
 def _check_file_exists(file_path: str) -> None:
     """Check if the specified file exists. Raise an error if it doesn't.

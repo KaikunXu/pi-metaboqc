@@ -86,6 +86,9 @@ class MetaboInt(pd.DataFrame):
         # Explicitly load "MetaboInt" block
         if pipeline_params and "MetaboInt" in pipeline_params:
             base_configs.update(pipeline_params["MetaboInt"])
+            global_seed = pipeline_params["MetaboInt"].get("global_seed", 123)
+            self.attrs["global_seed"] = global_seed
+            np.random.seed(global_seed)
 
         self.attrs.update(base_configs)
 
@@ -185,18 +188,21 @@ class MetaboInt(pd.DataFrame):
         ]
         
     @cached_property
-    def valid_om(self) -> List[str]:
-        """List of valid outlier markers in the current index."""
+    def valid_oif(self) -> List[str]:
+        """
+        List of valid manually specified outlier identification features in 
+        the current index.
+        """
         return list(
-            set(self.index).intersection(set(self.attrs["outlier_marker"]))
+            set(self.index).intersection(set(self.attrs["outlier_id_feats"]))
         )
 
     def int_order_info(self, feat_type: str = "IS") -> pd.DataFrame:
         """Extract Intensity-Order info of the specified feature type."""
         feats = []
-        if feat_type in ("internal_standard", "IS"):
+        if feat_type in ("internal_standard", "IS", "is"):
             feats = self.valid_is
-        elif feat_type in ("outlier_marker", "OM"):
+        elif feat_type in ("outlier_id_feats", "OIF", "oif"):
             feats = self.valid_om
 
         int_order_df = self.loc[feats].transpose()
@@ -230,7 +236,7 @@ class MetaboInt(pd.DataFrame):
 
         Args:
             x: Input numpy array.
-            boundary_type: Method to calculate boundaries ('IQR' or 'sigma').
+            boundary_type: Method to calculate boundaries ("IQR" or "sigma").
 
         Returns:
             Tuple[float, float, float]: Central line, lower limit, upper limit.
@@ -256,13 +262,20 @@ class MetaboInt(pd.DataFrame):
         """Extracts comprehensive summary metrics of the current dataset.
 
         Calculates total feature counts, internal standard counts, sample
-        distributions, and an ordered list of analytical batches.
+        distributions, and analytical batches sorted by their starting 
+        injection order.
 
         Returns:
             Dict[str, Any]: A nested dictionary containing structural
                 metadata, ordered batch names, and sample distributions.
         """
-        mode = self.attrs.get("mode","")
+        # Local import to prevent circular dependency with __init__.py
+        try:
+            from . import __version__ as pkg_version
+        except ImportError:
+            pkg_version = "v1.0.0"
+            
+        mode = self.attrs.get("mode", "")
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
         blk_lbl = sample_dict.get("Blank sample", "Blank")
@@ -273,16 +286,22 @@ class MetaboInt(pd.DataFrame):
         st_col = self.attrs.get("sample_type", "Sample Type")
         io_col = self.attrs.get("inject_order", "Inject Order")
 
+        # Dynamic batch ordering based on chronological injection sequence
         ordered_batches = []
-        if bt_col in self.columns.names:
+        if bt_col in self.columns.names and io_col in self.columns.names:
+            col_df = self.columns.to_frame(index=False)
+            # Find the minimum injection order for each unique batch
+            batch_starts = col_df.groupby(bt_col)[io_col].min().astype(int)
+            # Sort batch identifiers by their corresponding start order
+            ordered_batches = batch_starts.sort_values().index.tolist()
+        elif bt_col in self.columns.names:
+            # Fallback to ASCII sorting if injection order is unavailable
             bt_vals = self.columns.get_level_values(bt_col)
-            if isinstance(bt_vals.dtype, pd.CategoricalDtype):
-                ordered_batches = bt_vals.unique().sort_values().tolist()
-            else:
-                ordered_batches = sorted(bt_vals.unique().tolist())
+            ordered_batches = sorted(bt_vals.unique().tolist())
 
         metrics = {
-            "mode":mode,
+            "mode": mode,
+            "pi-metaboqc_version": pkg_version,
             "features": {
                 "total": self.shape[0],
                 "internal_standards": self.valid_is,
@@ -296,16 +315,14 @@ class MetaboInt(pd.DataFrame):
                 "actual": self._actual_sample.shape[1] if hasattr(
                     self, "_actual_sample") else 0
             },
-            "batches":{
-                "batch_count":len(ordered_batches),
+            "batches": {
+                "batch_count": len(ordered_batches),
                 "ordered_batches": ordered_batches,
                 "batch_distribution": {},
             }
-
         }
 
         if bt_col in self.columns.names and st_col in self.columns.names:
-            # Prevent pandas ambiguity ValueError by disabling index generation
             col_df = self.columns.to_frame(index=False)
             dist_df = col_df.groupby(
                 [bt_col, st_col]
