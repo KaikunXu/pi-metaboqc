@@ -100,7 +100,7 @@ python run_pimqc.py \
     --config /path/to/custom_params.toml \
     --outdir /path/to/output_directory
 
-# Option C: Run in silent mode
+# Option C: Run in silent mode (For background processing)
 python run_pimqc.py -q
 ```
 
