@@ -525,8 +525,9 @@ class MetaboIntAssessor(core_classes.MetaboInt):
                 np.argmin(masked_mat), batch_qc_corr_mat.shape
             )
             batch_names = batch_qc_corr_mat.columns
-            worst_pair = f"{
-                batch_names[min_idx[0]]} vs {batch_names[min_idx[1]]}"
+            worst_pair = (
+                f"{batch_names[min_idx[0]]} vs "
+                f"{batch_names[min_idx[1]]}")
             
             metrics["batch_level"]["worst_batch_pair"] = worst_pair
             metrics["batch_level"]["worst_correlation"] = float(

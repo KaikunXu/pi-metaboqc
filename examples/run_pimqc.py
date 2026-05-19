@@ -45,6 +45,7 @@ import pimqc.io_utils as iu
 from pimqc.pipeline import run_pipeline
 
 
+
 def parse_arguments():
     """
     Constructs and parses the command-line arguments for the CLI.
@@ -104,6 +105,7 @@ def main():
     """
     # 1. Parse configuration arguments
     args = parse_arguments()
+    logger.info(f"pimqc.__version__:{pimqc.__version__}")
 
     # 2. Setup Silent Mode (just show error logger)
     if args.quiet:

@@ -91,8 +91,10 @@ def print_hardware_diagnostics():
     except Exception:
         power_info = "Unknown"
 
-    py_version = f"{sys.version_info.major}.{
-        sys.version_info.minor}.{sys.version_info.micro}"
+    py_version = (
+        f"{sys.version_info.major}.{sys.version_info.minor}."
+        f"{sys.version_info.micro}"
+    )
 
     # =========================================================================
     # Phase 2: String Assembly
