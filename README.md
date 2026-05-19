@@ -1,7 +1,7 @@
 # `pi-metaboqc`: $\pi$-Metabolomics-Quality Control
 
 [![Status](https://badgen.net/badge/status/alpha/yellow)](https://github.com/KaikunXu/pi-metaboqc)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://badgen.net/github/license/KaikunXu/pi-metaboqc)](https://github.com/KaikunXu/pi-metaboqc/blob/main/LICENSE)
 
 **pi-metaboqc** is a high-performance, fully automated data quality control pipeline designed specifically for large-scale, multi-batch clinical metabolomics.
@@ -20,13 +20,13 @@
 
 ## 📦 Installation
 
-We strongly recommend installing `pi-metaboqc` within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/) or [Anaconda](https://www.anaconda.com/download).
+We strongly recommend installing `pi-metaboqc` within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/), or [Anaconda](https://www.anaconda.com/download).
 
-The high-fidelity HTML/PDF reporting module relies on advanced graphical engines (`pandoc`, `weasyprint`, and `librsvg`). These tools depend on complex system-level C libraries (such as GTK3 and Pango), which are notoriously difficult to compile and configure via standard `pip`, especially on Windows.
+Generating high-fidelity HTML and PDF reports requires advanced graphical engines (`pandoc`, `weasyprint`, and `librsvg`). These tools depend on complex, system-level C libraries (e.g., GTK3, Pango) that are notoriously difficult to compile and configure via standard `pip`, particularly on Windows.
 
-Using Conda ensures all low-level dependencies are resolved effortlessly. To guarantee maximum stability across all operating systems, please follow the **Standard Installation** guide below.
+Conda effortlessly resolves these low-level dependencies. To guarantee maximum stability across all operating systems, please follow the **Standard Installation** guide below.
 
->⚠️ Note: Although we have integrated an automatic emergency download feature for missing dependencies, it has not been exhaustively tested across all edge-case environments. Manual installation via Conda remains the most robust and supported approach.
+> ⚠️ **Note:** While we have integrated an automatic fallback download feature for missing dependencies, it has not been exhaustively tested across all edge cases. Proceeding with the Conda installation remains the most robust and officially supported approach.
 
 ### Step 1: Create and Activate Conda Environment
 
@@ -46,14 +46,20 @@ conda install -c conda-forge pandoc weasyprint librsvg -y
 ### Step 3: Install `pi-metaboqc`
 
 **For standard users:**
-Install the package directly from the GitHub repository:
+Install the stable release directly from PyPI:
+
+```bash
+pip install pi-metaboqc
+```
+
+Alternatively, install the latest development version directly from GitHub:
 
 ```bash
 pip install git+https://github.com/KaikunXu/pi-metaboqc.git
 ```
 
 **For developers (Editable mode):**
-If you want to modify the source code or contribute:
+If you plan to modify the source code or contribute to the project:
 
 ```bash
 git clone https://github.com/KaikunXu/pi-metaboqc.git
@@ -65,15 +71,20 @@ pip install -e .
 
 `pi-metaboqc` is designed for zero-friction deployment. You only need three files to trigger the fully automated pipeline: a sample metadata table, a raw intensity matrix, and a TOML configuration file.
 
-We provide two distinct execution modalities. **For first-time users, we strongly recommend starting with the Interactive Notebook.**
+We provide execution modalities for different use cases in the `examples/` directory. **For first-time users, we strongly recommend starting with the Interactive Notebook.**
 
 ### 1. Interactive Notebook (Recommended for Onboarding)
 
-**[Interactive Tutorial (`interactive_tutorial.ipynb`)](https://colab.research.google.com/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: An end-to-end, zero-installation interactive Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards (rendered natively as high-fidelity SVGs) in real-time, and intuitively grasp the algorithmic logic.
+**Interactive Tutorial (`interactive_tutorial.ipynb`)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards (including `model_overview` plots with Q2 metrics, natively rendered as high-fidelity SVGs), and intuitively grasp the core algorithmic logic.
+
+Choose the access method that best suits your network environment:
+
+* **[Static Viewer (nbviewer)](https://nbviewer.org/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: Delivers fast, static rendering. **Recommended for users in mainland China** to ensure all inline SVG plots are displayed reliably without execution overhead or connectivity issues.
+* **[Google Colab](https://colab.research.google.com/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: A cloud-executable environment. Best for global users who wish to run the pipeline dynamically with zero local configuration.
 
 ### 2. Headless CLI Execution (For Production & Batch Processing)
 
-For deployment on HPC clusters or integration into larger bioinformatics workflows, utilize our robust command-line interface (CLI).
+For deployment on HPC clusters or integration into larger bioinformatics workflows, utilize our robust command-line interface script (`run_pimqc.py`). 
 
 ```bash
 # Navigate to the examples directory
@@ -88,6 +99,9 @@ python run_pimqc.py \
     --intensity /path/to/your_intensity.csv \
     --config /path/to/custom_params.toml \
     --outdir /path/to/output_directory
+
+# Option C: Run in silent mode
+python run_pimqc.py -q
 ```
 
 > ⚠️ **Troubleshooting Note for VS Code Users:** When running the CLI script via the integrated terminal in Visual Studio Code, the IDE may occasionally fail to properly inherit full Conda environment variables. This prevents the PDF rendering engine from locating essential system-level C libraries (e.g., GTK3/Pango), causing the report generation to gracefully degrade and output an **HTML** report instead. 
