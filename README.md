@@ -79,7 +79,7 @@ We provide execution modalities for different use cases in the `examples/` direc
 
 Choose the access method that best suits your network environment:
 
-* **[Static Viewer (nbviewer)](https://nbviewer.org/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: Delivers fast, static rendering. **Recommended for users in mainland China** to ensure all inline SVG plots are displayed reliably without execution overhead or connectivity issues.
+* **[Pre-rendered HTML Viewer](https://raw.githack.com/KaikunXu/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage. **Recommended for users in mainland China** to ensure all inline SVG plots and Q2 metrics are displayed instantly without any GitHub API or nbviewer rendering limits.
 * **[Google Colab](https://colab.research.google.com/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: A cloud-executable environment. Best for global users who wish to run the pipeline dynamically with zero local configuration.
 
 ### 2. Headless CLI Execution (For Production & Batch Processing)
@@ -105,7 +105,7 @@ python run_pimqc.py -q
 ```
 
 > ⚠️ **Troubleshooting Note for VS Code Users:** When running the CLI script via the integrated terminal in Visual Studio Code, the IDE may occasionally fail to properly inherit full Conda environment variables. This prevents the PDF rendering engine from locating essential system-level C libraries (e.g., GTK3/Pango), causing the report generation to gracefully degrade and output an **HTML** report instead. 
-> 
+
 > **Resolution:** You can bypass this by executing the script from a native system terminal (e.g., Anaconda Prompt, macOS Terminal). Alternatively, to permanently configure VS Code for seamless PDF rendering and resolve PowerShell restrictions, please refer to our **[VS Code Environment & Troubleshooting Guide](https://github.com/KaikunXu/pi-metaboqc/tree/main/docs/vscode_conda_troubleshooting_guide.md)**.
 
 ### Automated Refinement Protocol (Under the Hood)
