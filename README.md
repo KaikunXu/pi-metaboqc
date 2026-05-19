@@ -6,6 +6,8 @@
 
 **pi-metaboqc** is a high-performance, fully automated data quality control pipeline designed specifically for large-scale, multi-batch clinical metabolomics.
 
+![Pipeline of pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc/tree/main/docs/pipeline_of_pi-metaboqc.png)
+
 ## ✨ Core Capabilities
 
 * **Pure Python Ecosystem & Native Pandas Integration:** The core data structure, `MetaboInt`, natively inherits from `pandas.DataFrame`. All underlying calculations are strictly implemented using industry-standard libraries like `SciPy` and `scikit-learn`. Furthermore, classical methods that traditionally relied on R (such as Quantile Normalization and VSN) have been completely reconstructed in Python, achieving statistically equivalent results and breaking down language barriers.
