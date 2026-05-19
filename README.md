@@ -6,7 +6,7 @@
 
 **pi-metaboqc** is a high-performance, fully automated data quality control pipeline designed specifically for large-scale, multi-batch clinical metabolomics.
 
-![Pipeline of pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc/tree/main/docs/pipeline_of_pi-metaboqc.png)
+![Pipeline of pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc/raw/main/docs/pipeline_of_pi-metaboqc.png)
 
 ## ✨ Core Capabilities
 
