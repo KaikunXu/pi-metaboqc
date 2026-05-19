@@ -90,7 +90,7 @@ python run_pimqc.py \
     --outdir /path/to/output_directory
 
 # Option C: Run in silent mode (For background processing)
-    python run_pimqc.py -q
+python run_pimqc.py -q
 ```
 
 > ⚠️ **Troubleshooting Note for VS Code Users:** When running the CLI script via the integrated terminal in Visual Studio Code, the IDE may occasionally fail to properly inherit full Conda environment variables. This prevents the PDF rendering engine from locating essential system-level C libraries (e.g., GTK3/Pango), causing the report generation to gracefully degrade and output an **HTML** report instead. 
