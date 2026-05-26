@@ -9,8 +9,7 @@
 {%- set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
 {%- set lq_ret = lq_params.get('feature_retention', {}) -%}
 
-{%- set intra_perf = intra_signal_correction.get('pipeline_params', {}).get('performance', {}) -%}
-{%- set inter_perf = inter_signal_correction.get('pipeline_params', {}).get('performance', {}) -%}
+{%- set sc_perf = signal_correction.get('overall_performance', {}) -%}
 
 {%- set imp_params = missing_value_imputation.get('pipeline_params', {}) -%}
 {%- set imp_strat = imp_params.get('strategies', {}) -%}
@@ -21,13 +20,14 @@
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
 
 > **Date Generated:** {{ meta.get('date', 'Unknown') }}<br>
+{%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
 > **Ionization Mode:** {{ meta.get('mode', 'Unknown') }}<br>
+{%- endif %}
 > **Engine:** pi-metaboqc v{{ raw_params.get('pi-metaboqc_version', '1.0.2.alpha') }}
 
 ## 1. Global Pipeline Yield and Experimental Overview
 
-The analytical dataset, acquired in **{{ meta.get('mode', 'Unknown') }}** ionization mode, was processed through a standardized, high-throughput metabolomics quality control pipeline.
-The cohort consisted of **{{ samps.get('actual', 'N/A') }}** biological samples, **{{ samps.get('qc', 'N/A') }}** pooled Quality Control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blanks{%- if batch_info.get('batch_count', 1) > 1 -%}, distributed across **{{ batch_info.get('batch_count') }}** analytical batches{%- endif -%}.
+The analytical dataset, acquired in **{{ meta.get('mode', 'Unknown') }}** ionization mode, was processed through a standardized, high-throughput metabolomics quality control pipeline. The cohort consisted of **{{ samps.get('actual', 'N/A') }}** biological samples, **{{ samps.get('qc', 'N/A') }}** pooled Quality Control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blanks{%- if batch_info.get('batch_count', 1) > 1 -%}, distributed across **{{ batch_info.get('batch_count') }}** analytical batches{%- endif -%}.
 
 **Feature Retention Summary:**
 
@@ -36,13 +36,20 @@ The cohort consisted of **{{ samps.get('actual', 'N/A') }}** biological samples,
 
 ## 2. Signal Drift Correction, Imputation & Normalization
 
-Systematic technical variations, including intra-batch time-dependent drift and inter-batch discrepancies, were mitigated via a QC-anchored regression model.
-{%- set rsd_before = intra_perf.get('median_qc_rsd_baseline') or 0 %}
-{%- set final_rsd = (inter_perf.get('median_qc_rsd_current') or 0) if meta.get('is_multi_batch') else (intra_perf.get('median_qc_rsd_current') or 0) %}
-The sequential correction architecture successfully suppressed the median QC RSD from an initial baseline of {{ (rsd_before * 100) | round(2) }}% down to **{{ (final_rsd * 100) | round(2) }}%**.
+{%- set sc_stages = signal_correction.get('stages_executed', []) %}
+{%- set primary_algo = sc_stages[0].get('algorithm', 'a QC-anchored') if sc_stages else 'a QC-anchored' %}
 
-Subsequently, structurally missing values were reconstructed.
-MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed employing the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** algorithm to preserve global structural fidelity.
+Systematic technical variations, including time-dependent instrument drift and batch discrepancies, were mitigated utilizing the **{{ primary_algo }}** algorithm.
+
+{%- set rsd_before = sc_perf.get('median_qc_rsd_baseline') or 0 %}
+{%- set final_rsd_full = sc_perf.get('median_qc_rsd_current_full') or 0 %}
+{%- set final_rsd_oof = sc_perf.get('median_qc_rsd_current_oof') %}
+The correction architecture successfully suppressed the median QC RSD from an initial baseline of {{ (rsd_before * 100) | round(2) }}% down to a delivered matrix RSD of **{{ (final_rsd_full * 100) | round(2) }}%**
+{%- if final_rsd_oof is not none %} (OOF Cross-validated: {{ (final_rsd_oof * 100) | round(2) }}%).
+{%- else %}.
+{%- endif %}
+
+Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed employing the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** algorithm to preserve global structural fidelity.
 
 Finally, global quantitative refinement was performed
 {%- if norm_method == 'VSN' %} utilizing **VSN** to shift the data into a variance-stabilized generalized logarithmic space (glog), ensuring homoscedasticity for downstream multivariate modeling.

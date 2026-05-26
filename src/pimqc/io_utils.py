@@ -7,6 +7,7 @@ import sys
 import platform
 import json
 import zipfile
+import psutil
 from loguru import logger
 
 from datetime import datetime
@@ -52,11 +53,6 @@ class HiddenPrints:
         self._stderr_ctx.__exit__(exc_type, exc_val, exc_tb)
         self.devnull.close()
 
-# src/pimqc/io_utils.py
-import sys
-import platform
-import psutil
-from loguru import logger
 
 def print_hardware_diagnostics():
     """Gather system diagnostics and emit as a single atomic log block."""

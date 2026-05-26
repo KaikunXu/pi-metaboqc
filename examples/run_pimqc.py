@@ -105,7 +105,7 @@ def main():
     """
     # 1. Parse configuration arguments
     args = parse_arguments()
-    logger.info(f"pimqc.__version__:{pimqc.__version__}")
+    logger.info(f"pimqc.__version__: {pimqc.__version__}")
 
     # 2. Setup Silent Mode (just show error logger)
     if args.quiet:

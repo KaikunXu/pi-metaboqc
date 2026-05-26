@@ -6,6 +6,7 @@ rendering, and exporting automated project-level QC reports.
 
 import os
 import sys
+import re
 import math
 import time
 from datetime import datetime
@@ -42,7 +43,7 @@ def _get_optimal_cols(n_docs: int, max_cols: int = 4) -> int:
     # disproportionate grid aspect ratios (e.g., forcing 2x2 for 4 plots)
     layout_map = {
         1: 1, 2: 2, 3: 3, 4: 2,
-        5: 3, 6: 3, 7: 3, 8: 4,
+        5: 3, 6: 3, 7: 4, 8: 4,
         9: 3, 10: 4, 11: 4, 12: 4
     }
 
@@ -79,15 +80,10 @@ def stitch_svg_grids(
     try:
         import svgutils.transform as sg
     except ImportError:
-        from loguru import logger
         logger.error("Please install 'svgutils' via 'pip install svgutils'.")
         return False
 
     try:
-        import re
-        from pathlib import Path
-        from loguru import logger
-        
         # 1. Validate and filter input paths
         valid_paths = [
             p for p in svg_paths 
@@ -212,7 +208,7 @@ class VisualAssetReporter:
         self, 
         is_multi_batch: bool = True, 
         report_folder: str = "13_Report_Markdown", 
-        cols: int = 4
+        cols: Union[int, str] = "auto"
     ) -> None:
         """Compile QA SVG plots into grids and deploy to report assets."""
         if not self.qa_folders:
@@ -245,24 +241,31 @@ class VisualAssetReporter:
         for prefix, target_file in target_map.items():
             # Output directly to the assets folder as an SVG grid
             svg_out = assets_path / f"{prefix}.svg"
-
             input_svgs = []
             for folder in self.qa_folders:
-                file_path = self.base_dir / folder / target_file
-                if file_path.exists():
-                    input_svgs.append(file_path)
+                folder_path = self.base_dir / folder
+                
+                direct_file = folder_path / target_file
+                if direct_file.exists():
+                    input_svgs.append(direct_file)
+                else:
+                    subdirs = [d for d in folder_path.iterdir() if d.is_dir()]
+                    
+                    subdirs.sort(key=lambda d: d.stat().st_mtime)
+                    
+                    for sub in subdirs:
+                        sub_file = sub / target_file
+                        if sub_file.exists():
+                            input_svgs.append(sub_file)
 
             if not input_svgs:
                 logger.warning(f"Skipped {prefix}: No source SVGs found.")
                 continue
-
             # Execute SVG stitching
             stitch_svg_grids(
                 svg_paths=input_svgs, output_name=svg_out, cols=cols
             )
-
         logger.success(f"Report SVG assets compiled at: {assets_path}")
-
 
 # =========================================================================
 # Class 2: NarrativeStatsReporter (Handles attrs & Markdown Text)
@@ -407,8 +410,9 @@ class NarrativeStatsReporter:
     _QA_STAGES = [
         ("raw_dataset", "Raw data"),
         ("high_mv_feature_filtering", "High-missing value features filtering"),
-        ("intra_signal_correction", "Intra-batch correction"),
-        ("inter_signal_correction", "Inter-batch correction"),
+        ("intra_batch_correction", "Intra-batch correction"), 
+        ("inter_batch_correction", "Inter-batch correction"),
+        ("global_correction", "Global SERRF correction"),
         ("low_quality_feature_filtering", "Low-quality features filtering"),
         ("missing_value_imputation", "Imputation"),
         ("normalization", "Normalization")
@@ -423,20 +427,35 @@ class NarrativeStatsReporter:
     def _create_batch_table(self, batch_dist: Dict[str, Any]) -> str:
         """Generates a Markdown table displaying batch sample distributions."""
         rows = []
+        sum_total = 0
+        sum_qc = 0
+        sum_blank = 0
+        sum_sample = 0
+        
         if isinstance(batch_dist, dict):
             for b_id, b_info in batch_dist.items():
+                total = b_info.get("Total", 0)
+                qc = b_info.get("QC", 0)
+                blank = b_info.get("Blank", 0)
+                sample = b_info.get("Sample", 0)
+                
+                sum_total += total
+                sum_qc += qc
+                sum_blank += blank
+                sum_sample += sample
+                
                 rows.append([
-                    b_id,
-                    b_info.get("Total", 0),
-                    b_info.get("QC", 0),
-                    b_info.get("Blank", 0),
-                    b_info.get("Sample", 0),
+                    b_id, total, qc, blank, sample,
                     b_info.get("Inject Order", "N/A")
                 ])
-        headers = [
-            "Batch", "Total", "QC", "Blank", "Sample", "Inject Order"
-        ]
-        table_str = tabulate(rows, headers=headers, tablefmt="github")
+                
+        if rows:
+            rows.append(["All", sum_total, sum_qc, sum_blank, sum_sample, "/"])
+
+        headers = ["Batch", "Total", "QC", "Blank", "Sample", "Inject Order"]
+        table_str = tabulate(
+            rows, headers=headers, tablefmt="github", stralign="center",
+            numalign="center")
         return f"\n\n{table_str}\n\n"
 
     def _create_rsd_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
@@ -485,7 +504,9 @@ class NarrativeStatsReporter:
             "Sample 0-10%", "Sample 10-20%", "Sample 20-30%", "Sample >30%"
         ]
         
-        table_str = tabulate(rows, headers=headers, tablefmt="github")
+        table_str = tabulate(
+            rows, headers=headers, tablefmt="github", stralign="center",
+            numalign="center")
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def _create_pca_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
@@ -521,7 +542,7 @@ class NarrativeStatsReporter:
             "Rel. Dispersion", "Batch Silh.", "Cent. Shift"
         ]
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github", disable_numparse=True)
+            rows, headers=headers, tablefmt="github", disable_numparse=True,)
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def _create_corr_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
@@ -585,8 +606,8 @@ class NarrativeStatsReporter:
         
         # 3. Render table with disable_numparse=True to preserve trailing zeros
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github", disable_numparse=True
-        )
+            rows, headers=headers, tablefmt="github", disable_numparse=True,
+            stralign="center", numalign="center")
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def _create_outlier_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
@@ -628,7 +649,9 @@ class NarrativeStatsReporter:
             "ORF Outliers (N/Total)", "ORF Outlier Samples"
         ]
         
-        table_str = tabulate(rows, headers=headers, tablefmt="github")
+        table_str = tabulate(
+            rows, headers=headers, tablefmt="github",stralign="center",
+            numalign="center")
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def consolidate_metrics(
@@ -666,11 +689,14 @@ class NarrativeStatsReporter:
                 "pipeline_params": pipe_data,
                 "qa_assessments": qa_data
             }
-
+        if "signal_correction" in pipeline_metrics:
+            stats["signal_correction"] = pipeline_metrics["signal_correction"]
+            
         batch_dist = get_val(
             pipeline_metrics, "raw_dataset", "batches",
             "batch_distribution", default={}
         )
+
         stats["raw_dataset"]["batch_table"] = self._create_batch_table(
             batch_dist
         )
@@ -699,62 +725,83 @@ class NarrativeStatsReporter:
         self, template_name: str, context: dict
     ) -> None:
         """
-        Advanced debugger to identify both missing top-level variables and 
-        unresolved nested attributes in Jinja2 templates.
+        Advanced debugger to identify template rendering issues without
+        triggering false positives from Jinja2's static AST parser.
         """
         import jinja2
         from jinja2 import meta
-        import re
+        import traceback
 
-        logger.info("--- Starting Template Debugger ---")
+        logger.info(f"--- Starting Template Debugger for '{template_name}' ---")
 
-        # 1. Check for missing top-level variables
-        template_src = self.env.loader.get_source(self.env, template_name)[0]
-        parsed_content = self.env.parse(template_src)
-        ref_vars = meta.find_undeclared_variables(parsed_content)
+        # 1. Static Analysis (Informational only, downgraded to DEBUG level)
+        try:
+            template_src = self.env.loader.get_source(
+                self.env, template_name
+            )[0]
+            parsed_content = self.env.parse(template_src)
+            ref_vars = meta.find_undeclared_variables(parsed_content)
 
-        missing_top = [var for var in ref_vars if var not in context]
-        if missing_top:
-            logger.error(
-                f"Missing TOP-LEVEL variables in context: {missing_top}"
+            missing_top = [var for var in ref_vars if var not in context]
+            if missing_top:
+                # Static AST analysis cannot fully resolve conditionals ({% if %})
+                # or local assignments ({% set %}). Therefore, it often generates
+                # false positives. Logging as debug information only.
+                logger.debug(
+                    "Static AST found potential undeclared variables "
+                    f"(often false positives): {missing_top}"
+                )
+        except Exception as e:
+            logger.debug(
+                f"Static analysis skipped due to parser limitation: {e}"
             )
 
-        # 2. Check for missing nested attributes using DebugUndefined
-        # DebugUndefined keeps invalid variables as {{ var }} instead of failing
-        debug_env = jinja2.Environment(
+        # 2. Runtime Analysis (The Ultimate Source of Truth)
+        # Create an isolated, strict environment. Any truly undefined variable
+        # evaluated at runtime will instantly trigger an exception.
+        strict_env = jinja2.Environment(
             loader=self.env.loader,
-            undefined=jinja2.DebugUndefined
+            undefined=jinja2.StrictUndefined  # Enforce strict evaluation
         )
         
         try:
-            debug_template = debug_env.get_template(template_name)
-            rendered = debug_template.render(context)
+            debug_template = strict_env.get_template(template_name)
             
-            # Extract all unresolved {{ ... }} tags using regex
-            unresolved = set(re.findall(r'\{\{\s*(.*?)\s*\}\}', rendered))
+            # Attempt a full render. Success here guarantees the template
+            # logic is perfectly sound given the current context.
+            debug_template.render(context)
+            logger.success(
+                f"Template '{template_name}' successfully passed strict "
+                "runtime rendering."
+            )
             
-            if unresolved:
-                logger.error(
-                    "Found UNRESOLVED nested variables or attributes:"
-                )
-                for v in sorted(unresolved):
-                    logger.error(f"  -> {v}")
-            else:
-                logger.info(
-                    "No unresolved variables found. Check syntax logic."
-                )
-                
+        except jinja2.exceptions.UndefinedError as e:
+            # Catch actual runtime undefined variables (e.g., typos in keys)
+            logger.error(f"RUNTIME UNDEFINED ERROR in '{template_name}': {e}")
+            
+        except jinja2.exceptions.TemplateSyntaxError as e:
+            # Catch syntax errors (e.g., missing {% endif %})
+            logger.error(
+                f"SYNTAX ERROR in '{template_name}' at line {e.lineno}: "
+                f"{e.message}"
+            )
+            
         except Exception as e:
-            logger.error(f"Template debugger encountered an error: {e}")
+            # Catch other runtime execution errors (e.g., type mismatches)
+            logger.error(f"EXECUTION ERROR in '{template_name}': {e}")
+            logger.debug(traceback.format_exc())
             
         logger.info("--- Template Debugger Finished ---")
 
     def _is_weasyprint_operational(self) -> bool:
-        """Performs a hard check to verify if WeasyPrint C-libraries exist.
+        """Performs a hard check to verify if WeasyPrint C-libraries exist."""
+        if sys.platform == "win32":
+            gtk_bin = os.path.join(sys.prefix, "Library", "bin")
+            if os.path.exists(gtk_bin) and (
+                gtk_bin not in os.environ.get("PATH", "")):
+                os.environ["PATH"] = (
+                    f"{gtk_bin}{os.pathsep}{os.environ.get('PATH', '')}")
 
-        Returns:
-            bool: True if WeasyPrint and its GTK3/Pango DLLs load successfully.
-        """
         try:
             result = subprocess.run(
                 ["weasyprint", "--version"],
@@ -763,7 +810,9 @@ class NarrativeStatsReporter:
                 stderr=subprocess.PIPE,
                 text=True
             )
-            # If DLLs are missing, Python throws an OS error inside subprocess
+            if result.returncode != 0:
+                logger.debug(
+                    f"WeasyPrint probe failed. Stderr: {result.stderr.strip()}")
             return result.returncode == 0
         except FileNotFoundError:
             return False
@@ -1097,10 +1146,7 @@ class NarrativeStatsReporter:
             """Internal helper for WeasyPrint PDF rendering via Pandoc."""
             try:
                 logger.info("Attempting PDF export via WeasyPrint...")
-                if not self._is_weasyprint_operational():
-                    if not self._force_install_weasyprint_conda():
-                        return None
-                        
+                
                 if sys.platform == "win32":
                     f_conf = os.path.join(
                         sys.prefix, "Library", "etc", "fonts", "fonts.conf"
@@ -1108,6 +1154,10 @@ class NarrativeStatsReporter:
                     if os.path.exists(f_conf):
                         os.environ["FONTCONFIG_FILE"] = f_conf
                         os.environ["FONTCONFIG_PATH"] = os.path.dirname(f_conf)
+                        
+                if not self._is_weasyprint_operational():
+                    if not self._force_install_weasyprint_conda():
+                        return None
                 
                 wp_args = base_args + [
                     "--pdf-engine=weasyprint", "--pdf-engine-opt=-q"

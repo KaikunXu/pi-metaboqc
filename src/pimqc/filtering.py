@@ -10,7 +10,6 @@ import copy
 import numpy as np
 import pandas as pd
 from functools import cached_property
-from typing import Dict, Any, List
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -19,6 +18,7 @@ import matplotlib.path as mpath
 import matplotlib.lines as mlines
 
 from loguru import logger
+from typing import Dict, Any, List, Optional
 
 from . import io_utils as iu
 from . import plot_utils as pu
@@ -29,7 +29,7 @@ from . import visualizer_classes
 class MetaboIntFilter(core_classes.MetaboInt):
     """Filtering engine for metabolomics datasets with QC enforcement."""
 
-    _metadata = ["stats", "params"]
+    _metadata = ["attrs", "stats"]
     
     _INVALID_STRS = {
         "unknown", "na", "n/a", "nan", "none", "null", "",
@@ -37,21 +37,86 @@ class MetaboIntFilter(core_classes.MetaboInt):
         "sst", "pool", "invalid", "unvalid"
     }
 
-    def __init__(self, data=None, pipeline_params=None, *args, **kwargs):
-        """Initialize the filtering engine."""
-        super().__init__(data=data, *args, **kwargs)
+    def __init__(
+        self, 
+        data: Optional[Any] = None, 
+        pipeline_params: Optional[Dict[str, Any]] = None, 
+        sample_mv_tol: Optional[float] = None,
+        mv_group_tol: Optional[float] = None,
+        mv_qc_tol: Optional[float] = None,
+        mnar_group_mv_tol: Optional[float] = None,
+        mnar_qc_mv_tol: Optional[float] = None,
+        mnar_intensity_pct: Optional[float] = None,
+        qc_rsd_tol: Optional[float] = None,
+        blank_qc_ratio_tol: Optional[float] = None,
+        *args: Any, 
+        **kwargs: Any
+    ) -> None:
+        """Initialize the filtering engine with QC enforcement.
 
-        if pipeline_params is not None:
-            self.attrs["pipeline_parameters"] = pipeline_params
+        Args:
+            data: Input intensity matrix (DataFrame-like).
+            pipeline_params: Global configuration dictionary from TOML.
+            sample_mv_tol: Max missing rate for sample removal.
+            mv_group_tol: Base missing rate tolerance within bio groups.
+            mv_qc_tol: Base missing rate tolerance in QC samples.
+            mnar_group_mv_tol: Max missing rate for group MNAR rescue.
+            mnar_qc_mv_tol: Max missing rate for QC MNAR rescue.
+            mnar_intensity_pct: Intensity percentile threshold for MNAR QC.
+            qc_rsd_tol: Max relative standard deviation in QC.
+            blank_qc_ratio_tol: Max allowable blank to QC intensity ratio.
+            *args: Variable arguments passed to pandas DataFrame.
+            **kwargs: Extra keyword arguments passed to pandas DataFrame.
+        """
+        super().__init__(
+            data=data, pipeline_params=pipeline_params, *args, **kwargs
+        )
 
-        self.params = self.attrs.get("pipeline_parameters", {})
+        if not hasattr(self, "stats"):
+            self.stats = {}
+            
+        # 1. Explicitly inherit runtime stats from upstream data object
+        input_data = data if data is not None else kwargs.get("data")
+        if input_data is None and len(args) > 0:
+            input_data = args[0]
+            
+        if input_data is not None and hasattr(input_data, "stats"):
+            self.stats.update(copy.deepcopy(input_data.stats))
+            
+        # 2. Initialize runtime tracking if not inherited
+        if "feature_counts" not in self.stats:
+            self.stats["feature_counts"] = {}
 
-        if "MetaboIntFilter" not in self.params:
-            self.params["MetaboIntFilter"] = {}
-        if "feature_counts" not in self.params["MetaboIntFilter"]:
-            self.params["MetaboIntFilter"]["feature_counts"] = {}
+        # 3. Base defaults
+        filter_configs = {
+            "sample_mv_tol": 0.5,
+            "mv_group_tol": 0.5,
+            "mv_qc_tol": 0.3,
+            "mnar_group_mv_tol": 0.8,
+            "mnar_qc_mv_tol": 0.2,
+            "mnar_intensity_pct": 0.1,
+            "qc_rsd_tol": 0.3,
+            "blank_qc_ratio_tol": 0.2
+        }
 
-        self.stats = {
+        # 4. TOML configuration overrides
+        if pipeline_params and "MetaboIntFilter" in pipeline_params:
+            filter_configs.update(pipeline_params["MetaboIntFilter"])
+
+        # 5. Explicit kwargs override TOML (Highest priority)
+        local_args = locals()
+        explicit_params = [
+            "sample_mv_tol", "mv_group_tol", "mv_qc_tol", 
+            "mnar_group_mv_tol", "mnar_qc_mv_tol", "mnar_intensity_pct",
+            "qc_rsd_tol", "blank_qc_ratio_tol"
+        ]
+        for param in explicit_params:
+            if local_args[param] is not None:
+                filter_configs[param] = local_args[param]
+
+        # 6. Flatten strictly into lifecycle attributes (SSOT)
+        self.attrs.update(filter_configs)
+        self.stats.update({
             "mv_group_df": pd.DataFrame(),
             "mv_qc_series": pd.Series(dtype=float),
             "mv_global_series": pd.Series(dtype=float),
@@ -62,7 +127,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             "idx_mnar": pd.Index([]),
             "idx_mnar_group": pd.Index([]),
             "idx_mnar_qc": pd.Index([])
-        }
+        })
 
     @property
     def _constructor(self):
@@ -76,7 +141,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             if hasattr(other, name):
                 setattr(self, name, copy.deepcopy(getattr(other, name)))
         return self
-
+    
     # =========================================================================
     # 1. Sample-Level Filtering
     # =========================================================================
@@ -86,13 +151,10 @@ class MetaboIntFilter(core_classes.MetaboInt):
         Filters out high-MV samples by evaluating only QC and Actual Samples.
         Generates tracking tables for sample-level attrition.
         """
-        metaboint_params = self.params.get("MetaboInt", {})
-        filter_params = self.params.get("MetaboIntFilter", {})
+        batch = self.attrs.get("batch", "Batch")
+        inject_order = self.attrs.get("inject_order", "Inject Order")
+        sample_mv_tol = self.attrs.get("sample_mv_tol", 0.5)
         
-        batch = metaboint_params.get("batch", "Batch")
-        inject_order = metaboint_params.get("inject_order", "Inject Order")
-        sample_mv_tol = filter_params.get("sample_mv_tol", 0.5)
-
         # 1. Strictly evaluate only QC and Actual Samples via concatenation
         df_check = pd.concat([self._qc, self._actual_sample], axis=1)
         sample_mv_rates = df_check.isna().mean(axis=0)
@@ -105,7 +167,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
         retained_samples = self.columns.difference(bad_samples)
         
         # Extract sample types for tracking
-        sample_type = metaboint_params.get("sample_type", "Sample Type")
+        sample_type = self.attrs.get("sample_type", "Sample Type")
         check_types = df_check.columns.get_level_values(sample_type)
 
         # Build tracking table for diagnostics
@@ -151,9 +213,8 @@ class MetaboIntFilter(core_classes.MetaboInt):
 
     def _get_valid_bio_groups(self):
         """Extract valid biological group names from the column index."""
-        metaboint_params = self.params.get("MetaboInt", {})
-        bio_group = metaboint_params.get("bio_group", "Bio Group")
-        sample_dict = metaboint_params.get("sample_dict", {})
+        bio_group = self.attrs.get("bio_group", "Bio Group")
+        sample_dict = self.attrs.get("sample_dict", {})
         qc_label = sample_dict.get("QC sample", "QC")
 
         valid_bio_groups = []
@@ -179,19 +240,16 @@ class MetaboIntFilter(core_classes.MetaboInt):
             return self.index, empty_idx, empty_idx
             
         try:
-            metaboint_params = self.params.get("MetaboInt", {})
-            bio_group = metaboint_params.get("bio_group", "Bio Group")
-            sample_type = metaboint_params.get("sample_type", "Sample Type")
-            sample_dict = metaboint_params.get("sample_dict", {})
+            bio_group = self.attrs.get("bio_group", "Bio Group")
+            sample_type = self.attrs.get("sample_type", "Sample Type")
+            sample_dict = self.attrs.get("sample_dict", {})
             qc_label = sample_dict.get("QC sample", "QC")
             
-            filter_params = self.params.get("MetaboIntFilter", {})
-            
-            mv_group_tol = filter_params.get("mv_group_tol", 0.5) 
-            mv_qc_tol = filter_params.get("mv_qc_tol", 0.3)
-            mnar_group_mv_tol = filter_params.get("mnar_group_mv_tol", 0.8)
-            mnar_qc_mv_tol = filter_params.get("mnar_qc_mv_tol", 0.2)
-            mnar_intensity_pct = filter_params.get("mnar_intensity_pct", 0.1)
+            mv_group_tol = self.attrs.get("mv_group_tol", 0.5) 
+            mv_qc_tol = self.attrs.get("mv_qc_tol", 0.3)
+            mnar_group_mv_tol = self.attrs.get("mnar_group_mv_tol", 0.8)
+            mnar_qc_mv_tol = self.attrs.get("mnar_qc_mv_tol", 0.2)
+            mnar_intensity_pct = self.attrs.get("mnar_intensity_pct", 0.1)
 
             qc_mask = (
                 self.columns.get_level_values(sample_type) == qc_label 
@@ -270,13 +328,12 @@ class MetaboIntFilter(core_classes.MetaboInt):
         df_clean_samples = self.execute_sample_filtering(output_dir)
         self._update_inplace(df_clean_samples)
 
-        feature_counts = self.params["MetaboIntFilter"]["feature_counts"]
+        feature_counts = self.stats["feature_counts"]
         if "raw" not in feature_counts:
             feature_counts["raw"] = self.shape[0]
 
-        metaboint_params = self.params.get("MetaboInt", {})
-        sample_type = metaboint_params.get("sample_type", "Sample Type")
-        sample_dict = metaboint_params.get("sample_dict", {})
+        sample_type = self.attrs.get("sample_type", "Sample Type")
+        sample_dict = self.attrs.get("sample_dict", {})
         qc_label = sample_dict.get("QC sample", "QC")
         valid_groups = self._get_valid_bio_groups()
 
@@ -293,7 +350,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
         self.stats["mv_global_series"] = self.isna().mean(axis=1)
         
         if valid_groups:
-            bio_group = metaboint_params.get("bio_group", "Bio Group")
+            bio_group = self.attrs.get("bio_group", "Bio Group")
             group_na = self.isna().T.groupby(level=bio_group).mean().T
             self.stats["mv_group_df"] = group_na[valid_groups]
 
@@ -307,6 +364,11 @@ class MetaboIntFilter(core_classes.MetaboInt):
         # serialization bugs in downstream metadata parsers.
         df_final.attrs["idx_mar"] = idx_mar.tolist()
         df_final.attrs["idx_mnar"] = idx_mnar.tolist()
+
+        idx_mnar_group = self.stats.get("idx_mnar_group", pd.Index([]))
+        idx_mnar_qc = self.stats.get("idx_mnar_qc", pd.Index([]))
+        df_final.attrs["idx_mnar_group"] = idx_mnar_group.tolist()
+        df_final.attrs["idx_mnar_qc"] = idx_mnar_qc.tolist()
         
         df_tracking = self._generate_s1_tracking_table(
             qc_mask, idx_mar, idx_mnar, idx_dropped
@@ -395,19 +457,17 @@ class MetaboIntFilter(core_classes.MetaboInt):
         return df_tracking.sort_values(by="_sort").drop(columns=["_sort"])
 
     def _execute_s1_visualization(
-        self, output_dir, df_tracking, qc_mask, valid_groups
-    ):
+        self, output_dir, df_tracking, qc_mask, valid_groups):
         """Helper for orchestrating dashboard generation."""
         vis = MetaboVisualizerFilter(self)
-        filter_params = self.params.get("MetaboIntFilter", {})
         
-        active_base_tol = filter_params.get(
+        active_base_tol = self.attrs.get(
             "mv_group_tol" if valid_groups else "mv_qc_tol", 0.5
         )
         
         mnar_int_threshold = None
         if qc_mask.any():
-            mnar_intensity_pct = filter_params.get("mnar_intensity_pct", 0.1)
+            mnar_intensity_pct = self.attrs.get("mnar_intensity_pct", 0.1)
             raw_threshold = self.loc[:, qc_mask].median(axis=1).quantile(
                 mnar_intensity_pct
             )
@@ -416,8 +476,8 @@ class MetaboIntFilter(core_classes.MetaboInt):
         fig_grid = vis.plot_mv_filtering_summary_grid(
             tracking_df=df_tracking, 
             active_base_tol=active_base_tol,
-            mnar_group_mv_tol=filter_params.get("mnar_group_mv_tol", 0.8),
-            mnar_qc_mv_tol=filter_params.get("mnar_qc_mv_tol", 0.2),
+            mnar_group_mv_tol=self.attrs.get("mnar_group_mv_tol", 0.8),
+            mnar_qc_mv_tol=self.attrs.get("mnar_qc_mv_tol", 0.2),
             mnar_int_threshold=mnar_int_threshold
         )
         if fig_grid:
@@ -431,9 +491,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
         Extracts metrics from Stage-1 missing value filtering.
         Unifies results into 'sample_wise' and 'feature_wise' dimensions.
         """
-        metaboint_params = self.params.get("MetaboInt", {})
-        filter_params = self.params.get("MetaboIntFilter", {})
-        feature_counts = filter_params.get("feature_counts", {})
+        feature_counts = self.stats.get("feature_counts", {})
         
         # =====================================================================
         # 1. Sample-wise Metrics Extraction
@@ -449,7 +507,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             
             sample_metrics = {
                 "thresholds": {
-                    "sample_mv_tol": filter_params.get("sample_mv_tol", 0.5)
+                    "sample_mv_tol": self.attrs.get("sample_mv_tol", 0.5)
                 },
                 "feature_retention": {  # Kept naming style consistent
                     "total_checked": sample_total,
@@ -463,8 +521,8 @@ class MetaboIntFilter(core_classes.MetaboInt):
         # 2. Feature-wise Metrics Extraction
         # =====================================================================
         valid_groups = self._get_valid_bio_groups()
-        sample_type = metaboint_params.get("sample_type", "Sample Type")
-        sample_dict = metaboint_params.get("sample_dict", {})
+        sample_type = self.attrs.get("sample_type", "Sample Type")
+        sample_dict = self.attrs.get("sample_dict", {})
         qc_label = sample_dict.get("QC sample", "QC")
         
         has_qc = False
@@ -498,12 +556,12 @@ class MetaboIntFilter(core_classes.MetaboInt):
         feature_metrics = {
             "filtering_level": filter_level,
             "thresholds": {
-                "mv_group_tol": filter_params.get("mv_group_tol", 0.5),
-                "mv_qc_tol": filter_params.get("mv_qc_tol", 0.3),
-                "mnar_group_mv_tol": filter_params.get(
+                "mv_group_tol": self.attrs.get("mv_group_tol", 0.5),
+                "mv_qc_tol": self.attrs.get("mv_qc_tol", 0.3),
+                "mnar_group_mv_tol": self.attrs.get(
                     "mnar_group_mv_tol", 0.8
                 ),
-                "mnar_qc_mv_tol": filter_params.get("mnar_qc_mv_tol", 0.2)
+                "mnar_qc_mv_tol": self.attrs.get("mnar_qc_mv_tol", 0.2)
             },
             "missing_classification": {
                 "mar_count": int(len(idx_mar)),
@@ -555,17 +613,15 @@ class MetaboIntFilter(core_classes.MetaboInt):
         self.stats["idx_mar"] = idx_mar
         self.stats["idx_mnar"] = idx_mnar
 
-        feature_counts = self.params["MetaboIntFilter"]["feature_counts"]
-        metaboint_params = self.params.get("MetaboInt", {})
+        feature_counts = self.stats["feature_counts"]
         
-        sample_type = metaboint_params.get("sample_type", "Sample Type")
-        sample_dict = metaboint_params.get("sample_dict", {})
+        sample_type = self.attrs.get("sample_type", "Sample Type")
+        sample_dict = self.attrs.get("sample_dict", {})
         qc_label = sample_dict.get("QC sample", "QC")
         blank_label = sample_dict.get("Blank sample", "Blank")
         
-        filter_params = self.params.get("MetaboIntFilter", {})
-        qc_rsd_tol = filter_params.get("qc_rsd_tol", 0.3)
-        blank_qc_ratio_tol = filter_params.get("blank_qc_ratio_tol", 0.2)
+        qc_rsd_tol = self.attrs.get("qc_rsd_tol", 0.3)
+        blank_qc_ratio_tol = self.attrs.get("blank_qc_ratio_tol", 0.2)
 
         qc_mask = self.columns.get_level_values(sample_type) == qc_label
         blank_mask = self.columns.get_level_values(sample_type) == blank_label
@@ -624,6 +680,11 @@ class MetaboIntFilter(core_classes.MetaboInt):
         # then explicitly convert to native lists for safe propagation.
         df_final.attrs["idx_mar"] = idx_mar.intersection(final_idx).tolist()
         df_final.attrs["idx_mnar"] = idx_mnar.intersection(final_idx).tolist()
+
+        idx_mnar_group = pd.Index(self.stats.get("idx_mnar_group", []))
+        idx_mnar_qc = pd.Index(self.stats.get("idx_mnar_qc", []))
+        df_final.attrs["idx_mnar_group"] = idx_mnar_group.intersection(final_idx).tolist()
+        df_final.attrs["idx_mnar_qc"] = idx_mnar_qc.intersection(final_idx).tolist()
         
         # 3. Generate detailed tracking table via private helper
         start_idx = idx_mar.union(idx_mnar).intersection(self.index)
@@ -737,8 +798,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
     @cached_property
     def quality_filtering_metrics(self) -> dict:
         """Extracts metrics from Stage-2 low-quality feature filtering."""
-        filter_params = self.params.get("MetaboIntFilter", {})
-        feature_counts = filter_params.get("feature_counts", {})
+        feature_counts = self.attrs.get("feature_counts", {})
         
         idx_dropped_blank = self.stats.get("idx_dropped_blank", pd.Index([]))
         idx_dropped_rsd = self.stats.get("idx_dropped_rsd", pd.Index([]))
@@ -760,10 +820,10 @@ class MetaboIntFilter(core_classes.MetaboInt):
 
         metrics = {
             "thresholds": {
-                "blank_qc_ratio_tol": filter_params.get(
+                "blank_qc_ratio_tol": self.attrs.get(
                     "blank_qc_ratio_tol", 0.2
                 ),
-                "qc_rsd_tol": filter_params.get("qc_rsd_tol", 0.3)
+                "qc_rsd_tol": self.attrs.get("qc_rsd_tol", 0.3)
             },
             "feature_retention": {
                 "pre_stage2": {
@@ -805,7 +865,6 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         """Initialize with the filtering engine."""
         super().__init__(metabo_obj=engine)
         self.engine = engine
-        self.filter_params = engine.params.get("MetaboIntFilter", {})
 
     # =========================================================================
     # High-Misssing Values Samples Filtering
@@ -1236,7 +1295,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         sample_track = self.engine.stats.get(
             "sample_tracking", pd.DataFrame()
         )
-        sample_mv_tol = self.filter_params.get("sample_mv_tol", 0.5)
+        sample_mv_tol = self.engine.attrs.get("sample_mv_tol", 0.5)
         self._plot_sample_mv_stripplot(
             sample_track, sample_mv_tol, ax=ax_sample
         )
@@ -1335,7 +1394,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             current_ax = ax
             fig = current_ax.figure
             
-        feature_counts = self.filter_params.get("feature_counts", {})
+        feature_counts = self.engine.stats.get("feature_counts", {})
         stats = self.engine.stats
         
         step_keys = [
@@ -1465,7 +1524,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
 
         # [CRITICAL FIX]: Use blank_safe for ratio to match engine logic.
         # NaN <= 0.2 evaluates to False, falsely flagging them as Filtered.
-        blank_qc_ratio_tol = self.filter_params.get("blank_qc_ratio_tol", 0.2)
+        blank_qc_ratio_tol = self.engine.attrs.get("blank_qc_ratio_tol", 0.2)
         qc_safe = qc_mean.replace(0, np.finfo(float).eps).astype(float)
         
         df_plot["Status"] = np.where(
@@ -1549,7 +1608,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             current_ax = ax
             fig = current_ax.figure
         
-        qc_rsd_tol = self.filter_params.get("qc_rsd_tol", 0.3)
+        qc_rsd_tol = self.engine.attrs.get("qc_rsd_tol", 0.3)
         idx_mnar_valid = qc_rsd_all.index.intersection(idx_mnar)
         
         types = pd.Series("MAR", index=qc_rsd_all.index)

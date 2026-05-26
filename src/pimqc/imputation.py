@@ -14,6 +14,7 @@ import seaborn as sns
 
 from sklearn.impute import KNNImputer
 from loguru import logger
+from typing import Dict, Any, Optional
 
 from . import io_utils as iu
 from . import stat_utils as su
@@ -25,36 +26,57 @@ from . import visualizer_classes
 class MetaboIntImputer(core_classes.MetaboInt):
     """Missing value imputation engine with hybrid stratified evaluation."""
 
-    _metadata = ["attrs"]
+    _metadata = ["attrs","stats"]
 
     def __init__(
         self,
         *args,
-        pipeline_params=None,
-        method="probabilistic",
-        knn_neighbors=5,
+        pipeline_params: Optional[Dict[str, Any]] = None,
+        mar_method: Optional[str] = None,
+        mnar_method: Optional[str] = None,
+        mnar_fraction: Optional[float] = None,
+        knn_neighbors: Optional[int] = None,
+        sim_mask_ratio: Optional[float] = None,
         **kwargs
     ):
         """Initialize MetaboIntImputer with parameters and metadata.
 
         Args:
-            *args: Variable length arguments passed to pandas DataFrame.
+            *args: Variable arguments passed to pandas DataFrame.
             pipeline_params: Global configuration dictionary.
-            method: Default imputation algorithm to be used.
+            mar_method: Method for MAR features (e.g., 'Auto', 'KNN').
+            mnar_method: Method for MNAR features (e.g., 'QRILC', 'row').
+            mnar_fraction: Multiplier for LOD-based MNAR imputation.
             knn_neighbors: Number of neighbors for the KNN algorithm.
+            sim_mask_ratio: Ratio for simulated masking during evaluation.
             **kwargs: Keyword arguments for the DataFrame constructor.
         """
         super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
 
-        configs = {
-            "method": method,
-            "knn_neighbors": knn_neighbors,
+        # 1. Base defaults matching pipeline_parameters.toml
+        imp_configs = {
+            "mar_method": "Auto",
+            "mnar_method": "QRILC",
+            "mnar_fraction": 0.5,
+            "knn_neighbors": 5,
+            "sim_mask_ratio": 0.05,
         }
 
+        # 2. TOML global configuration overrides base defaults
         if pipeline_params and "MetaboIntImputer" in pipeline_params:
-            configs.update(pipeline_params["MetaboIntImputer"])
+            imp_configs.update(pipeline_params["MetaboIntImputer"])
 
-        self.attrs.update(configs)
+        # 3. Explicit kwargs override TOML (Highest priority)
+        local_args = locals()
+        explicit_params = [
+            "mar_method", "mnar_method", "mnar_fraction", 
+            "knn_neighbors", "sim_mask_ratio"
+        ]
+        for param in explicit_params:
+            if local_args[param] is not None:
+                imp_configs[param] = local_args[param]
+
+        self.attrs.update(imp_configs)
 
     @property
     def _constructor(self):
@@ -75,6 +97,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
                     break
         elif hasattr(other, "attrs"):
             self.attrs = copy.deepcopy(other.attrs)
+        if hasattr(other, "stats"):
+            self.stats = copy.deepcopy(other.stats)
             
         return self
 
@@ -85,8 +109,8 @@ class MetaboIntImputer(core_classes.MetaboInt):
     def calc_imp_quality_metrics(self, raw_obj, imp_obj):
         """Calculate QA metrics (JSD) and prepare KDE plotting data.
         
-        Computes Jensen-Shannon Divergence between observed and imputed 
-        distributions, and constructs a long-form DataFrame for KDE plotting.
+        Computes Jensen-Shannon Divergence for dual combinations and
+        constructs a long-form DataFrame for KDE plotting.
         
         Returns:
             metrics (dict): Contains the quantified JSD evaluation scores.
@@ -95,7 +119,6 @@ class MetaboIntImputer(core_classes.MetaboInt):
         metrics = {"JSD": {"QC": {}, "Sample": {}}}
         dfs = []
         
-        # Safe log2 transformation protecting against zeros
         raw_log = np.log2(raw_obj.astype(float).replace({0: np.nan}) + 1.0)
         imp_log = np.log2(imp_obj.astype(float) + 1.0)
         
@@ -106,27 +129,51 @@ class MetaboIntImputer(core_classes.MetaboInt):
             if cols.empty:
                 continue
                 
-            obs = raw_log[cols].values.flatten()
-            obs = obs[~np.isnan(obs)]
+            r_slice = raw_log[cols].values.flatten()
+            i_slice = imp_log[cols].values.flatten()
             
-            imp = imp_log[cols].values.flatten()
-            imp = imp[~np.isnan(imp)]
+            # 1. Data Before Imputation (All)
+            obs = r_slice[~np.isnan(r_slice)]
             
-            if len(obs) > 0 and len(imp) > 0:
-                jsd_data = su.calc_jsd_similarity(obs, imp)
-                jsd_val = (
-                    jsd_data.get("JSD", jsd_data.get("jsd", np.nan))
-                    if isinstance(jsd_data, dict) else jsd_data
+            # 2. Data After Imputation (All)
+            imp_all = i_slice[~np.isnan(i_slice)]
+            
+            # 3. Imputed Data (Patches only)
+            mask_missing = np.isnan(r_slice)
+            imp_only = i_slice[mask_missing]
+            imp_only = imp_only[~np.isnan(imp_only)]
+            
+            if len(obs) > 0 and len(imp_all) > 0:
+                jsd_1 = su.calc_jsd_similarity(obs, imp_all)
+                val_1 = (
+                    jsd_1.get("JSD", jsd_1.get("jsd", np.nan))
+                    if isinstance(jsd_1, dict) else jsd_1
                 )
-                metrics["JSD"][grp]["Before vs Imputation"] = float(jsd_val)
+                metrics["JSD"][grp]["Before vs After (All)"] = float(val_1)
                 
+            if len(obs) > 0 and len(imp_only) > 0:
+                jsd_2 = su.calc_jsd_similarity(obs, imp_only)
+                val_2 = (
+                    jsd_2.get("JSD", jsd_2.get("jsd", np.nan))
+                    if isinstance(jsd_2, dict) else jsd_2
+                )
+                metrics["JSD"][grp]["Before vs Imputed Only"] = float(val_2)
+                
+            # Compile plotting data
             if len(obs) > 0:
                 dfs.append(pd.DataFrame({
-                    "Log2_Intensity": obs, "Group": grp, "Type": "Observed"
+                    "Log2_Intensity": obs, "Group": grp, 
+                    "Type": "Before Imputation"
                 }))
-            if len(imp) > 0:
+            if len(imp_all) > 0:
                 dfs.append(pd.DataFrame({
-                    "Log2_Intensity": imp, "Group": grp, "Type": "Imputed"
+                    "Log2_Intensity": imp_all, "Group": grp, 
+                    "Type": "After Imputation"
+                }))
+            if len(imp_only) > 0:
+                dfs.append(pd.DataFrame({
+                    "Log2_Intensity": imp_only, "Group": grp, 
+                    "Type": "Imputed Data"
                 }))
                 
         df_kde = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
@@ -164,6 +211,69 @@ class MetaboIntImputer(core_classes.MetaboInt):
         else:
             return df_log.fillna(target_mins)
 
+    @staticmethod
+    def impute_by_qrilc(df_log, tune_sigma=1.0, global_seed=123):
+        """Impute missing values using QRILC logic for left-censored data.
+        
+        Approximates Quantile Regression Imputation of Left-Censored data by 
+        estimating the feature-wise underlying normal distribution using robust 
+        estimators (Median/MAD), then drawing randomly from the truncated left 
+        tail (below the observed minimum) to preserve low-abundance variance.
+        
+        Ref:
+            Missing value imputation approach for mass spectrometry-based 
+            metabolomics data (Scientific reports, 2018)
+        """
+        import scipy.stats as stats
+        
+        # Initialize numpy random generator for deterministic results
+        rng = np.random.default_rng(global_seed)
+        res_df = df_log.copy()
+
+        def _qrilc_row(row):
+            n_missing = row.isna().sum()
+            if n_missing == 0:
+                return row
+            
+            valid = row.dropna()
+            # Fallback for features with extremely few observed values
+            if len(valid) < 3:
+                fallback_val = valid.min() if len(valid) > 0 else 0.0
+                return row.fillna(fallback_val)
+
+            # 1. Estimate LOD (Truncation point) for this specific feature
+            lod = valid.min()
+
+            # 2. Estimate robust parameters for the underlying distribution.
+            # Using Median and MAD prevents the bias that would occur if we 
+            # used mean/std on left-censored data.
+            mu = np.median(valid)
+            mad = np.median(np.abs(valid - mu))
+            sigma = (mad * 1.4826) * tune_sigma
+
+            # Prevent zero variance which crashes truncnorm
+            if sigma < 1e-6:
+                sigma = 0.01
+                
+            # 3. Define standard normal quantiles for the truncation limits
+            a, b = -np.inf, (lod - mu) / sigma
+
+            # 4. Draw random samples strictly from the truncated left tail
+            drawn = stats.truncnorm.rvs(
+                a=a, b=b, loc=mu, scale=sigma, size=n_missing, random_state=rng
+            )
+            
+            # Prevent negative intensities in linear space (exp2(x) - 1 >= 0)
+            drawn = np.clip(drawn, a_min=0.0, a_max=None)
+            
+            # Fill the missing values
+            row_copy = row.copy()
+            row_copy[row.isna()] = drawn
+            return row_copy
+
+        # Apply the QRILC logic feature-wise (row-wise)
+        return res_df.apply(_qrilc_row, axis=1)
+    
     @staticmethod
     def impute_by_knn(df_log, n_neighbors:int=5):
         """Impute missing values using K-Nearest Neighbors algorithm."""
@@ -457,7 +567,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
         mar_sel = self.attrs.get("selected_mar_method", "Unknown")
         mnar_meth = self.attrs.get("mnar_method", "row")
         mnar_frac = self.attrs.get("mnar_fraction", 0.5)
-
+        
+        reported_mnar_frac = None if str(mnar_meth).upper() == "QRILC" else (
+            float(mnar_frac))
         status = self.attrs.get("imputation_status", "Pending")
 
         def _safe_round(val):
@@ -488,7 +600,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 "mar_method_requested": mar_req,
                 "mar_method_selected": mar_sel,
                 "mnar_method": mnar_meth,
-                "mnar_fraction": float(mnar_frac),
+                "mnar_fraction": reported_mnar_frac,
             },
             "performance": perf_dict,
             "feature_distribution": {
@@ -514,7 +626,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         # ====================================================================
         # 1. Parameter Extraction & Priority Fallback
         # ====================================================================
-        _mnar = mnar_method or self.attrs.get("mnar_method", "Row-wise")
+        _mnar = mnar_method or self.attrs.get("mnar_method", "QRILC")
         _frac = (
             mnar_fraction if mnar_fraction is not None 
             else self.attrs.get("mnar_fraction", 0.5))
@@ -530,28 +642,47 @@ class MetaboIntImputer(core_classes.MetaboInt):
         _seed = self.attrs.get("global_seed", 123)
         target_cols = self.columns.difference(self._blank.columns)
 
+        mnar_info = f"{_mnar}" if (str(_mnar).upper() == "QRILC") else (
+            f"{_mnar} (LOD={_frac}x)")
+        
+        _mar_clean = str(_mar).upper()
+        if _mar_clean in ("AUTO", "BEST"):
+            mar_info = f"Auto (Evaluating KNN={_knn_k}, Prob, Median)"
+        elif _mar_clean == "KNN":
+            mar_info = f"KNN (K={_knn_k})"
+        else:
+            mar_info = f"{_mar}"
+
         logger.info(
             f"Hybrid Imputation Engine Initialized. "
-            f"MAR: {_mar} | MNAR: {_mnar} (LOD={_frac}x)"
-            f" | KNN: {_knn_k} | Sim: {_ratio}"
+            f"MAR: {mar_info} | MNAR: {mnar_info} | Sim_Mask: {_ratio}"
         )
 
         df_log = np.log2(self.astype(float).replace({0: np.nan}) + 1.0)
         
         # ====================================================================
-        # 2. ROUTE A: MNAR -> Localized LOD Imputation
+        # 2. ROUTE A: MNAR -> Localized LOD Imputation or QRILC
         # ====================================================================
         idx_mnar = pd.Index(self.attrs.get("idx_mnar", [])).intersection(
             df_log.index)
+            
         if len(idx_mnar) > 0:
-            logger.info(f"Applying {_mnar}-wise LOD to {len(idx_mnar)} MNAR.")
-            mnar_imp = MetaboIntImputer.impute_by_constant(
-                df_log=df_log.loc[idx_mnar, target_cols],
-                fraction=_frac, imp_mode=_mnar,
-            )
+            logger.info(f"Applying {_mnar} to {len(idx_mnar)} MNAR features.")
+            
+            if str(_mnar).upper() == "QRILC":
+                mnar_imp = MetaboIntImputer.impute_by_qrilc(
+                    df_log=df_log.loc[idx_mnar, target_cols],
+                    global_seed=_seed
+                )
+            else:
+                mnar_imp = MetaboIntImputer.impute_by_constant(
+                    df_log=df_log.loc[idx_mnar, target_cols],
+                    fraction=_frac, imp_mode=_mnar,
+                )
+                
             df_log.loc[idx_mnar, target_cols] = mnar_imp
         else:
-            logger.info("MNAR index empty. Bypassing LOD imputation.")
+            logger.info("MNAR index empty. Bypassing MNAR imputation.")
 
         # ====================================================================
         # 3. ROUTE B: MAR -> ML Simulation & Impute
@@ -634,7 +765,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
             vis = MetaboVisualizerImputer(
                 raw_obj=self, imp_obj=imputed_obj, df_kde=df_kde
             )
-            
+                        
             if len(idx_mar) > 0 and cache:
                 if is_auto:
                     fig_cands = vis.plot_multi_nrmse_scatters(cache)
@@ -669,7 +800,10 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
     def _plot_imputed_kde_overlay(
         self, metrics=None, ax_qc=None, ax_sample=None
     ):
-        """Plot KDE overlay, split into distinct QC and Sample subplots."""
+        """Plot KDE overlay with independent styling and precise Z-orders."""
+        from scipy.stats import gaussian_kde
+        import matplotlib.colors as mcolors  # 引入颜色解析模块
+        
         return_fig = False
         
         if self.df_kde.empty:
@@ -680,10 +814,32 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             return ax_qc, ax_sample
 
         if ax_qc is None or ax_sample is None:
-            fig, (ax_qc, ax_sample) = plt.subplots(1, 2, figsize=(10, 4))
+            fig, (ax_qc, ax_sample) = plt.subplots(
+                1, 2, figsize=(11, 4), gridspec_kw={'width_ratios': [1, 1]}
+            )
             return_fig = True
 
-        colors = {"Observed": "tab:gray", "Imputed": "tab:red"}
+        layer_styles = {
+            "Before Imputation": {
+                "color": "black", "fill": True, "alpha": 0.2, 
+                "ls": "--", "lw": 1.5, "z": 1
+            },
+            "After Imputation": {
+                "color": "tab:gray", "fill": False, "alpha": 1.0, 
+                "ls": "-", "lw": 2.0, "z": 2
+            },
+            "Imputed Data": {
+                "color": "tab:red", "fill": False, "alpha": 1.0, 
+                "ls": "-", "lw": 2.0, "z": 3
+            }
+        }
+        
+        plot_order = [
+            "Before Imputation", 
+            "After Imputation", 
+            "Imputed Data"
+        ]
+
         for grp, ax in [("QC", ax_qc), ("Sample", ax_sample)]:
             subset_grp = self.df_kde[self.df_kde["Group"] == grp]
             
@@ -694,51 +850,95 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
                 )
                 continue
                 
-            for t in ["Observed", "Imputed"]:
+            x_min = subset_grp["Log2_Intensity"].min()
+            x_max = subset_grp["Log2_Intensity"].max()
+            x_margin = (x_max - x_min) * 0.1 if x_max > x_min else 1.0
+            x_grid = np.linspace(x_min - x_margin, x_max + x_margin, 500)
+            
+            total_baseline = len(subset_grp[
+                subset_grp["Type"] == "After Imputation"
+            ])
+            
+            for t in plot_order:
                 subset = subset_grp[subset_grp["Type"] == t]
-                if not subset.empty:
-                    sns.kdeplot(
-                        data=subset, x="Log2_Intensity", 
-                        color=colors.get(t, "black"), ax=ax, 
-                        linewidth=2, alpha=0.8, label=t
-                    )
+                if len(subset) > 1 and total_baseline > 0:
+                    vals = subset["Log2_Intensity"].values
+                    
+                    if np.std(vals) < 1e-6:
+                        rng = np.random.default_rng(123)
+                        vals = vals + rng.normal(0, 1e-4, size=len(vals))
+                        
+                    kde = gaussian_kde(vals)
+                    y_scaled = kde(x_grid) * (len(subset) / total_baseline)
+                    
+                    cfg = layer_styles[t]
+                    if cfg["fill"]:
+                        ax.fill_between(
+                            x_grid, y_scaled, color=cfg["color"], 
+                            alpha=cfg["alpha"], zorder=cfg["z"], linewidth=0
+                        )
+                        ax.plot(
+                            x_grid, y_scaled, color=cfg["color"], 
+                            linestyle=cfg["ls"], linewidth=cfg["lw"], 
+                            zorder=cfg["z"]
+                        )
+                        # [核心修复区] 彻底解耦图例背景与边框的透明度
+                        fc = mcolors.to_rgba(cfg["color"], alpha=cfg["alpha"])
+                        ec = mcolors.to_rgba(cfg["color"], alpha=1.0)
+                        
+                        ax.fill_between(
+                            [], [], facecolor=fc, edgecolor=ec, 
+                            linestyle=cfg["ls"], linewidth=cfg["lw"], label=t
+                        )
+                    else:
+                        ax.plot(
+                            x_grid, y_scaled, color=cfg["color"], 
+                            linestyle=cfg["ls"], linewidth=cfg["lw"], 
+                            alpha=cfg["alpha"], zorder=cfg["z"], label=t
+                        )
 
-            # Annotate with Metrics (JSD) using standard transparent box
             if metrics and "JSD" in metrics and grp in metrics["JSD"]:
-                jsd_val = metrics["JSD"][grp].get(
-                    "Before vs Imputation", np.nan
-                )
+                m_grp = metrics["JSD"][grp]
+                jsd_1 = m_grp.get("Before vs After (All)", np.nan)
+                jsd_2 = m_grp.get("Before vs Imputed Only", np.nan)
                 
-                if not pd.isna(jsd_val):
-                    annot_text = (
-                        "Jensen-Shannon Divergence\n"
-                        f"Before Imp vs After Imp: {float(jsd_val):.3f}"
-                    )
+                lines = ["Jensen-Shannon Divergence:"]
+                if not pd.isna(jsd_1):
+                    lines.append(f"Before vs After: {float(jsd_1):.3f}")
+                if not pd.isna(jsd_2):
+                    lines.append(f"Before vs Imputed: {float(jsd_2):.3f}")
+                
+                if len(lines) > 1:
+                    annot_text = "\n".join(lines)
                     ax.text(
-                        0.96, 0.02, annot_text, transform=ax.transAxes, 
-                        fontsize=9, verticalalignment="bottom", 
+                        0.96, 0.96, annot_text, transform=ax.transAxes,
+                        fontsize=9, verticalalignment="top", 
                         horizontalalignment="right", clip_on=False,
                         bbox=dict(
                             boxstyle="round,pad=0.4", facecolor="white", 
-                            edgecolor="none", alpha=0.6
-                        )
-                    )
+                            edgecolor="none", alpha=0.6))
                 
             self._apply_standard_format(
                 ax=ax, title=f"Density Overlay ({grp})",
-                xlabel="Log2 Intensity", ylabel="Density", append_stage=False
+                xlabel="Log2 Intensity", ylabel="Relative Density", 
+                append_stage=False
             )
             
-            if ax.get_legend_handles_labels()[0]:
-                ax.legend(loc="best")
-                self._format_single_legend(ax=ax, title="Data Type")
+            if ax.get_legend():
+                ax.get_legend().remove()
+                
+            if grp == "Sample":
+                self._format_single_legend(
+                    ax=ax, title="Data Type",
+                    bbox_to_anchor=(1.05, 1), loc="upper left"
+                )
                 
         if return_fig:
             plt.tight_layout()
             return fig
             
         return ax_qc, ax_sample
-
+    
     def _plot_nrmse_scatter(
         self, true_vals, pred_vals, metrics, method_name="", 
         axis_lims=None, ax=None
@@ -803,7 +1003,7 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             )
         )
         
-        title_str = "Masked Simulation"
+        title_str = "MAR Masked Simulation"
         if method_name:
             clean_name = method_name.replace("*", "")
             if clean_name.upper() == "KNN":
@@ -811,7 +1011,7 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             else:
                 display = method_name.title()
                 
-            title_str += f" ({display})"
+            title_str += f"\n({display})"
             
         self._apply_standard_format(
             ax=current_ax, title=title_str,

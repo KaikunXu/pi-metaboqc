@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field, model_validator, field_validator
 
 class MetaboIntConfig(BaseModel):
     """Core Dataset Construction Schema."""
-    mode: Literal["POS", "NEG"] = "POS"
+    mode: Literal[
+        "POS", "NEG", "Pos", "Neg", "Positive", "Negative", "ESI+", "ESI-",
+        "None", "N/A"] = "ESI+"
     sample_name: str = "Sample Name"
     sample_type: str = "Sample Type"
     bio_group: str = "Bio Group"
@@ -21,7 +23,7 @@ class MetaboIntConfig(BaseModel):
     global_seed: int = Field(default=123, ge=0)
     internal_standard: List[str] = Field(default_factory=list)
     outlier_ref_feat: List[str] = Field(default_factory=list)
-    resort_inject_order: Union[Literal["Auto", "none"], bool] = "Auto"
+    resort_inject_order: Union[Literal["Auto", "None"], bool] = "Auto"
     sample_dict: Dict[str, str] = Field(
         default={
             "Actual sample": "Sample",
@@ -107,19 +109,30 @@ class FilterConfig(BaseModel):
 
 class CorrectorConfig(BaseModel):
     """Signal Drift Correction Schema."""
-    base_est: Literal["QC-SVR", "QC-RFSC", "QC-RLSC"] = "QC-SVR"
-    frac: float = Field(default=0.3, gt=0.0, le=1.0)
-    n_tree: int = Field(default=500, gt=0)
+    base_est: Literal[
+        "QC-SVR", "QC-RFSC", "QC-RLSC", "SERRF", "RUV", "Auto"] = "Auto"
+    loess_frac: float = Field(default=0.3, gt=0.0, le=1.0)
+    rf_n_tree: int = Field(default=500, gt=0, description="Trees for QC-RFSC")
+    serrf_n_tree: int = Field(default=100, gt=0, description="Trees for SERRF")
+    serrf_corr_features: int = Field(
+        default=10, ge=0, description="Correlated features for SERRF")
     svr_kernel: Literal["rbf", "linear", "poly"] = "rbf"
     svr_c: float = Field(default=500.0, gt=0.0)
     svr_gamma: Union[Literal["scale", "auto"], float] = 1.0
+    ruv_k: int = Field(
+        default=5, gt=0, description="K-factors to remove for RUV-III")
+    cv_folds: int = Field(
+        default=5, 
+        ge=2, 
+        description="Number of folds for Out-Of-Fold (OOF) cross-validation."
+    )
 
 
 class NormalizerConfig(BaseModel):
     """Configuration for global normalization and log transform."""
     norm_method: Literal[
-        "PQN", "TIC", "Median", "VSN", "Quantile", "None"
-    ] = "VSN"
+        "PQN", "MDFC", "TIC", "Median", "VSN", "Quantile", "None"
+    ] = "PQN"
     robust_log: bool = False
 
     @model_validator(mode="after")
@@ -138,7 +151,7 @@ class NormalizerConfig(BaseModel):
 
 class ImputerConfig(BaseModel):
     """Missing Value Imputation Schema."""
-    mnar_method: Literal["Row-wise", "Column-wise", "Global"] = "Row-wise"
+    mnar_method: Literal["Row-wise", "Column-wise", "Global", "QRILC"] = "QRILC"
     mnar_fraction: float = Field(default=0.5, gt=0.0)
     mar_method: Literal["Auto", "Probabilistic", "KNN", "Median"] = "Auto"
     knn_neighbors: int = Field(default=5, gt=0)

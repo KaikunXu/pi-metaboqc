@@ -13,7 +13,9 @@ import seaborn as sns
 import scipy.stats as stats
 from scipy.optimize import minimize
 from numba import njit
+from joblib import Parallel, delayed
 from loguru import logger
+from typing import Dict, Any, Optional
 
 from . import core_classes
 from . import visualizer_classes
@@ -77,22 +79,47 @@ def _numba_vsn_nll(params, fit_data):
 class MetaboIntNormalizer(core_classes.MetaboInt):
     """Normalization engine for global sample-wise preprocessing."""
 
-    _metadata = ["attrs"]
+    _metadata = ["attrs","stats"]
 
-    def __init__(self, *args, pipeline_params=None, **kwargs):
-        """Initialize MetaboIntNormalizer reading unified config."""
-        super().__init__(*args, pipeline_params=pipeline_params, **kwargs)
+    def __init__(
+        self,
+        *args: Any,
+        pipeline_params: Optional[Dict[str, Any]] = None,
+        norm_method: Optional[str] = None,
+        robust_log: Optional[bool] = None,
+        **kwargs: Any
+    ) -> None:
+        """Initialize MetaboIntNormalizer with parameters and metadata.
 
-        # Default parameters matching config_schema.py
+        Args:
+            *args: Variable length arguments passed to DataFrame.
+            pipeline_params: Global configuration dictionary from TOML.
+            norm_method: Normalization method (e.g., 'VSN', 'Quantile').
+            robust_log: Whether to apply robust log transformation.
+            **kwargs: Keyword arguments passed to DataFrame constructor.
+        """
+        super().__init__(
+            *args, pipeline_params=pipeline_params, **kwargs
+        )
+
+        # 1. Base defaults matching pipeline_parameters.toml
         norm_configs = {
             "norm_method": "VSN",
             "robust_log": False
         }
 
+        # 2. TOML global configuration overrides base defaults
         if pipeline_params and "MetaboIntNormalizer" in pipeline_params:
             norm_configs.update(pipeline_params["MetaboIntNormalizer"])
 
-        self.norm_params = norm_configs
+        # 3. Explicit kwargs override TOML (Highest priority)
+        if norm_method is not None:
+            norm_configs["norm_method"] = norm_method
+        if robust_log is not None:
+            norm_configs["robust_log"] = robust_log
+
+        # 4. Finalize state strictly into lifecycle attributes
+        self.attrs.update(norm_configs)
 
     @property
     def _constructor(self):
@@ -100,10 +127,11 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         return MetaboIntNormalizer
 
     def __finalize__(self, other, method=None, **kwargs):
-        """Explicitly deepcopy custom attributes during object creation."""
-        super().__finalize__(other, method=method, **kwargs)
-        if hasattr(other, "attrs"):
-            self.attrs = copy.deepcopy(getattr(other, "attrs", {}))
+        """Deepcopy custom attributes during pandas operations."""
+        self = super().__finalize__(other, method=method, **kwargs)
+        for name in self._metadata:
+            if hasattr(other, name):
+                setattr(self, name, copy.deepcopy(getattr(other, name)))
         return self
     
     # ====================================================================
@@ -133,83 +161,127 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         # Filter out NaNs to ensure hexbin/scatter stability
         valid = ~np.isnan(a_flat) & ~np.isnan(m_flat)
         return a_flat[valid], m_flat[valid]
-    
-    def calc_norm_quality_metrics(self, raw_obj, norm_obj):
+
+    def calc_norm_quality_metrics(
+        self, raw_obj, norm_obj, max_points: Optional[int] = 50000
+    ) -> dict:
         """Calculate normalization-related metrics for technical reporting.
-        
-        Computes Jensen-Shannon Divergence (JSD) for density, MAD &
-        Spearman correlation for MA plots, and Wasserstein & KS
-        statistics for eCDF distribution alignment.
+
+        Computes Jensen-Shannon Divergence (JSD), MA plot statistics (MAD,
+        Spearman), and eCDF alignment (Wasserstein, KS). 
+        Supports statistical subsampling to prevent O(N log N) bottlenecks.
         """
-        
         metrics = {
             "JSD": {"QC": {}, "Sample": {}},
             "MA": {"Before Norm": {}, "After Norm": {}},
             "eCDF": {"Before Norm": {}, "After Norm": {}}
         }
-        
+
         log_raw = su._extract_log2_target(raw_obj)
         log_norm = su._extract_log2_target(norm_obj)
-        
+
         if log_raw is None or log_norm is None:
             return metrics
-            
+
+        g_seed = self.attrs.get("global_seed", 123)
+
+        # ==========================================
+        # Robust inner closure for array subsampling
+        # ==========================================
+        def _subsample(
+            arr: np.ndarray, max_n: Optional[int] = max_points
+        ) -> np.ndarray:
+            """Safely subsample 1D arrays, bypassed if max_n is None."""
+            valid_arr = arr[~np.isnan(arr)]
+            # Skip subsampling if max_n is None or array is small enough
+            if max_n is not None and len(valid_arr) > max_n:
+                np.random.seed(g_seed)
+                return np.random.choice(valid_arr, size=max_n, replace=False)
+            return valid_arr
+
         # 1. JSD Metrics (Density Alignment)
         qc_cols = raw_obj._qc.columns.intersection(log_raw.columns)
         sam_cols = raw_obj._actual_sample.columns.intersection(log_raw.columns)
-        
+
         if not qc_cols.empty:
-            qc_jsd = su.calc_jsd_similarity(
-                log_raw[qc_cols].values.flatten(), 
-                log_norm[qc_cols].values.flatten()
-            )
+            raw_vals = _subsample(log_raw[qc_cols].values.flatten())
+            norm_vals = _subsample(log_norm[qc_cols].values.flatten())
+            qc_jsd = su.calc_jsd_similarity(raw_vals, norm_vals)
+            
             metrics["JSD"]["QC"]["Before vs After"] = (
-                float(qc_jsd.get("JSD", qc_jsd.get("jsd", np.nan))) 
+                float(qc_jsd.get("JSD", qc_jsd.get("jsd", np.nan)))
                 if isinstance(qc_jsd, dict) else float(qc_jsd)
             )
-            
+
         if not sam_cols.empty:
-            sam_jsd = su.calc_jsd_similarity(
-                log_raw[sam_cols].values.flatten(), 
-                log_norm[sam_cols].values.flatten()
-            )
+            raw_vals = _subsample(log_raw[sam_cols].values.flatten())
+            norm_vals = _subsample(log_norm[sam_cols].values.flatten())
+            sam_jsd = su.calc_jsd_similarity(raw_vals, norm_vals)
+            
             metrics["JSD"]["Sample"]["Before vs After"] = (
-                float(sam_jsd.get("JSD", sam_jsd.get("jsd", np.nan))) 
+                float(sam_jsd.get("JSD", sam_jsd.get("jsd", np.nan)))
                 if isinstance(sam_jsd, dict) else float(sam_jsd)
             )
-            
+
         # 2. MA Plot & 3. eCDF Distribution Metrics
         stages = [("Before Norm", log_raw), ("After Norm", log_norm)]
         for stage, df in stages:
-            
+
+            # ----------------------------------------------------
             # MA Metrics (MAD, Spearman rho)
+            # ----------------------------------------------------
             a_vals, m_vals = self.calc_ma_arrays(df)
             if len(m_vals) > 0:
                 m_median = np.median(m_vals)
                 mad_val = float(np.median(np.abs(m_vals - m_median)))
-                rho_val = float(stats.spearmanr(a_vals, m_vals)[0])
-                metrics["MA"][stage] = {
-                    "MAD": mad_val, "Spearman": rho_val
-                }
-            
+
+                # Subsample for Spearman only if max_points is specified
+                if max_points is not None and len(a_vals) > max_points:
+                    np.random.seed(g_seed)
+                    idx = np.random.choice(
+                        len(a_vals), max_points, replace=False
+                    )
+                    a_sub, m_sub = a_vals[idx], m_vals[idx]
+                else:
+                    a_sub, m_sub = a_vals, m_vals
+
+                rho_val = float(stats.spearmanr(a_sub, m_sub)[0])
+                metrics["MA"][stage] = {"MAD": mad_val, "Spearman": rho_val}
+
+            # ----------------------------------------------------
             # eCDF Metrics (Wasserstein distance, KS statistic)
+            # ----------------------------------------------------
             pooled = df.values.flatten()
-            pooled = pooled[~np.isnan(pooled)]
-            if len(pooled) > 0:
+            pooled_ref = _subsample(pooled)  # Controlled by max_points
+
+            if len(pooled_ref) > 0:
                 w_dists, ks_dists = [], []
-                for col in df.columns:
+
+                eval_cols = df.columns
+                # Subsample samples (columns) for global eCDF estimation
+                if max_points is not None and len(eval_cols) > 200:
+                    np.random.seed(g_seed)
+                    eval_cols = np.random.choice(eval_cols, 200, replace=False)
+
+                for col in eval_cols:
                     vals = df[col].dropna().values
                     if len(vals) > 0:
+                        # Subsample intra-sample features if exceptionally huge
+                        if max_points is not None and len(vals) > 10000:
+                            np.random.seed(g_seed)
+                            vals = np.random.choice(
+                                vals, 10000, replace=False
+                            )
+
                         w_dists.append(
-                            stats.wasserstein_distance(vals, pooled)
+                            stats.wasserstein_distance(vals, pooled_ref)
                         )
-                        ks_dists.append(stats.ks_2samp(vals, pooled)[0])
-                        
+                        ks_dists.append(stats.ks_2samp(vals, pooled_ref)[0])
+
                 metrics["eCDF"][stage] = {
                     "Wasserstein": float(np.mean(w_dists)),
                     "KS": float(np.mean(ks_dists))
                 }
-                
         return metrics
     
     # ====================================================================
@@ -229,7 +301,14 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     
     @staticmethod
     def calc_pqn_normalization(df, qc_cols=None):
-        """Apply Probabilistic Quotient Normalization sample-wise."""
+        """
+        Apply Probabilistic Quotient Normalization sample-wise.
+        
+        Ref:
+            Probabilistic Quotient Normalization as Robust Method to Account 
+            for Dilution of Complex Biological Mixtures. Application in 1H 
+            NMR Metabonomics (Anna Chem, 2006)
+        """
         df_safe = df.replace({0: np.nan})
         
         if qc_cols is not None and not qc_cols.empty:
@@ -246,7 +325,14 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
 
     @staticmethod
     def calc_vsn_normalization(df):
-        """Apply Variance Stabilizing Normalization (VSN)."""
+        """
+        Apply Variance Stabilizing Normalization (VSN).
+        
+        Ref:
+            Variance stabilization applied to microarray data calibration and 
+            to the quantification of differential expression (Bioinformatics, 
+            2002)
+        """
         data_arr = df.to_numpy(dtype=np.float64)
         rows, cols = data_arr.shape
 
@@ -298,78 +384,16 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         }
         return res_df, vsn_meta
     
-    # @staticmethod
-    # def calc_vsn_normalization(df):
-    #     """
-    #     Apply Variance Stabilizing Normalization (VSN) to the dataset.
-        
-    #     This method utilizes a L-BFGS-B optimizer to fit a generalized 
-    #     logarithm (glog) transformation model, ensuring the variance becomes 
-    #     independent of the mean intensity across all features.
-    #     """
-    #     # Convert DataFrame to a contiguous float64 NumPy array for Numba
-    #     data_arr = df.to_numpy(dtype=np.float64)
-    #     rows, cols = data_arr.shape
-
-    #     # Use the entire matrix for parameter fitting to ensure equivalence
-    #     fit_data = data_arr
-
-    #     # Initialize optimization parameters: a_vec (offsets) and b (scale)
-    #     a_init = np.zeros(cols)
-    #     b_init = 1.0 / np.nanmedian(data_arr)
-    #     x0 = np.concatenate([a_init, [b_init]])
-        
-    #     # Define bounds: no bounds for 'a', strictly positive for 'b'
-    #     bounds = [(None, None)] * cols + [(1e-12, None)]
-
-    #     # Execute L-BFGS-B optimization using the Numba-compiled NLL engine
-    #     res = minimize(
-    #         _numba_vsn_nll, 
-    #         x0=x0, 
-    #         args=(fit_data,),
-    #         method="L-BFGS-B", 
-    #         bounds=bounds,
-    #         options={"maxiter": 2000, "ftol": 1e-9}
-    #     )
-        
-    #     # Extract the optimized parameters
-    #     a_vec, b = res.x[:-1], res.x[-1]
-
-    #     # Apply the generalized logarithm (glog) transformation
-    #     shift_constant = np.log2(2 * b)
-    #     normed_arr = (
-    #         np.arcsinh(a_vec + b * data_arr) / np.log(2)
-    #     ) - shift_constant
-
-    #     # Calculate a global intensity shift to align with log2 scale median
-    #     log2_data = np.log2(np.where(data_arr > 0, data_arr, np.nan))
-    #     valid = ~np.isnan(log2_data) & ~np.isnan(normed_arr)
-
-    #     pure_shift = 0.0
-    #     if np.any(valid):
-    #         y_val = normed_arr[valid]
-    #         x_val = log2_data[valid]
-            
-    #         # Use top 50 percentile intensities to compute stable median shift
-    #         high_mask = x_val > np.percentile(x_val, 50)
-    #         pure_shift = np.median(x_val[high_mask] - y_val[high_mask])
-    #         normed_arr += pure_shift
-
-    #     # Reconstruct the normalized DataFrame maintaining original indexes
-    #     res_df = df.copy()
-    #     res_df.iloc[:, :] = normed_arr
-        
-    #     # Store metadata for downstream evaluation and reporting
-    #     vsn_meta = {
-    #         "vsn_scale": float(b),
-    #         "vsn_shift": float(pure_shift)
-    #     }
-        
-    #     return res_df, vsn_meta
-    
     @staticmethod
     def calc_quantile_normalization(df):
-        """Apply Quantile normalization ensuring identically distributed."""
+        """
+        Apply Quantile normalization ensuring identically distributed.
+        
+        Ref:
+            A comparison of normalization methods for high density 
+            oligonucleotide array data based on variance and bias 
+            (Bioinformatics, 2003)
+        """
         origin_arr = df.to_numpy(dtype=np.float64)
         rows, cols = origin_arr.shape
 
@@ -410,7 +434,122 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         res_df = df.copy()
         res_df.iloc[:, :] = normed_arr
         return res_df
+    
+            
+            
+    @staticmethod
+    def calc_mdfc_normalization(
+        df: pd.DataFrame,
+        qc_cols: pd.Index,
+        kde_points: int = 1000,
+        n_jobs: int = -1
+    ) -> pd.DataFrame:
+        """Apply Maximal Density Fold Change (MDFC) normalization.
 
+        Filters high-quality features against QC/SQC references, calculates
+        the Log2 fold change, and extracts the maximal density peak via KDE.
+        Accelerated via chunked joblib multi-processing to maximize CPU
+        utilization.
+
+        Ref:
+            MAFFIN: metabolomics sample normalization using maximal density
+            fold change with high-quality metabolic features and corrected
+            signal intensities (Bioinformatics, 2022)
+        """
+        df_safe = df.replace({0: np.nan})
+
+        # 1. Define high-quality reference spectrum
+        if qc_cols is not None and not qc_cols.empty:
+            ref_spectrum = df_safe[qc_cols].median(axis="columns")
+        else:
+            logger.warning("No QCs for MDFC. Using global median fallback.")
+            ref_spectrum = df_safe.median(axis="columns")
+
+        # Extract strictly decoupled numpy arrays to prevent memory leak
+        log2_ref = np.log2(ref_spectrum.replace({0: np.nan})).values
+        data_matrix = df_safe.values
+        num_samples = data_matrix.shape[1]
+
+        # 2. Pure function: Process a chunk to avoid IPC overhead
+        def _process_mdfc_chunk(
+            chunk_arr: np.ndarray, ref_arr: np.ndarray, pts: int
+        ) -> np.ndarray:
+            """Process a chunk of samples independently."""
+            out_chunk = np.empty_like(chunk_arr, dtype=np.float64)
+            num_cols = chunk_arr.shape[1]
+
+            for i in range(num_cols):
+                sample_vals = chunk_arr[:, i]
+                valid = ~np.isnan(sample_vals) & ~np.isnan(ref_arr)
+
+                # Fallback 1: Insufficient overlapping features
+                if valid.sum() < 10:
+                    out_chunk[:, i] = sample_vals
+                    continue
+
+                log_fc = np.log2(sample_vals[valid]) - ref_arr[valid]
+                clean_log_fc = log_fc[np.isfinite(log_fc)]
+
+                # Fallback 2: Zero variance or extreme data scarcity
+                if len(clean_log_fc) < 10 or np.var(clean_log_fc) < 1e-8:
+                    if len(clean_log_fc) > 0:
+                        shift = np.median(clean_log_fc)
+                    else:
+                        shift = 0.0
+                else:
+                    try:
+                        # 3. Kernel Density Estimation
+                        kde = stats.gaussian_kde(clean_log_fc)
+                        grid = np.linspace(
+                            np.min(clean_log_fc), np.max(clean_log_fc), pts
+                        )
+                        density = kde.evaluate(grid)
+
+                        # Fallback 3: KDE produced flat or invalid density
+                        if np.max(density) == 0 or np.isnan(density).any():
+                            shift = np.median(clean_log_fc)
+                        else:
+                            shift = grid[np.argmax(density)]
+                    except (ValueError, np.linalg.LinAlgError):
+                        # Fallback 4: KDE singular matrix failure
+                        shift = np.median(clean_log_fc)
+
+                # 4. Apply back-transformation
+                norm_factor = 2 ** shift
+                out_chunk[:, i] = sample_vals / norm_factor
+
+            return out_chunk
+
+        # 5. Calculate safe threading and optimal chunking strategy
+        actual_cores = (os.cpu_count() or 1) if n_jobs == -1 else n_jobs
+        safe_n_jobs = max(1, int(actual_cores / 2))
+
+        # Chunk the data matrix to balance the load across processes
+        n_chunks = min(num_samples, safe_n_jobs * 4)
+        if n_chunks > 0:
+            chunks = np.array_split(data_matrix, n_chunks, axis=1)
+        else:
+            chunks = []
+
+        logger.info(
+            f"Executing chunked parallel MDFC "
+            f"(backend='loky', cores={safe_n_jobs}, chunks={n_chunks})..."
+        )
+
+        # 6. Execute parallel processing via Joblib
+        normed_chunks = Parallel(n_jobs=safe_n_jobs, backend="loky")(
+            delayed(_process_mdfc_chunk)(chunk, log2_ref, kde_points)
+            for chunk in chunks
+        )
+
+        # 7. Reconstruct the output DataFrame
+        res_df = df.copy()
+        if normed_chunks:
+            res_df.iloc[:, :] = np.column_stack(normed_chunks)
+            
+        return res_df.fillna(0)
+    
+    
     # ====================================================================
     # Core Execution Logic (Single Lane Refactored)
     # ====================================================================
@@ -431,8 +570,8 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         if df_target.empty:
             raise ValueError("No target samples (QC/Actual) available.")
 
-        method = self.norm_params.get("norm_method", "None").upper()
-        is_log = self.norm_params.get("robust_log", False)
+        method = self.attrs.get("norm_method", "None").upper()
+        is_log = self.attrs.get("robust_log", False)
         
         # Passport stamps for the generated Clean_Dataset
         meta_stamps = {"norm_method": method, "is_logged": False}
@@ -441,7 +580,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         # Category A: Linear Scale Methods (TIC, Median, PQN) or None
         # Logic: Normalize first to correct drift, then Log for variance.
         # -------------------------------------------------------------
-        if method in ["TIC", "MEDIAN", "PQN", "NONE"]:
+        if method in ["TIC", "MEDIAN", "PQN", "MDFC", "NONE"]:
             if method == "TIC":
                 df_target = self.calc_tic_normalization(df_target)
             elif method == "MEDIAN":
@@ -449,6 +588,12 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             elif method == "PQN":
                 qc_cols = self._qc.columns
                 df_target = self.calc_pqn_normalization(df_target, qc_cols)
+            elif method == "MDFC":
+                # MDFC routing using QC samples as the reference
+                qc_cols = self._qc.columns
+                n_cores = self.attrs.get("n_jobs", -1)
+                df_target = self.calc_mdfc_normalization(
+                    df_target, qc_cols=qc_cols, n_jobs=n_cores)
             
             # Apply log transform after sample-wise normalization
             if is_log:
@@ -517,8 +662,8 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         """Execute workflow, save outputs, and generate plots."""
         iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
 
-        method = self.norm_params.get("norm_method", "None")
-        is_log = self.norm_params.get("robust_log", False)
+        method = self.attrs.get("norm_method", "None")
+        is_log = self.attrs.get("robust_log", False)
 
         blank_count = len(self._blank.columns)
         if blank_count > 0:
@@ -540,7 +685,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         filename = f"Normalized_Data_{suffix}.csv"
         file_path = os.path.join(output_dir, filename)
         
-        clean_obj.attrs["pipeline_stage"] = "Global Normalization"
+        clean_obj.attrs["pipeline_stage"] = "Normalization"
         clean_obj.to_csv(
             path_or_buf=file_path, na_rep="NA", encoding="utf-8-sig"
         )
@@ -548,7 +693,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         # 3. QA Metrics Engine
         logger.info("Calculating normalization-related metrics...")
         quality_metrics = self.calc_norm_quality_metrics(
-            raw_obj=self, norm_obj=clean_obj
+            raw_obj=self, norm_obj=clean_obj, max_points=50000
         )
         clean_obj.attrs["normalization_quality_metrics"] = quality_metrics
 

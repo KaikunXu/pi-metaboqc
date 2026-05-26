@@ -17,43 +17,47 @@ class MetaboInt(pd.DataFrame):
     across complex pandas mathematical operations.
     """
 
-    _metadata = ["attrs"]
+    _metadata = ["attrs", "stats"]
 
     def __init__(
         self,
         *args: Any,
         pipeline_params: Optional[Dict[str, Any]] = None,
-        mode: str = "POS",
-        sample_name: str = "Sample Name",
-        sample_type: str = "Sample Type",
-        bio_group: str = "Bio Group",
-        batch: str = "Batch",
-        inject_order: str = "Inject Order",
+        mode: Optional[str] = None,
+        sample_name: Optional[str] = None,
+        sample_type: Optional[str] = None,
+        bio_group: Optional[str] = None,
+        batch: Optional[str] = None,
+        inject_order: Optional[str] = None,
         sample_dict: Optional[Dict[str, str]] = None,
         internal_standard: Optional[Union[List[str], str]] = None,
         outlier_ref_feat: Optional[Union[List[str], str]] = None,
+        global_seed: Optional[int] = None,
         **kwargs: Any
     ) -> None:
-        """Initialize the MetaboInt data structure with dual-category attributes.
+        """Initialize the MetaboInt data structure.
 
         Args:
-            *args: Variable length arguments passed to pandas DataFrame.
-            pipeline_params: Global settings for the pipeline classes.
-            mode: MS Polarity ("POS" or "NEG").
-            sample_name: Column name for Sample Name.
-            sample_type: Column name for Sample Type.
-            bio_group: Column name for Biological Group.
-            batch: Column name for Batch.
-            inject_order: Column name for Injection Order.
-            sample_dict: Mapping dictionary for specific sample types.
-            internal_standard: List of internal standard metabolites.
-            outlier_ref_feat: List of outlier reference features.
-            **kwargs: Extra arguments passed to pandas DataFrame.
+            *args: Variable length arguments passed to DataFrame.
+            pipeline_params: Global configuration dictionary from TOML.
+            mode: Acquisition mode (e.g., 'POS' or 'NEG').
+            sample_name: Multi-index level name for sample identifiers.
+            sample_type: Multi-index level name for sample types.
+            bio_group: Multi-index level name for biological groups.
+            batch: Multi-index level name for analytical batches.
+            inject_order: Multi-index level name for injection sequence.
+            sample_dict: Mapping for internal sample type classifications.
+            internal_standard: Explicitly specified internal standards.
+            outlier_ref_feat: Explicitly specified outlier references.
+            global_seed: Random seed for deterministic reproducibility.
+            **kwargs: Keyword arguments passed to DataFrame constructor.
         """
         super().__init__(*args, **kwargs)
 
         if not hasattr(self, "attrs"):
             self.attrs: Dict[str, Any] = {}
+        if not hasattr(self, "stats"):
+            self.stats: Dict[str, Any] = {}
 
         # Safely inherit attributes if instantiated from an existing MetaboInt
         input_data = kwargs.get("data")
@@ -62,35 +66,57 @@ class MetaboInt(pd.DataFrame):
 
         if input_data is not None and hasattr(input_data, "attrs"):
             self.attrs.update(copy.deepcopy(input_data.attrs))
+        if input_data is not None and hasattr(input_data, "stats"):
+            self.stats.update(copy.deepcopy(input_data.stats))
 
         # ====================================================================
         # Category 1: Structural & Mapping Attributes
         # ====================================================================
-        if sample_dict is None:
-            sample_dict = {
+        # 1. Hardcoded base defaults
+        base_configs = {
+            "mode": "ESI+",
+            "sample_name": "Sample Name",
+            "sample_type": "Sample Type",
+            "bio_group": "Bio Group",
+            "batch": "Batch",
+            "inject_order": "Inject Order",
+            "sample_dict": {
                 "Actual sample": "Sample",
                 "Blank sample": "Blank",
                 "QC sample": "QC",
-            }
-
-        base_configs = {
-            "mode": mode,
-            "sample_name": sample_name,
-            "sample_type": sample_type,
-            "bio_group": bio_group,
-            "batch": batch,
-            "inject_order": inject_order,
-            "sample_dict": sample_dict,
-            "internal_standard": self._to_list(internal_standard),
-            "outlier_ref_feat": self._to_list(outlier_ref_feat)
+            },
+            "internal_standard": [],
+            "outlier_ref_feat": [],
+            "global_seed": 123
         }
 
+        # 2. TOML configuration overrides base defaults
         if pipeline_params and "MetaboInt" in pipeline_params:
             base_configs.update(pipeline_params["MetaboInt"])
-            global_seed = pipeline_params["MetaboInt"].get("global_seed", 123)
-            self.attrs["global_seed"] = global_seed
-            np.random.seed(global_seed)
 
+        # 3. Explicit kwargs override TOML (Highest priority)
+        local_args = locals()
+        explicit_params = [
+            "mode", "sample_name", "sample_type", "bio_group", 
+            "batch", "inject_order", "sample_dict", "global_seed"
+        ]
+        for param in explicit_params:
+            if local_args[param] is not None:
+                base_configs[param] = local_args[param]
+                
+        # 4. Action: Initialize numpy global random state
+        np.random.seed(base_configs.get("global_seed", 123))
+                
+        if internal_standard is not None:
+            base_configs["internal_standard"] = self._to_list(
+                internal_standard
+            )
+        if outlier_ref_feat is not None:
+            base_configs["outlier_ref_feat"] = self._to_list(
+                outlier_ref_feat
+            )
+
+        # 5. Finalize state
         self.attrs.update(base_configs)
 
         # ====================================================================
@@ -146,6 +172,8 @@ class MetaboInt(pd.DataFrame):
                     break
         elif hasattr(other, "attrs"):
             self.attrs = copy.deepcopy(other.attrs)
+        if hasattr(other, "stats"):
+            self.stats = copy.deepcopy(other.stats)
             
         return self
 
@@ -290,7 +318,7 @@ class MetaboInt(pd.DataFrame):
         except ImportError:
             pkg_version = "v1.0.0"
             
-        mode = self.attrs.get("mode", "")
+        mode = self.attrs.get("mode", "ESI+")
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
         blk_lbl = sample_dict.get("Blank sample", "Blank")

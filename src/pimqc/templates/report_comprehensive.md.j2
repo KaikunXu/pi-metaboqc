@@ -4,7 +4,9 @@
 {%- set raw_params = raw_dataset.get('pipeline_params', {}) %}
 
 > **Date Generated:** {{ meta.get('date', 'Unknown') }}<br>
+{%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
 > **Ionization Mode:** {{ meta.get('mode', 'Unknown') }}<br>
+{%- endif %}
 > **Quality-control Engine:** [pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc) (v{{ raw_params.get('pi-metaboqc_version', '1.0.0') }})<br>
 
 
@@ -38,47 +40,80 @@ Table: Detailed Batch and Injection Distribution
 {%- set fw_cls = fw.get('missing_classification', {}) -%}
 {%- set fw_ret = fw.get('feature_retention', {}) %}
 
-Prior to feature-level screening, a sample-level integrity check was conducted to eliminate severe injection failures. 
-Samples exhibiting an overall missing value rate exceeding the tolerance of **{{ sw.get('thresholds', {}).get('sample_mv_tol', 'N/A') }}** were excluded.
-This step evaluated **{{ sw_ret.get('total_checked', 'N/A') }}** samples, retaining **{{ sw_ret.get('retained_count', 'N/A') }}** samples (Retention rate: **{{ sw_ret.get('retention_rate_pct', 'N/A') }}**%).
+Prior to feature-level screening, a sample-level integrity check was conducted to eliminate severe injection failures. Samples exhibiting an overall missing value rate exceeding the tolerance of **{{ sw.get('thresholds', {}).get('sample_mv_tol', 'N/A') }}** were excluded. This step evaluated **{{ sw_ret.get('total_checked', 'N/A') }}** samples, retaining **{{ sw_ret.get('retained_count', 'N/A') }}** samples (Retention rate: **{{ sw_ret.get('retention_rate_pct', 'N/A') }}**%).
 
-Subsequently, to remove irreproducible signals and instrument dropouts, feature-level missing value filtering was executed at the **{{ fw.get('filtering_level', 'N/A') }}** level.
-Features were topologically classified to decouple genuine biological absences from random noise: Missing Not At Random (MNAR) candidates were identified using a biological group tolerance of **{{ fw_thresh.get('mnar_group_mv_tol', 'N/A') }}** and a QC tolerance of **{{ fw_thresh.get('mnar_qc_mv_tol', 'N/A') }}**.
-Concurrently, Missing At Random (MAR) features were filtered under baseline health tolerances (Group limit: **{{ fw_thresh.get('mv_group_tol', 'N/A') }}**, QC limit: **{{ fw_thresh.get('mv_qc_tol', 'N/A') }}**).
+Subsequently, to remove irreproducible signals and instrument dropouts, feature-level missing value filtering was executed at the **{{ fw.get('filtering_level', 'N/A') }}** level. Features were topologically classified to decouple genuine biological absences from random noise: Missing Not At Random (MNAR) candidates were identified using a biological group tolerance of **{{ fw_thresh.get('mnar_group_mv_tol', 'N/A') }}** and a QC tolerance of **{{ fw_thresh.get('mnar_qc_mv_tol', 'N/A') }}**. Concurrently, Missing At Random (MAR) features were filtered under baseline health tolerances (Group limit: **{{ fw_thresh.get('mv_group_tol', 'N/A') }}**, QC limit: **{{ fw_thresh.get('mv_qc_tol', 'N/A') }}**).
 
 Out of the initial **{{ fw_ret.get('pre_mv_filter_count', 'N/A') }}** raw features, **{{ fw_cls.get('mar_count', 'N/A') }}** MAR and **{{ fw_cls.get('mnar_total', 'N/A') }}** MNAR features successfully met the stringency criteria and were retained (Retention rate: **{{ fw_ret.get('retention_rate_pct', 'N/A') }}**%).
 
 ![**High-Missing Value Features Filtering Summary**](../02_MV_Filtered/MV_Classification_Dashboard.svg){.full-width-image}
 
-### 1.3 Intra-batch and Inter-batch Data Correction
+### 1.3 Signal Drift Correction
 
-{%- set intra_params = intra_signal_correction.get('pipeline_params', {}) -%}
-{%- set intra_meth = intra_params.get('methodology', {}) -%}
-{%- set intra_perf = intra_params.get('performance', {}) %}
+{%- set sc_status = signal_correction.get('correction_status', 'Unknown') %}
+{%- set sc_perf = signal_correction.get('overall_performance', {}) %}
+{%- set sc_stages = signal_correction.get('stages_executed', []) %}
 
-To mitigate time-dependent instrument drift and within-batch intensity fluctuations, the pipeline employed the **{{ intra_meth.get('base_est', 'N/A') }}** algorithm as the primary smoothing engine.
-The model was configured with the following parameters:
-{%- if intra_meth.get('base_est') in ("QC-RLSC", "LOESS", "loess") %} a smoothing fraction of **{{ intra_meth.get('frac', 'N/A') }}**.{%- endif -%}
-{%- if intra_meth.get('base_est') in ("QC-RFSC", "RF", "rf") %} an ensemble of **{{ intra_meth.get('n_tree', 'N/A') }}** decision trees.{%- endif -%}
-{%- if intra_meth.get('base_est') in ("QC-SVR", "SVR") %} a **{{ intra_meth.get('svr_kernel', 'N/A') }}** kernel, a regularization parameter (C) of **{{ intra_meth.get('svr_c', 'N/A') }}**, and a kernel coefficient (gamma) of **{{ intra_meth.get('svr_gamma', 'N/A') }}**.{%- endif %}
+To mitigate time-dependent instrument drift, within-batch intensity fluctuations, and systemic batch effects, the pipeline executed a sequential signal correction architecture.
 
-This algorithmic smoothing successfully reduced the median QC RSD from an initial baseline of {{ (intra_perf.get('median_qc_rsd_baseline', 0) * 100) | round(2) }}% to {{ (intra_perf.get('median_qc_rsd_current', 0) * 100) | round(2) }}% (achieving a relative noise reduction of **{{ (intra_perf.get('relative_noise_reduction', 0) * 100) | round(2) }}**%).
+**Dual-Evaluation Framework:**
+To ensure both mathematical rigor and optimal biological signal preservation, the pipeline evaluates the QC Relative Standard Deviation (RSD) under two distinct frameworks:
+* **CV (OOF) Evaluated:** Calculates RSD using K-Fold Out-Of-Fold predictions. This rigorous blind-test metric acts as a lie detector, proving that the hyper-parameters are learning the true drift trend rather than overfitting to noise.
+* **Full Model Applied:** Calculates RSD using the finalized algorithm trained on all valid QC samples. This metric represents the actual, maximally smoothed data matrix delivered for downstream biological analysis.
 
-{%- if feats.get('internal_standards_count', 0) > 0 %}
+{% for stage in sc_stages %}
+**{{ 'Phase ' ~ loop.index ~ ': ' if sc_stages | length > 1 else '' }}{{ stage.get('stage_name', 'Unknown Stage') }}. **
+The pipeline utilized the **{{ stage.get('algorithm', 'Unknown') }}** algorithm.
+{%- set params = stage.get('parameters', {}) %}
+{%- if params %}
+The model was configured with the following key parameters:
+{%- if 'loess_frac' in params %} a smoothing fraction of **{{ params.get('loess_frac') }}**.{% endif %}
+{%- if 'n_estimators' in params %} an ensemble of **{{ params.get('n_estimators') }}** decision trees{%- if 'n_corr_features' in params %} utilizing a highly correlated features network of **{{ params.get('n_corr_features') }}**{% endif %}.{% endif %}
+{%- if 'svr_kernel' in params %} a **{{ params.get('svr_kernel') }}** kernel, regularization (C) of **{{ params.get('svr_c') }}**, and gamma of **{{ params.get('svr_gamma') }}**.{% endif %}
+{%- if 'ruv_k' in params %} an SVD projection with **k={{ params.get('ruv_k') }}** latent factors.{% endif %}
+{%- if 'cv_folds' in params %} It utilized **{{ params.get('cv_folds') }}**-fold cross-validation.{% endif %}
+{%- endif %}
+{%- if not loop.last %}
+{%- if stage.get('stage_qc_rsd_oof') is not none %}
+This phase achieved a rigorous OOF evaluated QC RSD of **{{ (stage.get('stage_qc_rsd_oof') * 100) | round(2) }}%**, while the actual applied Full Model effectively suppressed the RSD to **{{ (stage.get('stage_qc_rsd_full', 0) * 100) | round(2) }}%**.
+{%- else %}
+This phase effectively suppressed the QC RSD to **{{ (stage.get('stage_qc_rsd_full', 0) * 100) | round(2) }}%** using the finalized Full Model.
+{%- endif %}
+{%- endif %}
+{% endfor %}
 
-![**Intra-batch Signal Drift Correction Diagnostics (Internal Standard Tracking)**](../03_04_Corrected_Data/Pred_Base_IS_{{ intra_meth.get('base_est', 'Unknown') }}.svg){.full-width-image}
-
-> **Note:** Detailed, feature-specific diagnostic scatter plots for all tracked internal standards (which are not merged into the summary dashboard) are archived in the **03_04_Corrected_Data/Internal_Standard_Scatters/** directory for in-depth inspection.
+{%- if sc_perf.get('median_qc_rsd_baseline') is not none and sc_perf.get('median_qc_rsd_current_full') is not none %}
+Overall, the signal correction module reduced the median QC RSD from an initial baseline of **{{ (sc_perf.get('median_qc_rsd_baseline') * 100) | round(2) }}%** down to a finalized Full Model RSD of **{{ (sc_perf.get('median_qc_rsd_current_full') * 100) | round(2) }}%**
+{%- if sc_perf.get('median_qc_rsd_current_oof') is not none -%}
+\ (CV Evaluated: **{{ (sc_perf.get('median_qc_rsd_current_oof') * 100) | round(2) }}%**)
+{%- endif -%}
+{%- if sc_perf.get('relative_noise_reduction_full') is not none -%}
+, achieving a relative noise reduction of **{{ (sc_perf.get('relative_noise_reduction_full') * 100) | round(2) }}%**.
+{%- else -%}
+.
+{%- endif -%}
+{%- elif sc_perf.get('median_qc_rsd_current_full') is not none %}
+Overall, the finalized Full Model achieved a median QC RSD of **{{ (sc_perf.get('median_qc_rsd_current_full') * 100) | round(2) }}%**
+{%- if sc_perf.get('median_qc_rsd_current_oof') is not none -%}
+\ (CV Evaluated: **{{ (sc_perf.get('median_qc_rsd_current_oof') * 100) | round(2) }}%**).
+{%- else -%}
+.
+{%- endif -%}
+{%- else %}
+Signal correction was applied, but QC RSD metrics are currently unavailable.
 {%- endif %}
 
-{%- set inter_params = inter_signal_correction.get('pipeline_params', {}) -%}
-{%- set inter_perf = inter_params.get('performance', {}) %}
+{% if sc_stages | length > 0 %}
+{% set primary_algo = sc_stages[0].get('algorithm', 'Unknown') %}
+{% set is_auto = signal_correction.get('is_auto_mode') or sc_stages[0].get('is_auto_mode', False) %}
 
-Following the intra-batch temporal smoothing, systemic technical variations between independent analytical batches were aligned via inter-batch correction.
-Disparate batch distributions were mapped into a unified intensity space, further suppressing the median QC RSD down to {{ (inter_perf.get('median_qc_rsd_current', 0) * 100) | round(2) }}% (achieving an overall relative noise reduction of **{{ (inter_perf.get('relative_noise_reduction', 0) * 100) | round(2) }}**%).
+{% if is_auto %}
+![**Multi-Algorithm RSD Evaluation Grid**](../03_Corrected_Data/QC_RSD_Evaluation_Grid.svg){.full-width-image}
+{% else %}
+![**Signal Drift Correction Dual-Mode RSD Improvement**](../03_Corrected_Data/QC_RSD_{{ primary_algo }}.svg){style="width: 65%; display: block; margin: 0 auto;"}
+{% endif %}
 
-![**Inter-batch Effect Removal and RSD Distribution Alignment**](../03_04_Corrected_Data/QC_RSD_Boxplot_{{ intra_meth.get('base_est', 'Unknown') }}.svg){style="width: 45%; display: block; margin: 0 auto;"}
-
+{% endif %}
 
 ### 1.4 Low-quality Features Filtering
 
@@ -87,24 +122,17 @@ Disparate batch distributions were mapped into a unified intensity space, furthe
 {%- set lq_thresh = lq_params.get('thresholds', {}) -%}
 {%- set lq_drop = lq_params.get('filtering_breakdown', {}) %}
 
-Following the initial missing value topological screening and signal correction, a stringent two-tier quality control module was implemented.
-This stage ensures that only robust, highly reproducible metabolic features with true biological origins are propagated to downstream statistical learning.
-A total of **{{ lq_ret.get('pre_stage2', {}).get('total', 'N/A') }}** features (**{{ lq_ret.get('pre_stage2', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('pre_stage2', {}).get('mnar_count', 'N/A') }}** MNAR) entered this stage.
+Following the initial missing value topological screening and signal correction, a stringent two-tier quality control module was implemented. This stage ensures that only robust, highly reproducible metabolic features with true biological origins are propagated to downstream statistical learning. A total of **{{ lq_ret.get('pre_stage2', {}).get('total', 'N/A') }}** features (**{{ lq_ret.get('pre_stage2', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('pre_stage2', {}).get('mnar_count', 'N/A') }}** MNAR) entered this stage.
 
 **Tier 1: Background Noise Elimination (Blank/QC Ratio Check)**
-To filter out ubiquitous environmental contaminants, solvent impurities, and instrument background noise, a Blank/QC intensity ratio check was applied.
-Features with an average Blank-to-QC ratio exceeding the threshold of {{ lq_thresh.get('blank_qc_ratio_tol', 'N/A') }} were discarded.
-This procedure pruned a total of **{{ lq_drop.get('dropped_by_blank', {}).get('total', 'N/A') }}** features.
-Post-Blank check, **{{ lq_ret.get('post_blank_check', {}).get('total', 'N/A') }}** features survived.
+To filter out ubiquitous environmental contaminants, solvent impurities, and instrument background noise, a Blank/QC intensity ratio check was applied. Features with an average Blank-to-QC ratio exceeding the threshold of {{ lq_thresh.get('blank_qc_ratio_tol', 'N/A') }} were discarded. This procedure pruned a total of **{{ lq_drop.get('dropped_by_blank', {}).get('total', 'N/A') }}** features. Post-Blank check, **{{ lq_ret.get('post_blank_check', {}).get('total', 'N/A') }}** features survived.
 
 **Tier 2: Analytical Reproducibility Check (QC RSD Check)**
-Subsequently, to guarantee strict technical reproducibility, a Relative Standard Deviation (RSD) threshold of {{ lq_thresh.get('qc_rsd_tol', 'N/A') }} was applied to the pooled QC samples.
-Crucially, this step was executed exclusively on MAR features. MNAR features, which often represent genuine biological signals near the limit of detection (LOD), were exempted.
-Consequently, **{{ lq_drop.get('dropped_by_rsd', {}).get('total', 'N/A') }}** MAR features failed this reproducibility test.
+Subsequently, to guarantee strict technical reproducibility, a Relative Standard Deviation (RSD) threshold of {{ lq_thresh.get('qc_rsd_tol', 'N/A') }} was applied to the pooled QC samples. Crucially, this step was executed exclusively on MAR features. MNAR features, which often represent genuine biological signals near the limit of detection (LOD), were exempted. Consequently, **{{ lq_drop.get('dropped_by_rsd', {}).get('total', 'N/A') }}** MAR features failed this reproducibility test.
 
 Ultimately, the low-quality feature filtering cascade yielded a robust, high-confidence matrix containing **{{ lq_ret.get('post_rsd_check', {}).get('total', 'N/A') }}** purified metabolic features (**{{ lq_ret.get('post_rsd_check', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('post_rsd_check', {}).get('mnar_count', 'N/A') }}** MNAR).
 
-![**Low-quality Features Filtering Summary**](../05_Quality_Filtered/Low-quality_Filtering_Dashboard.svg){.full-width-image}
+![**Low-quality Features Filtering Summary**](../04_Quality_Filtered/Low-quality_Filtering_Dashboard.svg){.full-width-image}
 
 ### 1.5 Missing Value Imputation
 
@@ -114,21 +142,23 @@ Ultimately, the low-quality feature filtering cascade yielded a robust, high-con
 {%- set imp_perf = imp_params.get('performance', {}) -%}
 {%- set imp_qa = imp_params.get('qa_metrics', {}) %}
 
-To seamlessly reconstruct the incomplete data matrix without inducing analytical variance leakage, a stratified imputation architecture was implemented.
-The module processed a curated matrix containing **{{ imp_dist.get('mar_count', 'N/A') }}** Missing At Random (MAR) features and **{{ imp_dist.get('mnar_count', 'N/A') }}** Missing Not At Random (MNAR) features.
+To seamlessly reconstruct the incomplete data matrix without inducing analytical variance leakage, a stratified imputation architecture was implemented. The module processed a curated matrix containing **{{ imp_dist.get('mar_count', 'N/A') }}** Missing At Random (MAR) features and **{{ imp_dist.get('mnar_count', 'N/A') }}** Missing Not At Random (MNAR) features.
 
 **Deterministic Substitution for MNAR Features**
 For features classified as MNAR (biologically relevant non-detects below instrument sensitivity), a localized limit of detection (LOD) approximation was utilized.
+{%- if imp_strat.get('mnar_fraction') is not none %}
 Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** minimum strategy with a constant fractional multiplier of {{ imp_strat.get('mnar_fraction', 'N/A') }}.
+{%- else %}
+Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** strategy.
+{%- endif %}
 
 **Autonomous ML Simulation for MAR Features**
-For structurally random missingness (MAR), the strategy was initialized to **{{ imp_strat.get('mar_method_requested', 'auto') }}** mode.
-The pipeline autonomously executed a masked simulation benchmark to dynamically evaluate candidate algorithms.
-The algorithm selected for final execution was the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** method.
+For structurally random missingness (MAR), the strategy was initialized to **{{ imp_strat.get('mar_method_requested', 'auto') }}** mode. The pipeline autonomously executed a masked simulation benchmark to dynamically evaluate candidate algorithms. The algorithm selected for final execution was the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** method.
+
 {%- set sel_perf = imp_perf.get(imp_strat.get('mar_method_selected', ''), {}) %}
 Specifically, the selected algorithm achieved a low-abundance Normalized Root Mean Square Error (NRMSE) of {{ sel_perf.get('nrmse_low', 'N/A') }} and a global NRMSE of {{ sel_perf.get('nrmse_total', 'N/A') }}.
 
-![**Imputation NRMSE Comparison**](../06_Imputation/Imputer_Candidates.svg){.full-width-image}
+![**Imputation NRMSE Comparison**](../05_Imputation/Imputer_Candidates.svg){.full-width-image}
 
 **Global Distribution Preservation**
 Following the isolated imputation, kernel density estimation (KDE) evaluated the structural integrity of the transformed matrix.
@@ -137,7 +167,7 @@ Following the isolated imputation, kernel density estimation (KDE) evaluated the
 
 The Jensen-Shannon Divergence (JSD) between the pre- and post-imputation distributions yielded stable scores of **{{ imp_qc_jsd | round(3) if imp_qc_jsd is number else imp_qc_jsd }}** for QC samples and **{{ imp_sam_jsd | round(3) if imp_sam_jsd is number else imp_sam_jsd }}** for biological samples.
 
-![**Imputation Performance Summary**](../06_Imputation/Imputation_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
+![**Imputation Performance Summary**](../05_Imputation/Imputation_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
 
 ### 1.6 Normalization
 
@@ -145,20 +175,18 @@ The Jensen-Shannon Divergence (JSD) between the pre- and post-imputation distrib
 {%- set norm_strat = norm_params.get('strategies', {}) -%}
 {%- set norm_method = norm_strat.get('normalization_method', 'NONE') | upper -%}
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
+{%- set vsn_p = norm_params.get('vsn_parameters', {}) %}
 
 Systematic analytical variations—such as global concentration disparities, dilution effects, and instrument sensitivity drift—were mitigated to ensure downstream statistical fidelity.
 
 {%- if norm_method == 'QUANTILE' %}
 **Global Quantile Normalization**
-A standalone global quantile normalization was applied.
-By imposing identical statistical distributions across all samples, it effectively mitigates complex, non-linear instrumental drifts.
+A standalone global quantile normalization was applied. By imposing identical statistical distributions across all samples, it effectively mitigates complex, non-linear instrumental drifts.
 {%- if is_log %} Prior to quantile alignment, a robust Log2 transformation was applied to stabilize variance.{%- endif %}
 
 {%- elif norm_method == 'VSN' %}
 **Variance Stabilizing Normalization (VSN)**
-To address the heteroscedasticity inherent in mass spectrometry data, Variance Stabilizing Normalization (VSN) was applied.
-{%- set vsn_p = norm_params.get('vsn_parameters', {}) %}
-The internal optimization engine determined the maximum likelihood parameters for the variance stabilization curve, converging on a structural scale factor of **{{ "%0.3e" | format(vsn_p.get('vsn_scale', 0)) if vsn_p.get('vsn_scale') is number else 'N/A' }}** and a generalized baseline shift of **{{ "%0.3e" | format(vsn_p.get('vsn_shift', 0)) if vsn_p.get('vsn_shift') is number else 'N/A' }}**. This transformation shifts the data into a generalized logarithmic space (glog) optimized for multivariate modeling.
+To address the heteroscedasticity inherent in mass spectrometry data, Variance Stabilizing Normalization (VSN) was applied. The internal optimization engine determined the maximum likelihood parameters for the variance stabilization curve, converging on a structural scale factor of **{{ "%0.3e" | format(vsn_p.get('vsn_scale', 0)) if vsn_p.get('vsn_scale') is number else 'N/A' }}** and a generalized baseline shift of **{{ "%0.3e" | format(vsn_p.get('vsn_shift', 0)) if vsn_p.get('vsn_shift') is number else 'N/A' }}**. This transformation shifts the data into a generalized logarithmic space (glog) optimized for multivariate modeling.
 
 {%- elif norm_method != 'NONE' %}
 **Global Intensity Correction (Sample-wise)**
@@ -176,15 +204,14 @@ Sample-wise intensity correction and normalization were bypassed.
 {%- set sim_qc = norm_qa.get('JSD', {}).get('QC', {}) -%}
 {%- set sim_sam = norm_qa.get('JSD', {}).get('Sample', {}) %}
 
-The structural integrity of the Pooled QC samples remained consistent, yielding a Before vs After JSD score of **{{ sim_qc.get('Before vs After', 'N/A') | round(3) if sim_qc.get('Before vs After') is number else sim_qc.get('Before vs After', 'N/A') }}**.
-Concurrently, actual biological samples exhibited a controlled density evolution with a JSD score of **{{ sim_sam.get('Before vs After', 'N/A') | round(3) if sim_sam.get('Before vs After') is number else sim_sam.get('Before vs After', 'N/A') }}**.
+The structural integrity of the Pooled QC samples remained consistent, yielding a Before vs After JSD score of **{{ sim_qc.get('Before vs After', 'N/A') | round(3) if sim_qc.get('Before vs After') is number else sim_qc.get('Before vs After', 'N/A') }}**. Concurrently, actual biological samples exhibited a controlled density evolution with a JSD score of **{{ sim_sam.get('Before vs After', 'N/A') | round(3) if sim_sam.get('Before vs After') is number else sim_sam.get('Before vs After', 'N/A') }}**.
 
 {%- set suffix = norm_method -%}
 {%- if is_log and suffix | upper != 'VSN' -%}
     {%- set suffix = suffix ~ '_Log2' -%}
 {%- endif %}
 
-![**Normalization Summary Grid**](../07_Normalized_Data/Normalization_Dashboard_{{ suffix }}.svg){.full-width-image}
+![**Normalization Summary Grid**](../06_Normalized_Data/Normalization_Dashboard_{{ suffix }}.svg){.full-width-image}
 
 ## 2. Global Data Quality Assessment
 
@@ -223,6 +250,7 @@ Table: Pooled QC Correlation Statistics
 ### 2.4 Multi-variate Outlier Diagnosis
 
 Multi-variate outlier diagnosis, utilizing PCA extreme outlier metrics, was implemented to systematically identify and categorize anomalous samples.
+
 {%- if qa_base.get('internal_standard_qc', {}).get('configured_threshold') %}
 Additionally, analytical structural stability was evaluated via Internal Standard (IS) tracking. Samples failing to meet the minimum IS stability threshold ({{ qa_base.get('internal_standard_qc', {}).get('configured_threshold') }}) are actively flagged as IS Outliers.
 {%- endif %}

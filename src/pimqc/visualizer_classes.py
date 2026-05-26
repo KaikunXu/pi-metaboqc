@@ -229,33 +229,56 @@ class BaseMetaboVisualizer:
 
 
     def _format_single_legend(
-        self, 
-        ax, 
-        loc = "upper right", 
-        bbox_to_anchor = (1.05, 1.0),
+        self,
+        ax,
+        loc: str = "upper right",
+        bbox_to_anchor: tuple = (1.05, 1.0),
         **kwargs
     ) -> None:
-        """Format and position a standard single-group legend.
-        
-        Optimized for patchworklib compatibility by strictly binding the 
-        legend to the Axes (ax) instead of the Figure (fig).
         """
-        if ax.get_legend():
-            ax.get_legend().remove()
+        Format and position a standard single-group legend robustly.
+
+        This implementation safely extracts handles from an existing legend
+        object BEFORE removal. This prevents the loss of memory-only patches
+        (explicit handles) that are not physically drawn on the Axes. It
+        seamlessly falls back to scanning the Axes if no legend exists.
+        """
+        leg = ax.get_legend()
+        handles = []
+        labels = []
+
+        # 1. Safely extract handles/labels from the existing legend (if any)
+        if leg:
+            labels = [t.get_text() for t in leg.get_texts()]
+            # Support both Matplotlib 3.x and legacy handle attribute names
+            handles = getattr(
+                leg, "legend_handles", getattr(leg, "legendHandles", [])
+            )
             
-        handles, labels = ax.get_legend_handles_labels()
+            # If extraction failed, fallback to physical axes scan
+            if not handles:
+                handles, labels = ax.get_legend_handles_labels()
+                
+            # Safely remove the old legend only AFTER extraction
+            leg.remove()
+        else:
+            # 2. No existing legend, scan the physical axes
+            handles, labels = ax.get_legend_handles_labels()
+
+        # 3. Terminate if no valid graphical elements are found
         if not handles:
             return
-            
-        legend_kwargs = self.LEGEND_KWARGS.copy()
+
+        # 4. Merge global default styles with runtime parameter overrides
+        legend_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
         legend_kwargs.update(kwargs)
-        
-        # [CRITICAL FIX]: Use ax.legend instead of fig.legend. 
-        # patchworklib only extracts Axes, so figure-bound legends will be lost.
+
+        # 5. Generate the new stylized legend and bind it to the Axes
         ax.legend(
-            handles, labels, 
-            loc=loc, 
-            bbox_to_anchor=bbox_to_anchor, 
+            handles,
+            labels,
+            loc=loc,
+            bbox_to_anchor=bbox_to_anchor,
             **legend_kwargs
         )
 
@@ -581,7 +604,7 @@ class BaseMetaboVisualizer:
             plt.close(fig)
 
     def save_and_show_pw(
-        self, pw_obj, file_path=None, show_plot=True, width=600, **kwargs
+        self, pw_obj, file_path=None, show_plot=True, width=800, **kwargs
     ):
         """Save and display patchworklib object with safe AI font styling."""
         if pw_obj is None:

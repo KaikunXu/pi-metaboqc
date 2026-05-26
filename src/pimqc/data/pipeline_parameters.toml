@@ -1,5 +1,4 @@
-﻿
-# pi-metaboqc Pipeline Global Configuration File
+﻿# pi-metaboqc Pipeline Global Configuration File
 # Format: TOML
 # Description: Fully documented configuration for metabolomics data quality control.
 
@@ -8,8 +7,8 @@
 # Core Dataset Construction
 # ------------------------------------------------------------------------------
 [MetaboInt]
-# [String] Mass spectrometry polarity mode. Used for titles and file naming ("POS" or "NEG").
-mode = "POS"
+# [String] Mass spectrometry polarity mode. Used for titles and file naming ("ESI+" or "ESI-").
+mode = "ESI+"
 
 # [String] Column name in your metadata mapping to unique sample identifiers.
 sample_name = "Sample Name"
@@ -65,9 +64,6 @@ internal_standard = [
 # A significant deviation of these ORFs beyond control chart boundaries serves as a primary diagnostic indicator for potential sample-level outliers.
 # Leave empty [] if not applicable.
 outlier_ref_feat = [
-    "Feat-078",
-    "Feat-155",
-    "Feat-240",
     "Creatinine"
 ] 
 
@@ -138,30 +134,46 @@ qc_rsd_tol = 0.3
 # Signal Drift Correction
 # ------------------------------------------------------------------------------
 [MetaboIntCorrector]
-# [String] Primary algorithm for intra/inter-batch signal drift correction. Options: "QC-SVR", "QC-RFSC", "QC-RLSC".
-base_est = "QC-SVR"
+# [String] Primary algorithm for intra/inter-batch signal drift correction.
+# Options: "QC-SVR", "QC-RFSC", "QC-RLSC", "SERRF", "RUV", "Auto".
+base_est = "Auto"
 
 # [Float] Smoothing frac parameter, used strictly if base_est is "QC-RLSC".
-frac = 0.3
+loess_frac = 0.5
 
-# [Integer] Number of decision trees, used strictly if base_est is "QC-RFSC" (Random Forest).
-n_tree = 500
+# [Integer] Number of decision trees, used strictly if base_est is "QC-RFSC".
+# High density required to smooth 1D temporal signals.
+rf_n_tree = 200
+
+# [Integer] Number of decision trees, used strictly if base_est is "SERRF".
+# Lower density recommended due to high-dimensional correlation feature space.
+serrf_n_tree = 100
+
+# [Integer] Number of top highly correlated metabolites to borrow for prediction network in "SERRF".
+# Set to 0 to degrade to pure temporal/batch regression. Recommended range: 5 to 50.
+serrf_corr_features = 5
 
 # [String] Kernel function, used strictly if base_est is "QC-SVR". Options: "rbf", "linear", "poly".
 svr_kernel = "rbf"
 
 # [Float] Regularization parameter (C) for the Support Vector Regression algorithm.
-svr_c = 500.0
+svr_c = 10
 
 # [Float] Kernel coefficient (gamma) for the Support Vector Regression algorithm.
 svr_gamma = 1.0
+
+# [Integer] Number of latent factors of unwanted variation to estimate and remove.
+ruv_k = 5
+
+# [Integer] Cross-Validation folds for Out-Of-Fold (OOF) prediction to prevent overfitting.
+cv_folds = 3
 
 # ------------------------------------------------------------------------------
 # Missing Value Imputation
 # ------------------------------------------------------------------------------
 [MetaboIntImputer]
-# [String] Imputation algorithm specifically for MNAR (LOD/Detection failure) values. Options: "row-wise", "column-wise", "global".
-mnar_method = "Row-wise"
+# [String] Imputation algorithm specifically for MNAR (LOD/Detection failure) values. Options: "Row-wise", "Column-wise", "Global", "QRILC".
+mnar_method = "QRILC"
 
 # [Float] Fraction of the minimum value to be used for mnar_method constant imputation (e.g., 0.5 = 50% of min).
 mnar_fraction = 0.5
@@ -176,23 +188,24 @@ knn_neighbors = 5
 sim_mask_ratio = 0.05
 
 # ------------------------------------------------------------------------------
-# Recommended normalization strategies (chemometric golden combinations)
+# Normalization
 # ------------------------------------------------------------------------------
-# 
-# [Combo A] Classic MetaboAnalyst Pipeline (Standard Choice)
+[MetaboIntNormalizer]
+
+# Recommended normalization strategies:
+# + [Combo A] Classic MetaboAnalyst Pipeline (Standard Choice)
 # Best for standard PCA, PLS-DA, and Fold-Change analysis.
-# norm_method = "PQN"/"TIC"/"Median"/"Quantile"
+# norm_method = "PQN"/"MDFC"/"TIC"/"Median"/"Quantile"
 # log_transform = true    # Essential: Prevents negative values
 #
-# [Combo B] Variance Stabilizing Normalization (VSN)
+# + [Combo B] Variance Stabilizing Normalization (VSN)
 # Best for strict heteroscedasticity elimination (e.g., Limma analysis).
 # norm_method = "VSN"     # Essential: VSN subsumes sample calibration
 # log_transform = false   # Essential: VSN uses glog; prevents double-log transform
 
-[MetaboIntNormalizer]
-# [String] Sample-wise Normalization. Options: "PQN", "TIC", "Median", "VSN", "Quantile"
-norm_method = "VSN"
+# [String] Sample-wise Normalization. Options: "PQN", "MDFC", "TIC", "Median", "VSN", "Quantile"
+norm_method = "PQN"
 
 # [Bool] Logarithmic Transformation
 # Set to true to apply roubst Log2 transform with LOD offset handling.
-robust_log = false
+robust_log = true

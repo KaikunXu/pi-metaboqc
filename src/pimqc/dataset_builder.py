@@ -40,21 +40,21 @@ class MetaboIntBuilder:
         self.params = pipeline_params or {}
         
         # Extract configuration attributes smartly
-        metabolomics_parameters = self.params.get("MetaboInt", {})
+        metabo_parms = self.params.get("MetaboInt", {})
         
-        self.mode = metabolomics_parameters.get("mode", "POS")
-        self.batch = metabolomics_parameters.get("batch", "Batch")
-        self.sample_type = metabolomics_parameters.get(
+        self.mode = metabo_parms.get("mode", "POS")
+        self.batch = metabo_parms.get("batch", "Batch")
+        self.sample_type = metabo_parms.get(
             "sample_type", "Sample Type"
         )
-        self.bio_group = metabolomics_parameters.get("bio_group", "Bio Group")
-        self.sample_name = metabolomics_parameters.get(
+        self.bio_group = metabo_parms.get("bio_group", "Bio Group")
+        self.sample_name = metabo_parms.get(
             "sample_name", "Sample Name"
         )
-        self.inject_order = metabolomics_parameters.get(
+        self.inject_order = metabo_parms.get(
             "inject_order", "Inject Order"
         )
-        self.resort_strategy = metabolomics_parameters.get(
+        self.resort_strategy = metabo_parms.get(
             "resort_inject_order", "Auto"
         )
         
@@ -173,8 +173,8 @@ class MetaboIntBuilder:
 
     def _manage_injection_orders(self):
         """Align injection sequences across batches to prevent overlap."""
-        if not self.is_multi_batch or \
-           self.inject_order not in self.metadata_dataframe:
+        if not self.is_multi_batch or (
+            self.inject_order not in self.metadata_dataframe):
             return
             
         if not self.resort_strategy:
