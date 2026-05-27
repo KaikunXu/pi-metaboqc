@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 # Package Version
-__version__ = "1.1.0a1"
+__version__ = "1.1.1a1"
 
 # Global initialization state lock
 iu.setup_loguru_logger(level="INFO")

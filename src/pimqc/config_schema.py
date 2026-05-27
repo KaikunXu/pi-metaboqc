@@ -153,8 +153,9 @@ class ImputerConfig(BaseModel):
     """Missing Value Imputation Schema."""
     mnar_method: Literal["Row-wise", "Column-wise", "Global", "QRILC"] = "QRILC"
     mnar_fraction: float = Field(default=0.5, gt=0.0)
-    mar_method: Literal["Auto", "Probabilistic", "KNN", "Median"] = "Auto"
+    mar_method: Literal["Auto", "MinProb", "KNN", "LLS", "Median"] = "Auto"
     knn_neighbors: int = Field(default=5, gt=0)
+    lls_neighbors: int = Field(default=15, gt=0)
     sim_mask_ratio: float = Field(default=0.05, gt=0.0, lt=1.0)
 
 

@@ -12,6 +12,7 @@ from functools import cached_property
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+import scipy.stats as stats
 from sklearn.impute import KNNImputer
 from loguru import logger
 from typing import Dict, Any, Optional
@@ -36,6 +37,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         mnar_method: Optional[str] = None,
         mnar_fraction: Optional[float] = None,
         knn_neighbors: Optional[int] = None,
+        lls_neighbors: Optional[int] = None,
         sim_mask_ratio: Optional[float] = None,
         **kwargs
     ):
@@ -44,10 +46,11 @@ class MetaboIntImputer(core_classes.MetaboInt):
         Args:
             *args: Variable arguments passed to pandas DataFrame.
             pipeline_params: Global configuration dictionary.
-            mar_method: Method for MAR features (e.g., 'Auto', 'KNN').
-            mnar_method: Method for MNAR features (e.g., 'QRILC', 'row').
+            mar_method: Method for MAR features.
+            mnar_method: Method for MNAR features.
             mnar_fraction: Multiplier for LOD-based MNAR imputation.
             knn_neighbors: Number of neighbors for the KNN algorithm.
+            lls_neighbors: Number of neighbors for the LLS algorithm.
             sim_mask_ratio: Ratio for simulated masking during evaluation.
             **kwargs: Keyword arguments for the DataFrame constructor.
         """
@@ -59,6 +62,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
             "mnar_method": "QRILC",
             "mnar_fraction": 0.5,
             "knn_neighbors": 5,
+            "lls_neighbors": 15,
             "sim_mask_ratio": 0.05,
         }
 
@@ -70,7 +74,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         local_args = locals()
         explicit_params = [
             "mar_method", "mnar_method", "mnar_fraction", 
-            "knn_neighbors", "sim_mask_ratio"
+            "knn_neighbors", "lls_neighbors", "sim_mask_ratio"
         ]
         for param in explicit_params:
             if local_args[param] is not None:
@@ -224,7 +228,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
             Missing value imputation approach for mass spectrometry-based 
             metabolomics data (Scientific reports, 2018)
         """
-        import scipy.stats as stats
+        
         
         # Initialize numpy random generator for deterministic results
         rng = np.random.default_rng(global_seed)
@@ -295,7 +299,96 @@ class MetaboIntImputer(core_classes.MetaboInt):
         )
 
     @staticmethod
-    def impute_by_prob(df_log, global_seed = 123):
+    def impute_by_lls(df_log, n_neighbors: int = 15):
+        """Impute missing values using Local Least Squares (LLS) regression.
+        
+        Finds 'k' complete features that are highly correlated with the target 
+        feature, and constructs a local linear regression model to predict 
+        the missing values.
+        """
+        arr_log = df_log.values
+        res_arr = arr_log.copy()
+        
+        # 1. Identify complete features to serve as the candidate neighbor pool
+        complete_mask = ~np.isnan(arr_log).any(axis=1)
+        complete_features = arr_log[complete_mask]
+        n_complete = complete_features.shape[0]
+        
+        # Fallback: If dataset is too sparse and lacks complete features
+        if n_complete < 2:
+            logger.debug(
+                "Insufficient complete features for LLS."
+                "Falling back to median.")
+            return df_log.apply(
+                lambda x: x.fillna(x.median()), axis=1).fillna(0.0)
+            
+        safe_k = min(n_neighbors, n_complete)
+        
+        for i in range(arr_log.shape[0]):
+            row = arr_log[i]
+            missing_mask = np.isnan(row)
+            
+            # Skip if no missing values
+            if not missing_mask.any():
+                continue
+                
+            obs_mask = ~missing_mask
+            w_obs = row[obs_mask]
+            
+            # Fallback: Need at least 3 points for stable linear regression
+            if obs_mask.sum() < 3:
+                res_arr[i, missing_mask] = (
+                    np.nanmedian(row) if obs_mask.sum() > 0 else 0.0)
+                continue
+                
+            # 2. Vectorized Pearson correlation to find closest complete features
+            A_obs = complete_features[:, obs_mask]
+            
+            w_mean = np.mean(w_obs)
+            A_mean = np.mean(A_obs, axis=1, keepdims=True)
+            
+            w_centered = w_obs - w_mean
+            A_centered = A_obs - A_mean
+            
+            cov = np.sum(A_centered * w_centered, axis=1)
+            var_w = np.sum(w_centered**2)
+            var_A = np.sum(A_centered**2, axis=1)
+            
+            denom = np.sqrt(var_w * var_A)
+            corr = np.zeros_like(cov)
+            valid_corr = denom > 1e-9
+            # Use absolute correlation since negative correlation is also 
+            # useful for regression
+            corr[valid_corr] = np.abs(cov[valid_corr] / denom[valid_corr])
+            
+            # 3. Select top K neighbors
+            top_k_idx = np.argsort(corr)[-safe_k:]
+            
+            # 4. Construct matrices for Least Squares estimation
+            # A_mat: neighbors' observed values (Shape: n_neighbors x n_observed)
+            A_mat = A_obs[top_k_idx] 
+            # B_mat: neighbors' values at target's missing positions
+            B_mat = complete_features[top_k_idx][:, missing_mask] 
+            
+            # 5. Solve linear system: A_mat.T * x = w_obs
+            try:
+                # Used for numerical stability over matrix inverse
+                x, _, _, _ = np.linalg.lstsq(A_mat.T, w_obs, rcond=None)
+                
+                # Predict: x.T * B_mat
+                w_miss = x.T @ B_mat
+                # Prevent negative intensities in log space fallback
+                w_miss = np.clip(w_miss, a_min=0.0, a_max=None)
+                res_arr[i, missing_mask] = w_miss
+            except np.linalg.LinAlgError:
+                # Fallback if matrix is singular or highly collinear
+                res_arr[i, missing_mask] = np.nanmedian(row)
+                
+        return pd.DataFrame(
+            res_arr, index=df_log.index, columns=df_log.columns)
+    
+    @staticmethod
+    def impute_by_minprob(df_log, global_seed = 123):
         """Impute using a normal distribution to simulate values below LOD.
         
         This method adopts a left-shifted Gaussian distribution (Perseus style)
@@ -507,13 +600,17 @@ class MetaboIntImputer(core_classes.MetaboInt):
         masked_df[mask] = np.nan
         
         # 4. Execute imputation on the masked subset with absolute isolation
-        if method in ("Probabilistic", "probabilistic", "Prob", "prob"):
+        if method in ("Prob","prob", "MinProb", "minprob"):
             imp_res = self._apply_isolated(
-                masked_df, self.impute_by_prob, global_seed=global_seed)
+                masked_df, self.impute_by_minprob, global_seed=global_seed)
         elif method in ("knn", "KNN"):
             k_val = self.attrs.get("knn_neighbors", 5)
             imp_res = self._apply_isolated(
                 masked_df, self.impute_by_knn, n_neighbors=k_val)
+        elif method in ("lls", "LLS"):
+            k_val = self.attrs.get("lls_neighbors", 15) 
+            imp_res = self._apply_isolated(
+                masked_df, self.impute_by_lls, n_neighbors=k_val)
         else:
             imp_res = self._apply_isolated(
                 masked_df, 
@@ -536,7 +633,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         global_seed: int =123
     ) -> tuple:
         """Autonomously selects the best algorithm using MAR-only subset."""
-        candidates = ["KNN", "Probabilistic","Median"]
+        candidates = ["KNN", "MinProb","Median", "LLS"]
         best_method = "KNN"
         best_nrmse = float("inf")
         cache = {}
@@ -619,6 +716,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         mnar_method: str = None,
         mnar_fraction: float = None,
         knn_neighbors: int = None,
+        lls_neighbors: int = None,
         sim_ratio: float = None,
         output_dir: str = None
     ) -> pd.DataFrame:
@@ -635,6 +733,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
         _knn_k = (
             knn_neighbors if knn_neighbors is not None 
             else self.attrs.get("knn_neighbors", 5))
+        _lls_k = (
+            lls_neighbors if lls_neighbors is not None 
+            else self.attrs.get("lls_neighbors", 15))
         _ratio = (
             sim_ratio if sim_ratio is not None 
             else self.attrs.get("sim_mask_ratio", 0.05))
@@ -647,9 +748,11 @@ class MetaboIntImputer(core_classes.MetaboInt):
         
         _mar_clean = str(_mar).upper()
         if _mar_clean in ("AUTO", "BEST"):
-            mar_info = f"Auto (Evaluating KNN={_knn_k}, Prob, Median)"
+            mar_info = f"Auto (Evaluating KNN={_knn_k}, LLS (K={_lls_k}), MinProb, Median)"
         elif _mar_clean == "KNN":
             mar_info = f"KNN (K={_knn_k})"
+        elif _mar_clean == "LLS":
+            mar_info = f"LLS (K={_lls_k})"
         else:
             mar_info = f"{_mar}"
 
@@ -705,12 +808,15 @@ class MetaboIntImputer(core_classes.MetaboInt):
             logger.info(f"Executing isolated '{_mar}' on MAR features.")
             mar_slice = df_log.loc[idx_mar, target_cols]
             
-            if _mar in ("Probabilistic", "probabilistic", "Prob", "prob"):
+            if _mar in ("Prob","prob", "MinProb", "minprob"):
                 mar_imp = self._apply_isolated(
-                    mar_slice, self.impute_by_prob, global_seed=_seed)
+                    mar_slice, self.impute_by_minprob, global_seed=_seed)
             elif _mar in ("knn", "KNN"):
                 mar_imp = self._apply_isolated(
                     mar_slice, self.impute_by_knn, n_neighbors=_knn_k)
+            elif _mar in ("lls", "LLS"):
+                mar_imp = self._apply_isolated(
+                    mar_slice, self.impute_by_lls, n_neighbors=_lls_k)
             else:
                 mar_imp = self._apply_isolated(
                     mar_slice, 
@@ -770,8 +876,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 if is_auto:
                     fig_cands = vis.plot_multi_nrmse_scatters(cache)
                     vis.save_and_show_pw(
-                        fig_cands, 
-                        os.path.join(output_dir, "Imputer_Candidates")
+                        pw_obj=fig_cands, 
+                        file_path=os.path.join(output_dir, "Imputer_Candidates"),
+                        width=600
                     )
                 
                 fig_grid = vis.plot_imputation_summary_grid(
@@ -1006,8 +1113,10 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
         title_str = "MAR Masked Simulation"
         if method_name:
             clean_name = method_name.replace("*", "")
-            if clean_name.upper() == "KNN":
+            if clean_name.upper() in ("KNN", "LLS"):
                 display = method_name.upper()
+            elif clean_name in ("MinProb", "minprob", "Prob", "prob"):
+                display = method_name
             else:
                 display = method_name.title()
                 
@@ -1030,54 +1139,84 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             return fig
         return current_ax
 
-    def plot_multi_nrmse_scatters(self, results_dict):
-        """Plot a grid of NRMSE scatter plots for all candidate methods."""
+    def plot_multi_nrmse_scatters(self, results_dict: dict):
+        """
+        Plot a dynamically sized grid of NRMSE scatter plots for all candidates.
+        """
         try:
+            import math
+            import operator
+            from functools import reduce
             import patchworklib as pw
         except ImportError:
-            logger.warning("patchworklib not found. Skipping multi grid.")
+            logger.warning("Module 'patchworklib' not found. Skipping grid.")
             return None
-            
+
+        n_plots = len(results_dict)
+        if n_plots == 0:
+            return None
+
+        # 1. Dynamically calculate optimal column count
+        layout_map = {
+            1: 1, 2: 2, 3: 3, 4: 2, 
+            5: 3, 6: 3, 7: 4, 8: 4, 9: 3
+        }
+        # Fallback to square root logic for >9 plots, capped at 4 columns
+        n_cols = layout_map.get(
+            n_plots, min(4, math.ceil(math.sqrt(n_plots)))
+        )
+
+        # 2. Determine global axis limits and identify the best method
         g_min, g_max = float("inf"), float("-inf")
         best_method = None
         best_nrmse = float("inf")
-        
-        for m, (met, t, p) in results_dict.items():
-            g_min = min(g_min, t.min(), p.min())
-            g_max = max(g_max, t.max(), p.max())
-            if met["NRMSE_Total"] < best_nrmse:
-                best_nrmse = met["NRMSE_Total"]
-                best_method = m
-                
+
+        for method_name, (metrics, true_vals, pred_vals) in results_dict.items():
+            g_min = min(g_min, true_vals.min(), pred_vals.min())
+            g_max = max(g_max, true_vals.max(), pred_vals.max())
+            
+            if metrics["NRMSE_Total"] < best_nrmse:
+                best_nrmse = metrics["NRMSE_Total"]
+                best_method = method_name
+
         margin = (g_max - g_min) * 0.05
         shared_lims = (g_min - margin, g_max + margin)
 
+        # 3. Generate individual scatter plots (Bricks)
         pw.clear()
         bricks = []
-        for m, (met, t, p) in results_dict.items():
-            ax = pw.Brick(figsize=(4, 4), label=f"nrmse_{m}")
-            display_name = f"*{m}" if m == best_method else m
+        
+        for method_name, (metrics, true_vals, pred_vals) in results_dict.items():
+            ax = pw.Brick(figsize=(4, 4), label=f"nrmse_{method_name}")
             
+            # Highlight the best performing method with an asterisk
+            display_name = (
+                f"*{method_name}" if method_name == best_method else method_name
+            )
+
             self._plot_nrmse_scatter(
-                t, p, met, method_name=display_name, 
-                axis_lims=shared_lims, ax=ax
+                true_vals, pred_vals, metrics, 
+                method_name=display_name, axis_lims=shared_lims, ax=ax
             )
             bricks.append(ax)
-            
-        while len(bricks) % 3 != 0 or len(bricks) == 0:
-            e = pw.Brick(figsize=(4, 4), label=f"empty_{len(bricks)}")
-            e.axis("off")
-            bricks.append(e)
-            
+
+        # 4. Pad the last row with empty placeholders to maintain grid structure
+        while len(bricks) % n_cols != 0:
+            empty_ax = pw.Brick(figsize=(4, 4), label=f"empty_{len(bricks)}")
+            empty_ax.axis("off")
+            bricks.append(empty_ax)
+
+        # 5. Dynamically stitch the grid using reduce
         rows = []
-        for i in range(0, len(bricks), 3):
-            row = bricks[i] | bricks[i+1] | bricks[i+2]
-            rows.append(row)
-            
-        final_grid = rows[0]
-        for row in rows[1:]:
-            final_grid = final_grid / row
-            
+        for i in range(0, len(bricks), n_cols):
+            row_bricks = bricks[i : i + n_cols]
+            # Equivalent to: row_bricks[0] | row_bricks[1] | ... | row_bricks[n]
+            row_grid = reduce(operator.or_, row_bricks)
+            rows.append(row_grid)
+
+        # Equivalent to: rows[0] / rows[1] / ... / rows[n]
+        final_grid = reduce(operator.truediv, rows)
+
         return final_grid
 
     def plot_imputation_summary_grid(self, t, p, met, method, metrics=None):

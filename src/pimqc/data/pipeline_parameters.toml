@@ -178,11 +178,14 @@ mnar_method = "QRILC"
 # [Float] Fraction of the minimum value to be used for mnar_method constant imputation (e.g., 0.5 = 50% of min).
 mnar_fraction = 0.5
 
-# [String] Algorithm for MAR (random) missing values. Options: "Auto", "Probabilistic", "KNN", "Median".
+# [String] Algorithm for MAR (random) missing values. Options: "Auto", "MinProb", "KNN", "LLS", "Median".
 mar_method = "Auto"
 
 # [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "KNN".
 knn_neighbors = 5
+
+# [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "LLS".
+lls_neighbors = 15  
 
 # [Float] Ratio of known data to artificially mask for internal simulation and auto-evaluating the best MAR method via NRMSE metric.
 sim_mask_ratio = 0.05

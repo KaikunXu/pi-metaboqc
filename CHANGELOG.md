@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
+## [1.1.1a1] - 2026-05-27
+
+### Added
+- **[Imputation]** Implemented **LLS** (Local Least Squares) for missing value imputation. 
+
+### Changed
+- **[Imputation]** Renamed the **Probabilistic** method to **MinProb** to align with widely adopted academic terminology.
+- **[Imputation]** Optimized the subplot grid layout of Imputer_Candidates.svg to dynamically adapt to the number of evaluated algorithms.
+
 ## [1.1.0a1] - 2026-05-26
 
 ### Added

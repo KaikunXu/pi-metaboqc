@@ -110,26 +110,6 @@ python run_pimqc.py -q
 
 > **Resolution:** You can bypass this by executing the script from a native system terminal (e.g., Anaconda Prompt, macOS Terminal). Alternatively, to permanently configure VS Code for seamless PDF rendering and resolve PowerShell restrictions, please refer to our **[VS Code Environment & Troubleshooting Guide](https://github.com/KaikunXu/pi-metaboqc/tree/main/docs/vscode_conda_troubleshooting_guide.md)**.
 
-### Automated Refinement Protocol (Under the Hood)
-
-Upon executing the pipeline via either modality, the system strictly follows a rigorous sequential refinement protocol:
-
-* **Building dataset:** Parses TOML or JSON configurations to seamlessly align sample metadata with the raw intensity matrix, instantiating the core `MetaboInt` data object.
-
-* **High-missing value features filtering:** Heuristically classifies missing value mechanisms (MAR vs. MNAR) and eliminates invalid features exceeding predefined missing rate thresholds.
-
-* **Intra-batch correction:** Corrects inject otder-dependent instrument signal drift within individual analytical batches using pooled QCs-based robust regression models (QC-RLSC, QC-RFSC or QC-SVR).
-
-* **Inter-batch correction:**  Harmonizes analytical variations across multiple independent batches, mitigating systemic batch effects to ensure global data comparability.
-
-* **Low-quality features filtering:**  Precisely prunes unreliable features based on rigorous noise-filtering criteria, including Blank-to-QC intensity ratios and pooled-QC Relative Standard Deviation (RSD).
-
-* **Missing values imputation:** Executes stratified, mechanism-aware imputation on remaining missing values, either auto-tuned via NRMSE simulation benchmarks or applying user-defined algorithms.
-
-* **Normalization:**  Adjusts for systematic sample-to-sample variations (e.g., biofluid dilution effects) using global scaling techniques such as PQN, Median, TIC, VSN and Quantile.
-
-* **Quality assessment (Replicated):** Operates transparently across all pipeline stages, continuously capturing statistical metrics to generate a comprehensive, publication-ready Markdown/PDF audit report.
-
 ## 📂 Project Structure
 
 ```bash
@@ -148,7 +128,7 @@ pi-metaboqc/
 │       ├── dataset_builder.py     # MetaboInt instantiation 
 │       ├── assessment.py          # Data quality assessment
 │       ├── correction.py          # Signal drift & batch correction
-│       ├── filtering.py           # High-missing & low-quality features filtering
+│       ├── filtering.py           # High-missing value & low-quality features filtering
 │       ├── imputation.py          # Missing values imputation
 │       ├── normalization.py       # Data normalization
 │       ├── pipeline.py            # Automated pipeline orchestrator
@@ -167,7 +147,7 @@ pi-metaboqc/
 └── ...                            # Other files required by this module...
 ```
 
-> *💡 **Note on Configuration:** The entire analytical logic of `pi-metaboqc` is centrally governed by `pipeline_parameters.toml`. Users can fine-tune missing value tolerances, SVR kernel parameters, and normalization strategies exclusively through this file, without modifying any underlying Python code.*
+> *💡 **Note on Configuration:** The entire analytical workflow of `pi-metaboqc` is centrally governed by `pipeline_parameters.toml`. Users can fine-tune all analysis parameters exclusively through this file, without modifying any underlying Python code.
 
 ## 🤝 Contributing & License
 

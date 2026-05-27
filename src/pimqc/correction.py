@@ -1027,7 +1027,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             stage_oof_dfs=m_res.get("stage_oof_dfs", {})
         )
         vis.save_and_show_pw(
-            pw_obj=fig_rsd, width=400,
+            pw_obj=fig_rsd, width=300,
             file_path=os.path.join(output_dir, f"QC_RSD_{best_method}.svg")
         )
 
