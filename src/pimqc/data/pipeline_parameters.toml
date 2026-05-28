@@ -207,8 +207,8 @@ sim_mask_ratio = 0.05
 # log_transform = false   # Essential: VSN uses glog; prevents double-log transform
 
 # [String] Sample-wise Normalization. Options: "PQN", "MDFC", "TIC", "Median", "VSN", "Quantile"
-norm_method = "PQN"
+norm_method = "VSN"
 
 # [Bool] Logarithmic Transformation
 # Set to true to apply roubst Log2 transform with LOD offset handling.
-robust_log = true
+robust_log = false

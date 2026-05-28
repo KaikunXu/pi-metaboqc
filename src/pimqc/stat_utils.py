@@ -100,24 +100,34 @@ def calc_jsd_similarity(arr1, arr2, grid_points=200):
 # Extract target data for imputation and normalization
 # ====================================================================
 def _extract_log2_target(obj, auto_log_for_vis=True):
-    """
-    Extract data and ensure Log2 scale for visualization.
+    """Extract data and strictly enforce Log2 scale for relative comparisons.
     
-    Fixed: Quantile normalization is now correctly treated as linear scale.
-    Only VSN or explicit log flags bypass the transient transformation. 
+    Refined logic: Verifies if the object has actually completed normalization 
+    rather than just checking the requested 'norm_method' string. This prevents 
+    pre-normalization linear data from bypassing the transient log transform 
+    when the global workflow is configured for VSN.
     """
     if obj is None:
         return None
+        
     target_cols = obj.columns.difference(obj._blank.columns)
     data = obj[target_cols].astype(float)
     
     is_logged = obj.attrs.get("is_logged", False)
     norm_method = str(obj.attrs.get("norm_method", "None")).upper()
+    current_stage = str(obj.attrs.get("pipeline_stage", "Unknown"))
 
-    # Only skip log if already formally logged or processed via VSN glog
-    if is_logged or norm_method == "VSN":
+    # Strictly verify that the normalization has actually been executed
+    is_post_norm = current_stage == "Normalization"
+    
+    # Bypass transient log transform ONLY IF:
+    # 1. Explicitly flagged as is_logged OR
+    # 2. It has actually completed the VSN normalization stage (glog space)
+    if is_logged or (norm_method == "VSN" and is_post_norm):
         return data
     
     if auto_log_for_vis:
-        return robust_log2_transform(data)
+        from . import stat_utils as su
+        return su.robust_log2_transform(data)
+        
     return data
