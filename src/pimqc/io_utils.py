@@ -4,30 +4,35 @@ Purpose of script: Utility functions for data I/O.
 """
 import os
 import sys
+import contextlib
 import platform
 import json
 import zipfile
 import psutil
-from loguru import logger
+import joblib
 
+from loguru import logger
 from datetime import datetime
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from functools import wraps
-
 from itertools import islice
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Iterable
 from contextlib import redirect_stdout, redirect_stderr
-
+from tqdm import tqdm
 from pydantic import ValidationError
 from .config_schema import PipelineConfig
+
 __max_threading__ = os.cpu_count()
 
 # Global state for progress bar visibility
 SHOW_PROGRESS = True
+
+PROGRESS_BAR_FORMAT = (
+    "{l_bar}{bar}| {n_fmt}/{total_fmt} "
+    "[Elapsed: {elapsed} | ETA: {remaining}]"
+)
 
 class HiddenPrints:
     """Context manager to completely suppress stdout and stderr.
@@ -190,48 +195,98 @@ def is_jupyter() -> bool:
     return False
 
 def get_custom_progress(
-    iterable: Any, total: int, desc: str = "Progress", 
-    color: str = None, bar_length: int = 120, position: int = 0
-) -> Any:
-    """Unified progress bar adapter using tqdm for both CLI and Jupyter.
-    
-    Args:
-        iterable: Iterable object to be wrapped.
-        total: Total number of iterations.
-        desc: Description text on the left of the progress bar.
-        color: Color of the progress bar.
-        bar_length: Physical length/width of the progress bar.
-        position: Specify the line offset to print this bar (useful for
-            parallel multi-bar rendering).
-            
+    iterable: Iterable[Any],
+    total: Optional[int] = None,
+    desc: str = "Progress",
+    color: Optional[str] = None
+) -> Iterable[Any]:
+    """Wrap an iterable with a customized tqdm progress bar.
+
+    If the global SHOW_PROGRESS flag is False, this function acts as a 
+    transparent pass-through and returns the original iterable without 
+    triggering tqdm.
+
     Returns:
-        A tqdm wrapped iterable.
+        Iterable[Any]: The tqdm-wrapped iterable or the original iterable.
     """
-    from tqdm import tqdm  # Ensure strict usage of default tqdm
-    
-    # Valid colors for tqdm formatted for PEP 8 compliance
+    if not SHOW_PROGRESS:
+        return iterable
+
     valid_colors = [
-        "green", "blue", "red", "yellow", "cyan", "magenta", "white",
-        "black"
+        "green", "blue", "red", "yellow", "cyan", "magenta", "white", "black"
     ]
     tqdm_color = color if color in valid_colors else None
-    
-    custom_format = (
-        "{l_bar}{bar}| {n_fmt}/{total_fmt} [Elapsed: {elapsed} "
-        "| ETA: {remaining}]"
-    )
-    
+
     return tqdm(
-        iterable, 
+        iterable,
         total=total,
-        desc=desc, 
-        ncols=bar_length, 
+        desc=desc,
+        ncols=120,
         colour=tqdm_color,
-        bar_format=custom_format,
-        leave=True,
-        position=position,
-        disable=not SHOW_PROGRESS
+        bar_format=PROGRESS_BAR_FORMAT
     )
+
+
+@contextlib.contextmanager
+def tqdm_joblib_env(
+    total: int,
+    desc: str = "Progress",
+    color: Optional[str] = None
+):
+    """Context manager to patch joblib and track parallel execution with tqdm.
+
+    If the global SHOW_PROGRESS flag is False, this yields a dummy object 
+    and completely bypasses the joblib callback modification, ensuring zero 
+    overhead during silent execution.
+
+    Yields:
+        tqdm.tqdm or DummyProgress: The initialized progress bar object.
+    """
+    if not SHOW_PROGRESS:
+        # Define a mock object to safely satisfy the 'with' context syntax
+        # without triggering any actual joblib patching or terminal output.
+        class DummyProgress:
+            def update(self, n: int = 1) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+                
+        yield DummyProgress()
+        return
+
+    valid_colors = [
+        "green", "blue", "red", "yellow", "cyan", "magenta", "white", "black"
+    ]
+    tqdm_color = color if color in valid_colors else None
+
+    tqdm_object = tqdm(
+        total=total,
+        desc=desc,
+        ncols=120,
+        colour=tqdm_color,
+        bar_format=PROGRESS_BAR_FORMAT,
+        leave=True
+    )
+
+    class TqdmBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
+        """Custom callback to update tqdm on batch completion."""
+        def __call__(self, *args, **kwargs):
+            tqdm_object.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    # Store the original callback to safely restore it later
+    old_batch_callback = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = TqdmBatchCompletionCallback
+
+    try:
+        yield tqdm_object
+    finally:
+        # Safely restore the original callback and close the progress bar
+        joblib.parallel.BatchCompletionCallBack = old_batch_callback
+        tqdm_object.close()
+
+
 
 def _load_json_file(input_file_path: str) -> Dict[str, Any]:
     """Load JSON file content.

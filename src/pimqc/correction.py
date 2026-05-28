@@ -295,14 +295,10 @@ class RegressionCorrector:
                     feat_idx[i], mat_vals[i, :], b_qc_mask, b_orders
                 ) for i in range(len(feat_idx))]
                 
-                results = Parallel(
-                    n_jobs=n_jobs_conf, 
-                    backend="loky",
-                )(
-                    iu.get_custom_progress(
-                        tasks, len(tasks), desc=f"SC [{batch_id}]"
-                    )
-                )
+                # [FIX]: Use patched joblib context manager
+                with iu.tqdm_joblib_env(total=len(tasks), desc=f"SC [{batch_id}]"):
+                    results = Parallel(
+                        n_jobs=n_jobs_conf, backend="loky")(tasks)
                 
                 for f_idx, p_full, p_oof in results:
                     pred_df.loc[f_idx, b_mask] = p_full
@@ -506,15 +502,14 @@ class SERRFCorrector:
         actual_cores = (os.cpu_count() or 1) if self.n_jobs == -1 else self.n_jobs
         safe_n_jobs = max(1, int(actual_cores / 2))
         
-        # Pass only the 1D index array row to each worker
-        results = Parallel(n_jobs=safe_n_jobs, backend="loky")(
-            delayed(self._process_single_feature)(
-                feat_idx, y_mat, x_base, qc_mask, 
-                None if top_indices is None else top_indices[feat_idx]
-            ) for feat_idx in iu.get_custom_progress(
-                range(n_features), n_features, desc="SERRF"
+        # [FIX]: Use patched joblib context manager for SERRF
+        with iu.tqdm_joblib_env(total=n_features, desc="SERRF"):
+            results = Parallel(n_jobs=safe_n_jobs, backend="loky")(
+                delayed(self._process_single_feature)(
+                    feat_idx, y_mat, x_base, qc_mask, 
+                    None if top_indices is None else top_indices[feat_idx]
+                ) for feat_idx in range(n_features)
             )
-        )
 
         for res in results:
             feat_idx, res_full, res_oof = res
