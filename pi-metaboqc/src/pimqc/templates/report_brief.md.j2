@@ -1,0 +1,82 @@
+# Executive Summary: Quality Control Summary via $\pi$-metaboqc
+
+{%- set meta = metadata | default({}) -%}
+{%- set raw_params = raw_dataset.get('pipeline_params', {}) -%}
+{%- set feats = raw_params.get('features', {}) -%}
+{%- set samps = raw_params.get('samples', {}) -%}
+{%- set batch_info = raw_params.get('batches', {}) -%}
+
+{%- set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
+{%- set lq_ret = lq_params.get('feature_retention', {}) -%}
+
+{%- set sc_perf = signal_correction.get('overall_performance', {}) -%}
+
+{%- set imp_params = missing_value_imputation.get('pipeline_params', {}) -%}
+{%- set imp_strat = imp_params.get('strategies', {}) -%}
+
+{%- set norm_params = normalization.get('pipeline_params', {}) -%}
+{%- set norm_strat = norm_params.get('strategies', {}) -%}
+{%- set norm_method = norm_strat.get('normalization_method', 'NONE') | upper -%}
+{%- set is_log = norm_strat.get('log_transform_active', False) %}
+
+> **Date Generated:** {{ meta.get('date', 'Unknown') }}<br>
+{%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
+> **Ionization Mode:** {{ meta.get('mode', 'Unknown') }}<br>
+{%- endif %}
+> **Engine:** pi-metaboqc v{{ raw_params.get('pi-metaboqc_version', '1.0.2.alpha') }}
+
+## 1. Global Pipeline Yield and Experimental Overview
+
+The analytical dataset, acquired in **{{ meta.get('mode', 'Unknown') }}** ionization mode, was processed through a standardized, high-throughput metabolomics quality control pipeline. The cohort consisted of **{{ samps.get('actual', 'N/A') }}** biological samples, **{{ samps.get('qc', 'N/A') }}** pooled Quality Control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blanks{%- if batch_info.get('batch_count', 1) > 1 -%}, distributed across **{{ batch_info.get('batch_count') }}** analytical batches{%- endif -%}.
+
+**Feature Retention Summary:**
+
+* **Initial Acquisition:** **{{ feats.get('total', 'N/A') }}** raw mass spectral features.
+* **Final High-Fidelity Matrix:** Following stringent topological missing value screening, blank-ratio background elimination, and strict RSD reproducibility evaluation, **{{ lq_ret.get('post_rsd_check', {}).get('total', 'N/A') }}** genuine metabolic features (**{{ lq_ret.get('post_rsd_check', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('post_rsd_check', {}).get('mnar_count', 'N/A') }}** MNAR) were successfully isolated for downstream statistical analysis.
+
+## 2. Signal Drift Correction, Imputation & Normalization
+
+{%- set sc_stages = signal_correction.get('stages_executed', []) %}
+{%- set primary_algo = sc_stages[0].get('algorithm', 'a QC-anchored') if sc_stages else 'a QC-anchored' %}
+
+Systematic technical variations, including time-dependent instrument drift and batch discrepancies, were mitigated utilizing the **{{ primary_algo }}** algorithm.
+
+{%- set rsd_before = sc_perf.get('median_qc_rsd_baseline') or 0 %}
+{%- set final_rsd_full = sc_perf.get('median_qc_rsd_current_full') or 0 %}
+{%- set final_rsd_oof = sc_perf.get('median_qc_rsd_current_oof') %}
+The correction architecture successfully suppressed the median QC RSD from an initial baseline of {{ (rsd_before * 100) | round(2) }}% down to a delivered matrix RSD of **{{ (final_rsd_full * 100) | round(2) }}%**
+{%- if final_rsd_oof is not none %} (OOF Cross-validated: {{ (final_rsd_oof * 100) | round(2) }}%).
+{%- else %}.
+{%- endif %}
+
+Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed employing the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** algorithm to preserve global structural fidelity.
+
+Finally, global quantitative refinement was performed
+{%- if norm_method == 'VSN' %} utilizing **VSN** to shift the data into a variance-stabilized generalized logarithmic space (glog), ensuring homoscedasticity for downstream multivariate modeling.
+{%- elif norm_method == 'QUANTILE' %} utilizing {% if is_log %}a robust Log2 transformation followed by {% endif %}**QUANTILE** normalization, ensuring homoscedasticity for downstream multivariate modeling.
+{%- elif norm_method != 'NONE' %} utilizing **{{ norm_method }}** normalization{% if is_log %} followed by a robust Log2 transformation{% endif %}, ensuring homoscedasticity for downstream multivariate modeling.
+{%- elif is_log %} utilizing a robust Log2 transformation, ensuring homoscedasticity for downstream multivariate modeling.
+{%- else %} without additional intensity scaling.
+{%- endif %}
+
+## 3. Global Data Quality Validation
+
+A continuous quality assessment (QA) framework was embedded throughout the pipeline to systematically monitor the data transformation process and verify the elimination of technical biases.
+
+### 3.1 Feature Reproducibility Improvement
+
+The distribution of relative standard deviations (RSD) across pooled QC samples was evaluated to confirm the enhancement of technical precision.
+
+![**Feature RSD Distribution Grid**](assets/01_QC_Sample_RSD_Dashboard.svg){.full-width-image}
+
+### 3.2 Global Variance Alignment and Batch Effect Mitigation
+
+Principal Component Analysis (PCA) was performed to visualize the global variance projection. The spatial aggregation of pooled QC samples in the corrected space corroborates the successful removal of systematic instrument artifacts and the preservation of authentic biological variance.
+
+![**PCA Variance Projection Grid**](assets/02_PCA_Scatter_Dashboard.svg){.full-width-image}
+
+### 3.3 Systemic Sample Coherence
+
+To ensure global sample coherence, pooled QC correlation profiles were tracked dynamically.
+
+![**Correlation Matrix Grid**](assets/{{ '03_Batch_Correlation_Dashboard.svg' if meta.get('is_multi_batch') else '03_QC_Correlation_Dashboard.svg' }}){.full-width-image}

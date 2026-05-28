@@ -1,0 +1,214 @@
+﻿# pi-metaboqc Pipeline Global Configuration File
+# Format: TOML
+# Description: Fully documented configuration for metabolomics data quality control.
+
+
+# ------------------------------------------------------------------------------
+# Core Dataset Construction
+# ------------------------------------------------------------------------------
+[MetaboInt]
+# [String] Mass spectrometry polarity mode. Used for titles and file naming ("ESI+" or "ESI-").
+mode = "ESI+"
+
+# [String] Column name in your metadata mapping to unique sample identifiers.
+sample_name = "Sample Name"
+
+# [String] Column name mapping to the type of the sample (e.g., QC, Blank, Sample).
+sample_type = "Sample Type"
+
+# [String] Column name mapping to the biological or clinical grouping.
+bio_group = "Bio Group"
+
+# [Array] Explicit sequence for rendering biological groups in plots.
+# Use an empty list [] for automatic alphabetical sorting. Example: ["Control", "Disease"]
+# Leave as an empty list [] to apply default ASCII sorting to groups.
+group_order = []
+
+# [String] Column name mapping to the analytical batch number/ID.
+batch = "Batch"
+
+# [String] Column name mapping to the machine injection sequence/order.
+inject_order = "Inject Order"
+
+# [String] Statistical method for determining outliers in Boxplots. Options: "IQR" or "sigma".
+boundary = "IQR"
+
+# [Integer] Global random seed. Ensures 100% reproducibility across Random Forest, GMM, PCA, etc.
+global_seed = 123 
+
+# [Array] Target feature IDs acting as internal standards for drift tracking and outlier detection.
+internal_standard = [
+    "Phenylalanine-d5",
+    "Choline-d4",
+    "CA-d4",
+    "CDCA-d4",
+    "Carnitine C10:0-d3",
+    "FFA 18:0-d3",
+    "FFA 16:0-d3",
+    "IS-PC",
+    "IS-TG",
+    "IS-CER",
+    "IS-SM",
+    "IS-PE",
+    "IS-LPC",
+    "IS_PC 38:0+AcO",
+    "IS_PE 30:0-H",
+    "IS_LPC 19:0+AcO",
+    "IS_SM 30:1;2+AcO",
+    "IS_FFA C16:0-d3",
+    "IS_FFA C18:0-d3"
+]
+
+# [Array] Optional list of features manually designated as Outlier Reference Features (ORFs). 
+# These features are biologically or analytically expected to exhibit stable abundances across all sample classes. 
+# A significant deviation of these ORFs beyond control chart boundaries serves as a primary diagnostic indicator for potential sample-level outliers.
+# Leave empty [] if not applicable.
+outlier_ref_feat = [
+    "Creatinine"
+] 
+
+# [String] Strategy to handle duplicated or missing injection orders. Options: "Auto" or "none".
+resort_inject_order = "Auto"
+
+# [Table] Dictionary mapping your raw metadata string values to the pipeline's internal standards.
+# The keys ("Actual sample", etc.) are your data's strings; the values ("Sample", etc.) must remain fixed.
+[MetaboInt.sample_dict]
+"Actual sample" = "Sample"
+"Blank sample" = "Blank"
+"QC sample" = "QC"
+
+# ------------------------------------------------------------------------------
+# Quality Assessment (PCA & Correlations)
+# ------------------------------------------------------------------------------
+[MetaboIntAssessor]
+# [String] Method for calculating sample-to-sample correlations. Options: "spearman", "pearson".
+corr_method = "Spearman"
+
+# [String] Scaling method before PCA. Options: "Auto-scaling", "Pareto-scaling", "None".
+scaling_method = "Auto-scaling"
+
+# [Float or Integer] Threshold for flagging a sample as an "IS Outlier" or "ORF Outlier".
+# - If Float (0.0 to 1.0): Treated as a RATIO. (e.g., 0.75 means >= 75% of IS/ORF must fail).
+# - If Integer (>= 1): Treated as an ABSOLUTE COUNT. (e.g., 2 means >= 2 IS/ORF must fail).
+# Default is 0.75 (IS) / 0.5 (ORF).
+is_outlier_threshold = 0.75
+orf_outlier_threshold = 0.5
+# ------------------------------------------------------------------------------
+# Filtering Thresholds (Missing Values & RSD)
+# ------------------------------------------------------------------------------
+[MetaboIntFilter]
+
+# 1. Sample-Level Filtering (Filtering bad injections/patients - Columns)
+# [Float] Maximum allowed missing value ratio for a single SAMPLE. 
+# (Note: Used by the sample_filtering module, NOT the feature filtering module).
+sample_mv_tol = 0.5
+
+# 2. Feature-Level Filtering (Missing value-based)
+# [Float] Maximum allowed missing value ratio across ALL samples combined.
+mv_global_tol = 0.7
+
+# [Float] Maximum allowed missing value ratio strictly within QC samples.
+mv_qc_tol = 0.3
+
+# [Float] Maximum allowed missing value ratio within at least ONE biological group.
+mv_group_tol = 0.5
+
+# 3. MNAR Rescue Thresholds (Trace-level Biomarker Rescue)
+# [Float] Missing ratio threshold to define a feature as MNAR based on Biology.
+mnar_group_mv_tol = 0.8
+
+# [Float] Missing ratio threshold to define a feature as MNAR based on analytical QC.
+mnar_qc_mv_tol = 0.2
+
+# [Float] Percentile of lowest intensities to check for LOD issue in QC samples.
+mnar_intensity_pct = 0.1
+
+# 4.  Feature-Level Filtering (Quality-based)
+# [Float] Maximum allowed mean intensity ratio of Blank samples vs QC samples.
+blank_qc_ratio_tol = 0.2
+
+# [Float] Maximum allowed Relative Standard Deviation (RSD) in QC samples.
+qc_rsd_tol = 0.3
+
+# ------------------------------------------------------------------------------
+# Signal Drift Correction
+# ------------------------------------------------------------------------------
+[MetaboIntCorrector]
+# [String] Primary algorithm for intra/inter-batch signal drift correction.
+# Options: "QC-SVR", "QC-RFSC", "QC-RLSC", "SERRF", "RUV", "Auto".
+base_est = "Auto"
+
+# [Float] Smoothing frac parameter, used strictly if base_est is "QC-RLSC".
+loess_frac = 0.5
+
+# [Integer] Number of decision trees, used strictly if base_est is "QC-RFSC".
+# High density required to smooth 1D temporal signals.
+rf_n_tree = 200
+
+# [Integer] Number of decision trees, used strictly if base_est is "SERRF".
+# Lower density recommended due to high-dimensional correlation feature space.
+serrf_n_tree = 100
+
+# [Integer] Number of top highly correlated metabolites to borrow for prediction network in "SERRF".
+# Set to 0 to degrade to pure temporal/batch regression. Recommended range: 5 to 50.
+serrf_corr_features = 5
+
+# [String] Kernel function, used strictly if base_est is "QC-SVR". Options: "rbf", "linear", "poly".
+svr_kernel = "rbf"
+
+# [Float] Regularization parameter (C) for the Support Vector Regression algorithm.
+svr_c = 10
+
+# [Float] Kernel coefficient (gamma) for the Support Vector Regression algorithm.
+svr_gamma = 1.0
+
+# [Integer] Number of latent factors of unwanted variation to estimate and remove.
+ruv_k = 5
+
+# [Integer] Cross-Validation folds for Out-Of-Fold (OOF) prediction to prevent overfitting.
+cv_folds = 3
+
+# ------------------------------------------------------------------------------
+# Missing Value Imputation
+# ------------------------------------------------------------------------------
+[MetaboIntImputer]
+# [String] Imputation algorithm specifically for MNAR (LOD/Detection failure) values. Options: "Row-wise", "Column-wise", "Global", "QRILC".
+mnar_method = "QRILC"
+
+# [Float] Fraction of the minimum value to be used for mnar_method constant imputation (e.g., 0.5 = 50% of min).
+mnar_fraction = 0.5
+
+# [String] Algorithm for MAR (random) missing values. Options: "Auto", "MinProb", "KNN", "LLS", "Median".
+mar_method = "Auto"
+
+# [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "KNN".
+knn_neighbors = 5
+
+# [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "LLS".
+lls_neighbors = 15  
+
+# [Float] Ratio of known data to artificially mask for internal simulation and auto-evaluating the best MAR method via NRMSE metric.
+sim_mask_ratio = 0.05
+
+# ------------------------------------------------------------------------------
+# Normalization
+# ------------------------------------------------------------------------------
+[MetaboIntNormalizer]
+
+# Recommended normalization strategies:
+# + [Combo A] Classic MetaboAnalyst Pipeline (Standard Choice)
+# Best for standard PCA, PLS-DA, and Fold-Change analysis.
+# norm_method = "PQN"/"MDFC"/"TIC"/"Median"/"Quantile"
+# log_transform = true    # Essential: Prevents negative values
+#
+# + [Combo B] Variance Stabilizing Normalization (VSN)
+# Best for strict heteroscedasticity elimination (e.g., Limma analysis).
+# norm_method = "VSN"     # Essential: VSN subsumes sample calibration
+# log_transform = false   # Essential: VSN uses glog; prevents double-log transform
+
+# [String] Sample-wise Normalization. Options: "PQN", "MDFC", "TIC", "Median", "VSN", "Quantile"
+norm_method = "PQN"
+
+# [Bool] Logarithmic Transformation
+# Set to true to apply roubst Log2 transform with LOD offset handling.
+robust_log = true
