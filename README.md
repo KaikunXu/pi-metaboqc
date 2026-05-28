@@ -81,7 +81,7 @@ We provide execution modalities for different use cases in the `examples/` direc
 
 Choose the access method that best suits your network environment:
 
-* **[Pre-rendered HTML Viewer](https://raw.githack.com/KaikunXu/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage. **Recommended for users in mainland China** to ensure all inline SVG plots and Q2 metrics are displayed instantly without any GitHub API or nbviewer rendering limits.
+* **[Pre-rendered HTML Viewer](https://raw.githack.com/KaikunXu/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage to ensure all inline SVG plots and Q2 metrics are displayed instantly without any GitHub API or nbviewer rendering limits.
 * **[Google Colab](https://colab.research.google.com/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: A cloud-executable environment. Best for global users who wish to run the pipeline dynamically with zero local configuration.
 
 ### 2. Headless CLI Execution (For Production & Batch Processing)
@@ -148,6 +148,20 @@ pi-metaboqc/
 ```
 
 > *💡 **Note on Configuration:** The entire analytical workflow of `pi-metaboqc` is centrally governed by `pipeline_parameters.toml`. Users can fine-tune all analysis parameters exclusively through this file, without modifying any underlying Python code.
+
+## 📖 Hands-on Case Study
+
+To demonstrate the robustness, reproducibility, and correction efficacy of `pi-metaboqc` in real-world scenarios, we provide a dedicated case study repository. 
+
+👉 **[pi-metaboqc-casestudy](https://github.com/KaikunXu/pi-metaboqc-casestudy)**
+
+The case study repository contains:
+- **Diverse Real-World & Benchmark Datasets**: Includes actual metabolomics datasets generated in-house and benchmark data from published tools. Both the originally downloaded raw datasets and the fully pre-processed versions are provided.
+- **Transparent Data Preparation**: We provide all data cleaning and formatting scripts used to convert raw matrices into the standardized input formats required by `pi-metaboqc`. 
+- **Highly Organized Project Structure**: All ready-to-run data is systematically categorized by project under the `data/processed/` directory. Each project directory is self-contained with its specific matrices, metadata, and a dedicated `pipeline_parameters.toml` configuration file.
+- **Project-Specific Analytical Notebooks**: For every dataset, you will find a dedicated, interactive Jupyter Notebook that executes the complete `pi-metaboqc` analytical pipeline under the `scripts/evaluation` directory, providing step-by-step demonstrations and embedded diagnostic visualizations.
+
+We highly recommend new users start with the case study to familiarize themselves with the pipeline's configuration and capabilities.
 
 ## 🤝 Contributing & License
 
