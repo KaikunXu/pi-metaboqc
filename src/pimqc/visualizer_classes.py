@@ -4,11 +4,14 @@ Purpose of script: Base classes for visualization suites.
 """
 import io
 import os, re
+import itertools
 from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.markers import MarkerStyle
 import seaborn as sns
+
 # Avoid INFO level logging to console when saving figures as .pdf
 import logging
 from loguru import logger
@@ -105,14 +108,29 @@ class BaseMetaboVisualizer:
         self.act_lbl = sample_dict.get("Actual sample", "Sample")
         self.blk_lbl = sample_dict.get("Blank sample", "Blank")
 
-        # Global Batch and Style Mapping for cross-module consistency
+        # Global Batch and Style Mapping (Smart Mixed Strategy)
         self.all_batches = sorted(
             self.obj.columns.get_level_values(self.bat_col).unique()
         )
-        standard_markers = ["o", "s", "^", "D", "v", "<", ">", "p", "*", "X"]
-        self.style_map = dict(
-            zip(self.all_batches, standard_markers[:len(self.all_batches)])
-        )
+        n_batches = len(self.all_batches)
+        
+        # Strategy A: Use standard filled markers for typical cohort sizes (<=15)
+        if n_batches <= 10:
+            available_markers = ["o", "s", "^", "D", "v", "<", ">", "p", "*", "X"]
+            marker_generator = itertools.cycle(available_markers)
+            
+            self.style_map = {
+                batch_id: next(marker_generator) for batch_id in self.all_batches
+            }
+            
+        # Strategy B: Switch to MathText (Alphanumeric) for large cohorts (>15)
+        else:
+            # Renders explicit numbers (e.g., '1', '2', '3') to guarantee 
+            # absolute distinguishability and zero cognitive load in complex plots.
+            self.style_map = {
+                batch_id: f"${i}$" for i, batch_id in enumerate(
+                    self.all_batches, start=1)
+            }
         
         # Global Palette Definition
         self.pal = {
@@ -371,7 +389,7 @@ class BaseMetaboVisualizer:
     def _format_multi_legends(
         self, ax, group_titles: list, loc: str = "upper left", 
         start_bbox: tuple = (1.05, 1.0), group_pad: float = 0.04, 
-        ncols: int = 1, col_pad: float = 0.05, **kwargs
+        ncols: int = 1, col_pad: float = 0.15, **kwargs
     ) -> list:
         """
         Splits handles into separate boxes using the add_artist trick.

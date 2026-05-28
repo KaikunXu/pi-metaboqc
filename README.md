@@ -42,7 +42,7 @@ conda activate metaboqc
 Install `pandoc`, `weasyprint` and `librsvg` via `conda-forge` to ensure all necessary system graphical libraries are correctly linked before installing the Python package:
 
 ```bash
-conda install -c conda-forge pandoc weasyprint librsvg -y
+conda install -c conda-forge pandoc weasyprint librsvg tinycss2 -y
 ```
 
 ### Step 3: Install `pi-metaboqc`

@@ -760,81 +760,177 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         self, corr_matrix, corr_mask, batches, method="spearman", 
         vmin=0.85, vmax=1.0, ax=None
     ):
-        """Plot sample-level correlation matrix heatmap of Pooled QCs."""
+        """Plot sample-level correlation matrix heatmap of Pooled QCs.
+        
+        Dynamically adapts annotation visibility, tick rotations, and font sizes 
+        based on the rendering context (standalone figure vs. rigid patchwork 
+        grid) and the total number of QC samples.
+        """
         n_samples = corr_matrix.shape[0]
+        
+        # Context-aware dynamic sizing & annotation logic
+        is_constrained = (ax is not None)
+        
+        if not is_constrained:
+            # Standalone Mode: Dynamically expand figure size
+            fig_w = max(5.0, n_samples * 0.2 + 2.0)
+            fig_h = max(4.0, n_samples * 0.2 + 1.5)
+            fig, current_ax = plt.subplots(figsize=(fig_w, fig_h))
+            
+            # Allow annotations for up to 15 QCs in a fully expanded plot
+            show_annot = n_samples <= 15
+            tick_size = max(3.0, min(8.0, 90.0 / max(1, n_samples)))
+            annot_size = max(4.0, min(8.0, 60.0 / max(1, n_samples)))
+        else:
+            # Grid Mode (Patchwork): Locked by parent brick size
+            current_ax = ax
+            fig = current_ax.figure
+            
+            # Stricter threshold for grid mode to prevent annotation overlap
+            show_annot = n_samples <= 6
+            tick_size = max(3.0, min(8.0, 60.0 / max(1, n_samples)))
+            annot_size = max(4.0, min(8.0, 40.0 / max(1, n_samples)))
+
         custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
+        color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
+        
         tick_colors = pu.extract_linear_cmap(
             cmap=custom_cmap, cmin=0.5, cmax=1.0, n_colors=len(batches)
         )
         tick_color_dict = dict(zip(batches, tick_colors))
-        color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
         
-        if ax is None:
-            fig, current_ax = plt.subplots(
-                figsize=(n_samples * 0.2 + 1.2, n_samples * 0.2 + 1.2)
-            )
-        else:
-            current_ax = ax
-            fig = current_ax.figure
-            
-        # Create an inset axes for colorbar as a child of current_ax
         cbar_ax = current_ax.inset_axes([1.05, 0.1, 0.05, 0.8])
+        
+        # Adapt string formatting and grid lines based on density
+        annot_fmt = ".3f" if n_samples <= 15 else ".2f"
+        grid_lw = 0.5 if n_samples <= 20 else 0.05
         
         with sns.axes_style("white"):
             hm = sns.heatmap(
                 corr_matrix, mask=corr_mask, xticklabels=1, yticklabels=1, 
                 vmin=vmin if vmin else corr_matrix.min().min(),
-                vmax=vmax, cmap=color_map, annot=False,
-                linewidths=0.25, linecolor="white", square=True,
+                vmax=vmax, cmap=color_map, annot=show_annot, fmt=annot_fmt,
+                linewidths=grid_lw, linecolor="white", square=True,
                 ax=current_ax, cbar_ax=cbar_ax,
+                annot_kws={"size": annot_size},  # Explicit dynamic scaling
                 cbar_kws={
                     "label": f"{method.title()} Correlation",
-                    "format": "%.2f"})
+                    "format": "%.2f"
+                }
+            )
             
+        # Force explicit tick rotations to override Seaborn defaults
+        current_ax.set_yticklabels(
+            current_ax.get_yticklabels(), rotation=0
+        )
+        
+        x_rot = 45 if n_samples <= 15 else 90
+        current_ax.set_xticklabels(
+            current_ax.get_xticklabels(), rotation=x_rot, ha="right", 
+            va="center", rotation_mode="anchor"
+        )
+        
         self._apply_standard_format(
             ax=current_ax, title="Pooled QCs Correlation", xlabel="Pooled QCs", 
-            ylabel="Pooled QCs", title_fontsize=14, label_fontsize=10, 
-            tick_fontsize=2.5, append_stage=True
+            ylabel="Pooled QCs", title_fontsize=14, label_fontsize=12, 
+            tick_fontsize=tick_size, append_stage=True
         )
+        
         self._format_heatmap_ticks(hm=hm, tick_color_dict=tick_color_dict)
+        
         return fig
 
     def plot_batch_corr_heatmap(
         self, batch_corr_matrix, method, vmin=0.85, vmax=1.0, ax=None
     ):
-        """Plot inter-batch QC correlation heatmap using median aggregation."""
+        """Plot inter-batch QC correlation heatmap using median aggregation.
+        
+        Dynamically adapts annotation visibility and tick rotations based on 
+        the rendering context (standalone figure vs. rigid patchwork grid) 
+        and the total number of analytical batches.
+        """
         n_batches = batch_corr_matrix.shape[0]
         
-        if ax is None:
-            fig, current_ax = plt.subplots(
-                figsize=(n_batches * 0.8 + 2.5, n_batches * 0.8 + 1.5)
-            )
+        # =====================================================================
+        # 1. Context-Aware Dynamic Sizing & Annotation Logic
+        # =====================================================================
+        is_constrained = (ax is not None)
+        
+        if not is_constrained:
+            # Standalone Mode: Dynamically expand figure size for many batches.
+            # Ensures enough physical space for both the cells and the text.
+            fig_w = max(5.0, n_batches * 0.7 + 2.0)
+            fig_h = max(4.0, n_batches * 0.7 + 1.0)
+            fig, current_ax = plt.subplots(figsize=(fig_w, fig_h))
+            
+            # Text easily fits even for large cohorts in standalone mode
+            show_annot = n_batches <= 20
         else:
+            # Grid Mode (Patchwork): Size is strictly locked by the parent brick.
             current_ax = ax
             fig = current_ax.figure
             
+            # Disable annotations if batches exceed 6 to prevent text overlapping
+            # inside the compact 4x4 inch patchwork container.
+            show_annot = n_batches <= 6
+
+        # =====================================================================
+        # 2. Heatmap Rendering
+        # =====================================================================
         mask = np.triu(np.ones_like(batch_corr_matrix, dtype=bool), k=1)
         custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
         color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
         
         cbar_ax = current_ax.inset_axes([1.05, 0.1, 0.05, 0.8])
         
+        # Dynamically adjust decimal format to save space for medium cohorts
+        annot_fmt = ".3f" if n_batches <= 10 else ".2f"
+        # Dynamic line width to prevent grid lines from overwhelming small cells
+        grid_lw = 0.5 if n_batches <= 12 else 0.1
+        
         with sns.axes_style("white"):
             sns.heatmap(
-                batch_corr_matrix, mask=mask, annot=True, fmt=".4f", 
+                batch_corr_matrix, mask=mask, 
+                annot=show_annot, fmt=annot_fmt, 
                 vmin=vmin if vmin else batch_corr_matrix.min().min(), 
                 vmax=vmax,
-                cmap=color_map, linewidths=0.25, linecolor="white", 
+                cmap=color_map, linewidths=grid_lw, linecolor="white", 
                 square=True, ax=current_ax, cbar_ax=cbar_ax,
                 cbar_kws={
                     "label": f"{method.title()} Correlation",
-                    "format": "%.2f"})
+                    "format": "%.2f"
+                }
+            )
 
+        # =====================================================================
+        # 3. Force Explicit Tick Rotations (Override Seaborn Defaults)
+        # =====================================================================
+        # Y-axis: Strictly horizontal (0 deg) for immediate readability
+        current_ax.set_yticklabels(
+            current_ax.get_yticklabels(), rotation=0
+        )
+        
+        # X-axis: 45-degree angle for small/medium, 90-degree for massive cohorts
+        x_rot = 45 if n_batches <= 10 else 90
+        
+        # Always anchor to the right edge and center vertically to prevent axis crossing
+        current_ax.set_xticklabels(
+            current_ax.get_xticklabels(), 
+            rotation=x_rot, 
+            ha="right",
+            va="center",
+            rotation_mode="anchor"
+        )
+
+        # =====================================================================
+        # 4. Standard Formatting
+        # =====================================================================
         self._apply_standard_format(
             ax=current_ax, title="Inter-Batch Pooled QC Correlation",
             xlabel="Batch ID", ylabel="Batch ID", append_stage=True,
             title_fontsize=14, label_fontsize=12, tick_fontsize=10
         )
+        
         return fig
 
     # =========================================================================
@@ -1052,7 +1148,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         sns.scatterplot(
             data=metrics_df, x="SD", y="OD", hue="Category", 
             style="Category", palette=custom_pal, markers=custom_markers,
-            s=50, edgecolor="k", linewidth=0.5, ax=current_ax
+            s=50, edgecolor="k", linewidth=0.5, ax=current_ax, zorder=2
         )
         
         # Overlay halo effect for analytical IS outliers (Red dashed circle)
@@ -1065,7 +1161,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 current_ax.scatter(
                     subset["SD"], subset["OD"], 
                     s=150, facecolors="none", edgecolors="tab:red",
-                    linewidths=2.0, linestyle="--", zorder=0,
+                    linewidths=2.0, linestyle="--", zorder=3,
                     label="IS Outlier"
                 )
                 
@@ -1079,7 +1175,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 current_ax.scatter(
                     subset["SD"], subset["OD"], 
                     s=180, facecolors="none", edgecolors="tab:orange",
-                    linewidths=2.0, linestyle="-.", zorder=0,
+                    linewidths=2.0, linestyle="-.", zorder=4,
                     label="ORF Outlier"
                 )
         
@@ -1128,11 +1224,12 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
 
     def _plot_stat_outliers_bar(
         self, outliers_df, sample_type, batch, sample_name, actual_label,
-        target_param, sd_limit=None, od_limit=None, show_normal=False,
+        target_param="both", sd_limit=None, od_limit=None, show_normal=False,
         is_flags=None, orf_flags=None, ax1=None, ax2=None, show_legend=True
     ):
         """Plot outlier results with symmetrical reference flag encodings."""
-        mask = outliers_df.index.get_level_values(sample_type) == actual_label
+        sample_types = outliers_df.index.get_level_values(sample_type)
+        mask = sample_types == actual_label
         out_df = outliers_df[mask].copy()
 
         if out_df.empty:
@@ -1155,11 +1252,15 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             outlier_mask = (cats != "Normal")
 
             if is_flags is not None:
-                is_sub_mask = is_flags.loc[out_df.index].fillna(False).values
+                is_sub_mask = (
+                    is_flags.loc[out_df.index].fillna(False).values
+                )
                 outlier_mask = outlier_mask | is_sub_mask
                 
             if orf_flags is not None:
-                orf_sub_mask = orf_flags.loc[out_df.index].fillna(False).values
+                orf_sub_mask = (
+                    orf_flags.loc[out_df.index].fillna(False).values
+                )
                 outlier_mask = outlier_mask | orf_sub_mask
 
             out_df = out_df[outlier_mask].copy()
@@ -1174,19 +1275,20 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             cats = cats.loc[out_df.index]
 
         idx_df = out_df.index.to_frame()
-        new_idx = (
-            idx_df[batch].astype(str) + "-" + idx_df[sample_name].astype(str)
-        ).values
+        batch_str = idx_df[batch].astype(str)
+        name_str = idx_df[sample_name].astype(str)
+        new_idx = (batch_str + "-" + name_str).values
         
-        # Parallel vector evaluation for multi-dimensional flag appending
-        is_sub = (
-            is_flags.loc[out_df.index].fillna(False).values 
-            if is_flags is not None else np.zeros(len(out_df), dtype=bool)
-        )
-        orf_sub = (
-            orf_flags.loc[out_df.index].fillna(False).values 
-            if orf_flags is not None else np.zeros(len(out_df), dtype=bool)
-        )
+        # Symmetrically fetch reference flags with strict length checks
+        if is_flags is not None:
+            is_sub = is_flags.loc[out_df.index].fillna(False).values
+        else:
+            is_sub = np.zeros(len(out_df), dtype=bool)
+
+        if orf_flags is not None:
+            orf_sub = orf_flags.loc[out_df.index].fillna(False).values
+        else:
+            orf_sub = np.zeros(len(out_df), dtype=bool)
         
         labeled_idx = []
         for name, f_is, f_orf in zip(new_idx, is_sub, orf_sub):
@@ -1209,20 +1311,29 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         gray_col = "tab:gray"
 
         palette_spe = {
-            "Extreme Outlier": red_solid, "Orthogonal Outlier": red_alpha,
-            "Strong Outlier": gray_col, "Normal": gray_col
+            "Extreme Outlier": red_solid,
+            "Orthogonal Outlier": red_alpha,
+            "Strong Outlier": gray_col,
+            "Normal": gray_col
         }
         palette_ht2 = {
-            "Extreme Outlier": red_solid, "Orthogonal Outlier": gray_col,
-            "Strong Outlier": red_alpha, "Normal": gray_col
+            "Extreme Outlier": red_solid,
+            "Orthogonal Outlier": gray_col,
+            "Strong Outlier": red_alpha,
+            "Normal": gray_col
         }
 
         hatch_styles = {
-            "Extreme Outlier": "", "Orthogonal Outlier": "///",
-            "Strong Outlier": r"\\\\", "Normal": ""
+            "Extreme Outlier": "",
+            "Orthogonal Outlier": "///",
+            "Strong Outlier": r"\\\\",
+            "Normal": ""
         }
         cat_order = [
-            "Extreme Outlier", "Orthogonal Outlier", "Strong Outlier", "Normal"
+            "Extreme Outlier",
+            "Orthogonal Outlier",
+            "Strong Outlier",
+            "Normal"
         ]
 
         if ax1 is None or ax2 is None:
@@ -1240,9 +1351,14 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         palettes = [palette_spe, palette_ht2]
         
         n_samples = out_df.shape[0]
-        dynamic_tick_size = max(
-            2.0, min(6.0, 100.0 / n_samples)
-        ) if n_samples > 0 else 6.0
+        # Optimized: allowed minimum size down to 2.0 to prevent overlap
+        dynamic_tick_size = max(2.0, min(9.0, 300.0 / max(1, n_samples)))
+        
+        # FIX: Use integer ceil division to strictly limit max ticks to 30.
+        # Legacy floor division '//' caused step=1 for 41-79 samples, 
+        # showing all labels and causing massive text overlap.
+        max_ticks = 40
+        step = max(1, (n_samples + max_ticks - 1) // max_ticks)
 
         for i, (ax, metric, col, pal) in enumerate(
             zip(axes_list, metrics, cols, palettes)
@@ -1306,6 +1422,20 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             is_extreme = (cats == "Extreme Outlier").get(text, False)
             if "*" in text or "#" in text or is_extreme:
                 xlabel.set_color("tab:red")
+
+        # Optimized: apply skipping logic with a dynamic safety buffer
+        visible_indices = {0, n_samples - 1}
+        for i in range(step, n_samples - 1, step):
+            # If the current step multiple is too close to the final index
+            # (e.g., distance <= 70% of a step), skip it to prevent overlap.
+            if (n_samples - 1 - i) > (step * 0.7):
+                visible_indices.add(i)
+
+        for idx, label in enumerate(current_ax2.xaxis.get_ticklabels()):
+            if idx in visible_indices:
+                label.set_visible(True)
+            else:
+                label.set_visible(False)
 
         return fig
 

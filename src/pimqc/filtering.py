@@ -1172,8 +1172,9 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         margin_bottom=0.0
     ):
         """
-        Horizontal flowchart with 2-Tier strictly QC-anchored logic and 
-        adjustable margins. Optimized to prevent arrows from being blocked.
+        Horizontal flowchart with strictly QC-anchored logic.
+        Dynamically adapts topology (removes Group Rescue nodes completely 
+        if no bio-group info exists) and re-balances X-axis coordinates.
         """
         total = len(df)
         count_group = sum(df["Stage1_Status"].str.contains("Group"))
@@ -1230,6 +1231,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 arrow = mpatches.FancyArrowPatch(path=path, **kwargs)
             ax.add_patch(arrow)
 
+        # =====================================================================
+        # Topology A: Full Pipeline (With BioGroups)
+        # 4 Logical Columns distributed across X=[2.0, 9.5, 17.0, 24.5, 31.0]
+        # =====================================================================
         if has_group_info:
             str_group = (
                 f"Max MV ≥ {mnar_group_mv_tol*100:.0f}%\n"
@@ -1239,33 +1244,49 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 f"QC MV > {mnar_qc_mv_tol*100:.0f}%\n& Low Int\n"
                 f"& Min Group\nMV ≤ {active_base_tol*100:.0f}%"
             )
-            base_title = "Min Group\nMV"
-        else:
-            str_group = "Skipped\n(No Group)"
-            qc_cond = f"QC MV > {mnar_qc_mv_tol*100:.0f}%\n& Low Int"
-            base_title = "QC MV"
+            
+            node_root = _node(2.0, 5, f"Raw Features\n(n={total})", color_pass)
+            node_c1 = _node(9.5, 5, f"Group Rescue\n({str_group})", color_pass)
+            node_g = _node(9.5, 8.5, f"MNAR Group\n(n={count_group})", color_mnar)
+            node_c2 = _node(17.0, 5, f"QC Rescue\n({qc_cond})", color_pass)
+            node_q = _node(17.0, 8.5, f"MNAR QC\n(n={count_qc})", color_mnar)
+            node_c3 = _node(
+                24.5, 5, f"Min Group\nMV Check\n(≤ {active_base_tol*100:.0f}%)", 
+                color_pass
+            )
+            node_mar = _node(31.0, 7.5, f"MAR\n(n={count_mar})", color_mar)
+            node_inv = _node(31.0, 2.5, f"INVALID\n(n={count_inv})", color_inv)
 
-        node_root = _node(2.0, 5, f"Raw Features\n(n={total})", color_pass)
-        node_c1 = _node(9.5, 5, f"Group Rescue\n({str_group})", color_pass)
-        node_g = _node(9.5, 8.5, f"MNAR Group\n(n={count_group})", color_mnar)
-        node_c2 = _node(17.0, 5, f"QC Rescue\n({qc_cond})", color_pass)
-        node_q = _node(17.0, 8.5, f"MNAR QC\n(n={count_qc})", color_mnar)
-        node_c3 = _node(
-            24.5, 5, 
-            f"{base_title} Check\n(≤ {active_base_tol*100:.0f}%)", 
-            color_pass
-        )
-        node_mar = _node(31.0, 7.5, f"MAR\n(n={count_mar})", color_mar)
-        node_inv = _node(31.0, 2.5, f"INVALID\n(n={count_inv})", color_inv)
-
-        _arrow(node_root, node_c1, "horizontal")
-        _arrow(node_c1, node_c2, "horizontal")
-        _arrow(node_c2, node_c3, "horizontal")
-        _arrow(node_c3, node_mar, "step_h")
-        _arrow(node_c3, node_inv, "step_h")
-        if has_group_info: 
+            _arrow(node_root, node_c1, "horizontal")
+            _arrow(node_c1, node_c2, "horizontal")
             _arrow(node_c1, node_g, "vertical")
-        _arrow(node_c2, node_q, "vertical")
+            _arrow(node_c2, node_c3, "horizontal")
+            _arrow(node_c2, node_q, "vertical")
+            _arrow(node_c3, node_mar, "step_h")
+            _arrow(node_c3, node_inv, "step_h")
+
+        # =====================================================================
+        # Topology B: Simplified Pipeline (No BioGroups)
+        # 3 Logical Columns distributed dynamically across X=[3.0, 12.0, 21.0, 30.0]
+        # =====================================================================
+        else:
+            qc_cond = f"QC MV > {mnar_qc_mv_tol*100:.0f}%\n& Low Int"
+            
+            node_root = _node(3.0, 5, f"Raw Features\n(n={total})", color_pass)
+            node_c2 = _node(12.0, 5, f"QC Rescue\n({qc_cond})", color_pass)
+            node_q = _node(12.0, 8.5, f"MNAR QC\n(n={count_qc})", color_mnar)
+            node_c3 = _node(
+                21.0, 5, f"QC MV Check\n(≤ {active_base_tol*100:.0f}%)", 
+                color_pass
+            )
+            node_mar = _node(30.0, 7.5, f"MAR\n(n={count_mar})", color_mar)
+            node_inv = _node(30.0, 2.5, f"INVALID\n(n={count_inv})", color_inv)
+
+            _arrow(node_root, node_c2, "horizontal")
+            _arrow(node_c2, node_c3, "horizontal")
+            _arrow(node_c2, node_q, "vertical")
+            _arrow(node_c3, node_mar, "step_h")
+            _arrow(node_c3, node_inv, "step_h")
 
     def plot_mv_filtering_summary_grid(
         self, tracking_df: pd.DataFrame, active_base_tol: float, 
@@ -1397,6 +1418,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         feature_counts = self.engine.stats.get("feature_counts", {})
         stats = self.engine.stats
         
+        # Check if blank samples exist to dynamically adapt the X-axis steps
+        blank_mean = stats.get("blank_mean")
+        has_blanks = blank_mean is not None and not blank_mean.empty
+        
         step_keys = [
             "raw", "post_stage1", "post_stage2_blank", "post_stage2_rsd"
         ]
@@ -1404,7 +1429,14 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             "Raw\nData", "High-MV\nCheck", "QC/Blank\nCheck", "QC RSD\nCheck"
         ]
         
-        valid_idx = [i for i, k in enumerate(step_keys) if k in feature_counts]
+        # Build valid indices, skipping Blank Check entirely if no blanks exist
+        valid_idx = []
+        for i, k in enumerate(step_keys):
+            if k in feature_counts:
+                if k == "post_stage2_blank" and not has_blanks:
+                    continue
+                valid_idx.append(i)
+                
         if not valid_idx:
             return fig if ax is None else current_ax
             
@@ -1445,33 +1477,37 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         inv_counts = inv_all[valid_idx]
         
         color_mar = "tab:red"
-        color_mnar = pu.get_equivalent_hex("tab:red",alpha=0.5)
+        color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
         color_inv = "tab:gray"
         
         x = np.arange(len(labels))
         width = 0.55
         
-        base1 = np.zeros(len(labels))
-        current_ax.bar(
-            x, mar_counts, bottom=base1, label="MAR", 
-            color=color_mar, edgecolor="k", width=width
-        )
+        # Track dynamic bottoms for stacked bars to prevent empty legend items
+        current_bottom = np.zeros(len(labels))
         
-        base2 = base1 + mar_counts
-        current_ax.bar(
-            x, mnar_counts, bottom=base2, label="MNAR", 
-            color=color_mnar, edgecolor="k", width=width
-        )
-        
-        base3 = base2 + mnar_counts
+        if mar_base > 0:
+            current_ax.bar(
+                x, mar_counts, bottom=current_bottom, label="MAR", 
+                color=color_mar, edgecolor="k", width=width
+            )
+            current_bottom += mar_counts
+            
+        if mnar_base > 0:
+            current_ax.bar(
+                x, mnar_counts, bottom=current_bottom, label="MNAR", 
+                color=color_mnar, edgecolor="k", width=width
+            )
+            current_bottom += mnar_counts
+            
         if inv_base > 0:
             current_ax.bar(
-                x, inv_counts, bottom=base3, label="Invalid", 
+                x, inv_counts, bottom=current_bottom, label="Invalid", 
                 color=color_inv, edgecolor="k", width=width
             )
-            totals = base3 + inv_counts
-        else:
-            totals = base3
+            current_bottom += inv_counts
+            
+        totals = current_bottom
             
         current_ax.set_xticks(x)
         current_ax.set_xticklabels(labels)
@@ -1671,7 +1707,11 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         return current_ax
 
     def plot_quality_filtering_summary_grid(self):
-        """Combine Stage 2 plots into a single figure using patchworklib."""
+        """Combine Stage 2 plots into a single figure using patchworklib.
+        
+        Dynamically adapts the grid layout: renders a 1x3 grid if Blank 
+        samples are present, or a 1x2 grid if Blank samples are missing.
+        """
         try:
             import patchworklib as pw
         except ImportError:
@@ -1679,14 +1719,31 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             return None
 
         pw.clear()
-        ax1 = pw.Brick(figsize=(4, 4))
-        ax2 = pw.Brick(figsize=(4, 4))
-        ax3 = pw.Brick(figsize=(4, 4))
-
-        self._plot_qc_blank_scatter(ax=ax1)
+        
+        # 1. Detect if Blank data exists to determine the topology
+        blank_mean = self.engine.stats.get("blank_mean")
+        has_blanks = blank_mean is not None and not blank_mean.empty
+        
         idx_mnar = self.engine.stats.get("idx_mnar", pd.Index([]))
-        self._plot_rsd_dist(idx_mnar=idx_mnar, ax=ax2)
-        self._plot_retained_count_steps(ax=ax3)
 
-        combined_brick = (ax1 | ax2 | ax3)
-        return combined_brick
+        # 2. Topology A: 1x3 Grid (Blank samples exist)
+        if has_blanks:
+            ax1 = pw.Brick(figsize=(4, 4), label="qc_blank")
+            ax2 = pw.Brick(figsize=(4, 4), label="qc_rsd")
+            ax3 = pw.Brick(figsize=(4, 4), label="retention")
+
+            self._plot_qc_blank_scatter(ax=ax1)
+            self._plot_rsd_dist(idx_mnar=idx_mnar, ax=ax2)
+            self._plot_retained_count_steps(ax=ax3)
+
+            return ax1 | ax2 | ax3
+            
+        # 3. Topology B: 1x2 Grid (No Blank samples)
+        else:
+            ax2 = pw.Brick(figsize=(4, 4), label="qc_rsd")
+            ax3 = pw.Brick(figsize=(4, 4), label="retention")
+
+            self._plot_rsd_dist(idx_mnar=idx_mnar, ax=ax2)
+            self._plot_retained_count_steps(ax=ax3)
+
+            return ax2 | ax3

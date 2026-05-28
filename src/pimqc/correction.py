@@ -241,8 +241,9 @@ class RegressionCorrector:
             "Phase 1: Executing Intra-batch drift correction with "
             f"{self.method}...")
         
-        pred_df = intensity_df.copy()
-        oof_pred_df = intensity_df.copy()
+        # Force initialization to float64 to accept fractional predictions
+        pred_df = intensity_df.copy().astype(float)
+        oof_pred_df = intensity_df.copy().astype(float)
         unique_batches = np.unique(batch_array)
         
         # Restore full core utilization for lightweight threading
@@ -938,6 +939,10 @@ class MetaboIntCorrector(core_classes.MetaboInt):
     @iu._exe_time
     def execute_signal_correction(self, output_dir: str) -> Dict[str, Any]:
         """Execute complete signal correction workflow dynamically."""
+        # [NEW FIX] Preemptively cast the entire internal matrix to float
+        # to guarantee safe inplace assignments during regression steps.
+        self._update_inplace(self.astype(float))
+
         self.attrs["pipeline_stage"] = "Original"
         iu._check_dir_exists(output_dir, handle="makedirs")
         
@@ -1064,21 +1069,21 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         
         if len(self.valid_is) > 0:
             logger.info(f"Generating IS plots for {best_method}...")
-            fig_dict = vis.plot_is_int_order_scatter(
-                self.stage_dfs, best_pred_df, self.valid_is, sample_type_col, 
-                batch_col, inject_order_col, qc_label, actual_label, bound_type
-            )
             
             is_dir = os.path.join(output_dir, "Internal_Standard_Scatters")
             iu._check_dir_exists(is_dir, handle="makedirs")
             
-            for feat, fig in fig_dict.items():
+            # Consume the generator: Create -> Save -> Clear iteratively
+            for feat, fig in vis.plot_is_int_order_scatter(
+                self.stage_dfs, best_pred_df, self.valid_is, sample_type_col, 
+                batch_col, inject_order_col, qc_label, actual_label, bound_type
+            ):
                 safe_feat = re.sub(r"[^a-zA-Z0-9]", "_", feat)
-                vis.save_and_close_fig(
-                    fig, os.path.join(
-                        is_dir, f"IS_Scatter_{safe_feat}_{best_method}"
-                    )
+                save_path = os.path.join(
+                    is_dir, f"IS_Scatter_{safe_feat}_{best_method}.svg"
                 )
+                vis.save_and_show_pw(
+                    pw_obj=fig, file_path=save_path, show_plot=False)
             
             if best_method not in ("SERRF", "RUV", "RUV-III") and (
                 best_pred_df is not None):
@@ -1093,7 +1098,8 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                     )
                 )
             else:
-                logger.info(f"Bypassing IS overlays for {best_method}.")
+                logger.info(
+                    f"Bypassing IS baseline prediction for {best_method}.")
 
         logger.success(f"Signal drift correction ({best_method}) completed.")
         return {k: v for k, v in self.stage_dfs.items() if k != "Original"}
@@ -1471,50 +1477,163 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             
         return grid_pw
     
+    def _plot_standalone_is_legend(
+        self, ax, sample_type, batch, qc_label, actual_label, has_baseline
+    ):
+        """Render a standalone multi-group legend for IS scatters."""
+        import matplotlib.lines as mlines
+        
+        ax.axis("off")
+        legend_handles = []
+        legend_labels = []
+        group_titles = [sample_type, batch]
+        
+        # Group 1: Sample Type
+        legend_handles.append(
+            mlines.Line2D([], [], color="none", label=sample_type)
+        )
+        legend_labels.append(sample_type)
+        
+        legend_handles.append(
+            mlines.Line2D(
+                [], [], color="tab:red", marker="o", linestyle="none", 
+                markersize=6, markeredgecolor="k", markeredgewidth=0.5, 
+                label=qc_label
+            )
+        )
+        legend_labels.append(qc_label)
+        
+        legend_handles.append(
+            mlines.Line2D(
+                [], [], color="tab:gray", marker="o", linestyle="none", 
+                markersize=6, markeredgecolor="k", markeredgewidth=0.5, 
+                label=actual_label
+            )
+        )
+        legend_labels.append(actual_label)
+        
+        # Group 2: Batch (Reusing BaseVisualizer properties)
+        legend_handles.append(mlines.Line2D([], [], color="none", label=batch))
+        legend_labels.append(batch)
+        
+        for b_val in getattr(self, "all_batches", []):
+            m_style = getattr(self, "style_map", {}).get(b_val, "o")
+            legend_handles.append(
+                mlines.Line2D(
+                    [], [], color="tab:gray", marker=m_style, 
+                    linestyle="none", markersize=6, markeredgecolor="k", 
+                    markeredgewidth=0.5, label=str(b_val)
+                )
+            )
+            legend_labels.append(str(b_val))
+            
+        # Group 3: Model Baseline (Rendered only if prediction exists)
+        if has_baseline:
+            group_titles.append("Model")
+            legend_handles.append(
+                mlines.Line2D([], [], color="none", label="Model")
+            )
+            legend_labels.append("Model")
+            legend_handles.append(
+                mlines.Line2D(
+                    [], [], color="k", ls="-", lw=1.5, label="Fitted Baseline"
+                )
+            )
+            legend_labels.append("Fitted Baseline")
+            
+        # =====================================================================
+        # [CRITICAL FIX]: Must initialize the standard matplotlib legend FIRST
+        # before passing it to the multi-legend layout formatter engine.
+        # =====================================================================
+        ax.legend(legend_handles, legend_labels)
+        
+        self._format_multi_legends(
+            ax=ax, group_titles=group_titles, loc="upper left", 
+            start_bbox=(0.0, 0.95), group_pad=0.04, ncols=1, col_pad=0.1
+        )
+        
+        # Prevent Patchworklib from discarding figure-level legends
+        if hasattr(ax.figure, "legends"):
+            for leg in list(ax.figure.legends):
+                ax.add_artist(leg)
+            ax.figure.legends.clear()
+            
+        return ax
+    
     def plot_is_int_order_scatter(
         self, stage_dfs: dict, pred_df, valid, sample_type, batch,
         inject_order, qc_label, actual_label, boundary
     ):
-        """Reconstruct scatter layout dynamically based on provided stages."""
-        fig_dict = {}
-        num_stages = len(stage_dfs)
+        """Dynamically assemble IS scatters using a data-driven 2/3+1 grid.
+        
+        Yields figures iteratively to prevent Matplotlib memory leaks and 
+        registry collisions during sequential batch saving.
+        """
+        try:
+            import patchworklib as pw
+            import seaborn as sns
+        except ImportError:
+            return
+
+        if not valid:
+            return
+
+        has_baseline = pred_df is not None
         
         for feat in valid:
-            fig = plt.figure(
-                figsize=(7.5, 3 * num_stages), layout="constrained"
-            )
+            pw.clear()
+            bricks = []
             
-            for n, (ylabel, df) in enumerate(stage_dfs.items()):
-                ax = plt.subplot(num_stages, 1, n + 1)
+            for stage_name, df in stage_dfs.items():
+                brick = pw.Brick(figsize=(6.5, 3.0))
+                
+                # Directly reuse existing base plotter for individual panels
                 self.plot_single_is_scatter(
-                    df, feat, sample_type, batch, inject_order, qc_label,
-                    actual_label, ylabel, boundary, ax
+                    df=df, feat=feat, sample_type=sample_type, batch=batch, 
+                    inject_order=inject_order, qc_label=qc_label, 
+                    actual_label=actual_label, ylabel=stage_name, 
+                    boundary=boundary, ax=brick
                 )
                 
-                # Overlay baseline logic strictly for the original plot
-                if "Original" in ylabel and pred_df is not None:
+                # Overlay prediction lines strictly for the Original stage
+                if stage_name == "Original" and has_baseline:
                     pred_info = pred_df.int_order_info(
-                        feat_type="IS").reset_index()
-                        
+                        feat_type="IS"
+                    ).reset_index()
+                    
                     for batch_id in pred_info[batch].unique():
+                        b_pred = pred_info[pred_info[batch] == batch_id]
                         sns.lineplot(
-                            data=pred_info[pred_info[batch] == batch_id],
-                            x=inject_order, y=feat, 
-                            color="k", linestyle="-", ax=ax, zorder=3
+                            data=b_pred, x=inject_order, y=feat, 
+                            color="k", linestyle="-", ax=brick, zorder=3
                         )
+                        
+                # Strip internal standard legends to favor the global brick
+                if brick.get_legend():
+                    brick.get_legend().remove()
+                    
+                bricks.append(brick)
                 
-                # Render comprehensive legend only on the bottom panel
-                if n == num_stages - 1:
-                    self._format_multi_legends(
-                        ax=ax, group_titles=[sample_type, batch]
-                    )
-                elif ax.get_legend():
-                    ax.legend().remove()
+            # Assemble left column iteratively via patchworklib
+            if not bricks:
+                continue
+                
+            left_col = bricks[0]
+            for b in bricks[1:]:
+                left_col = left_col / b
+                
+            # Assemble right column (Standalone Legend Brick)
+            leg_h = len(bricks) * 3.0
+            leg_brick = pw.Brick(figsize=(2.5, leg_h))
             
-            plt.close(fig)
-            fig_dict[feat] = fig
+            self._plot_standalone_is_legend(
+                ax=leg_brick, sample_type=sample_type, batch=batch, 
+                qc_label=qc_label, actual_label=actual_label, 
+                has_baseline=has_baseline
+            )
             
-        return fig_dict
+            # Yield immediately to allow saving before the next iteration
+            yield feat, left_col | leg_brick
 
     def plot_single_is_scatter(
         self, df, feat, sample_type, batch, inject_order, qc_label,

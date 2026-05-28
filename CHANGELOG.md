@@ -5,15 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
-## [1.1.1a1] - 2026-05-27
+## [1.1.1a1] - 2026-05-28
 
 ### Added
-- **[Imputation]** Implemented **LLS** (Local Least Squares) for missing value imputation. 
+- **[Dataset Builder]** Added critical feature detection during dataset construction to output prompts for degraded analysis modes.
+- **[Dataset Builder]** Added automatic replacement of exact zero values to prevent `ZeroDivisionError` during downstream analytical and normalization steps.
+- **[Imputation]** Implemented **LLS** (Local Least Squares) for missing value imputation.
 
 ### Changed
+- **[Visualizer_Classes]** Optimized the marker style display mode; numeric characters are now used as marker styles when the number of groups/batches exceeds 10 to robustly handle extremely large datasets.
+- **[Dataset Builder]** Optimized the `Global_Acquisition_Overview` plot to automatically omit the missing value distribution subplot when no missing values are present, and enhanced the legend display format.
+- **[Correction]** Overhauled the display logic of the internal standard (IS) scatter plots across multiple correction stages for improved memory efficiency.
 - **[Imputation]** Renamed the **Probabilistic** method to **MinProb** to align with widely adopted academic terminology.
-- **[Imputation]** Optimized the subplot grid layout of Imputer_Candidates.svg to dynamically adapt to the number of evaluated algorithms.
-
+- **[Imputation]** Optimized the subplot grid layout of `Imputer_Candidates.svg` to dynamically adapt to the number of evaluated algorithms.
+- **[Assessment]** Refined the rendering logic of QC correlation heatmaps (dynamic toggling of correlation values and adaptive font scaling) and outlier bar plots (automatic tick font size adjustment and tick skipping when the number of outlier bars is excessively large).
+  
 ## [1.1.0a1] - 2026-05-26
 
 ### Added
