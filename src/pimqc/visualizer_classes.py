@@ -30,7 +30,7 @@ class BaseMetaboVisualizer:
     to ensure consistent visual style across the pipeline, specifically
     targeting Adobe Illustrator compatibility and background consistency.
     """
-    FIG_SAVE_FORMAT = ["svg", "pdf"] # or "svg" 
+    FIG_SAVE_FORMAT = "svg" # or ["svg", "pdf"]
     FIG_DISPLAY_FORMAT = "png"
     
     def __init__(
