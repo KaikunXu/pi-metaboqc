@@ -58,21 +58,30 @@ def _get_optimal_cols(n_docs: int, max_cols: int = 4) -> int:
 
 def stitch_svg_grids(
     svg_paths: list, 
-    output_name: str, 
-    cols: str = "auto", 
+    file_path: str, 
+    cols: Union[int, str] = "auto", 
     max_cols: int = 4,
-    show_jupyter: bool = True,
-    width: int = 800
+    show_plot: bool = True,
+    save_format: Optional[Union[str, list, tuple]] = ["svg","pdf"],
+    display_format: str = "png",
+    width: Optional[Union[int, str]] = "60%"
 ) -> bool:
-    """Stitches multiple SVGs into a grid and displays it natively in Jupyter.
+    """Stitches multiple SVGs into a grid, saves to disk, and displays inline.
+
+    Assembles individual SVG plots into a unified master SVG grid. Provides
+    dynamic file conversion to PDF/PNG via CairoSVG and aligns with the 
+    project's standard Jupyter rendering logic (supporting native VS Code 
+    image toolbars and responsive layouts).
 
     Args:
-        svg_paths: List of paths to source SVG subplots.
-        output_name: Destination path for the stitched SVG file.
-        cols: Number of columns, or 'auto' for dynamic calculation.
-        max_cols: Maximum allowed columns when using 'auto'.
-        show_jupyter: Whether to display the result in Jupyter/VS Code.
-        width: Display width in Jupyter (e.g., 800 or "100%").
+        svg_paths (list): List of paths to source SVG subplots.
+        file_path (str): Destination base path for the stitched file(s).
+        cols (Union[int, str]): Number of columns, or 'auto'.
+        max_cols (int): Maximum allowed columns when using 'auto'.
+        show_plot (bool): Whether to render the result in Jupyter/VS Code.
+        save_format (Optional[Union[str, list, tuple]]): Disk export formats.
+        display_format (str): Inline format for notebook preview ('svg' or 'png').
+        width (Optional[Union[int, str]]): CSS width for Jupyter display.
 
     Returns:
         bool: True if the stitching and saving were successful, False otherwise.
@@ -108,6 +117,7 @@ def stitch_svg_grids(
 
         # 4. Extract maximum dimensions for uniform grid alignment
         def parse_dim(val: str) -> float:
+            import re
             match = re.search(r"(\d+\.?\d*)", str(val))
             return float(match.group(1)) if match else 0.0
 
@@ -132,45 +142,114 @@ def stitch_svg_grids(
             plot.moveto(col * max_w, row * max_h)
             plots.append(plot)
 
-        # 7. Assemble, set viewBox, and commit to disk
+        # 7. Assemble and set viewBox
         fig.append(plots)
         fig.root.set("viewBox", f"0 0 {total_w} {total_h}")
-        fig.save(str(output_name))
+        
+        # Extract raw byte string for memory-based format conversion
+        merged_svg_bytes = fig.to_str()
+        merged_svg_str = merged_svg_bytes.decode('utf-8')
 
-        # 8. Environment-safe Jupyter rendering logic
-        if show_jupyter:
-            try:
-                # Safe internal import to prevent top-level circular dependency
-                from . import io_utils as iu
+        # 8. Format Normalization & Physical Storage Logic
+        filepath_str = str(file_path)
+        base_path = (
+            filepath_str.rsplit(".", 1)[0] 
+            if "." in Path(filepath_str).name else filepath_str
+        )
+
+        if save_format:
+            format_list = (
+                [save_format] if isinstance(save_format, str) 
+                else list(save_format)
+            )
+
+            for fmt in format_list:
+                clean_fmt = fmt.lower().strip(".")
+                out_path = f"{base_path}.{clean_fmt}"
                 
-                # Protect IPython imports behind the environment sniffer
+                if clean_fmt == "svg":
+                    with open(out_path, "wb") as f:
+                        f.write(merged_svg_bytes)
+                else:
+                    # Leverage CairoSVG for dynamic vector/raster conversion
+                    try:
+                        import cairosvg
+                        if clean_fmt == "pdf":
+                            cairosvg.svg2pdf(
+                                bytestring=merged_svg_bytes, write_to=out_path
+                            )
+                        elif clean_fmt == "png":
+                            cairosvg.svg2png(
+                                bytestring=merged_svg_bytes, write_to=out_path
+                            )
+                    except ImportError:
+                        logger.error(
+                            f"Cannot save {clean_fmt.upper()}: 'cairosvg' is "
+                            "not installed. Run `pip install cairosvg`."
+                        )
+
+        # 9. Environment-safe Jupyter rendering logic
+        if show_plot:
+            try:
+                from . import io_utils as iu
                 if iu.is_jupyter():
-                    from IPython.display import HTML, display
+                    from IPython.display import HTML, Image, display
+                    import re
                     
-                    with open(output_name, "r", encoding="utf-8") as f:
-                        svg_content = f.read()
-
-                    # Strip absolute dimensions for responsive UI preview
-                    preview_svg = re.sub(
-                        r'(<svg[^>]*?\s)width="[^"]+"', r'\1width="100%"', 
-                        svg_content, count=1
+                    display_fmt = display_format.lower()
+                    if display_fmt not in ["svg", "png"]:
+                        display_fmt = "svg"
+                        
+                    w_css = f"{width}px" if isinstance(width, int) else (
+                        width if width else "100%"
                     )
-                    preview_svg = re.sub(
-                        r'(<svg[^>]*?\s)height="[^"]+"', r'\1height="100%"', 
-                        preview_svg, count=1
-                    )
-
-                    w_css = f"{width}px" if isinstance(width, int) else width
-                    html_wrapper = (
-                        f'<div style="width:{w_css}; max-width:100%; '
-                        f'height:auto;">{preview_svg}</div>'
-                    )
-                    display(HTML(html_wrapper))
                     
-            except Exception:
-                # Silently catch any IPython/Python 3.13 compatibility crashes
-                # to ensure terminal logs remain completely clean.
-                pass
+                    if display_fmt == "svg":
+                        # Strip absolute dimensions for responsive UI preview
+                        preview_svg = re.sub(
+                            r'(<svg[^>]*?\s)width="[^"]+"', r'\1width="100%"', 
+                            merged_svg_str, count=1
+                        )
+                        preview_svg = re.sub(
+                            r'(<svg[^>]*?\s)height="[^"]+"', r'\1height="auto"', 
+                            preview_svg, count=1
+                        )
+
+                        container_style = (
+                            f"width:{w_css}; max-width:100%; margin: 0 auto; "
+                            f"height:auto; background-color: white;"
+                        )
+                        display(HTML(
+                            f'<div style="{container_style}">{preview_svg}</div>'
+                        ))
+                        
+                    elif display_fmt == "png":
+                        try:
+                            import cairosvg
+                            # Force solid white background for VS Code dark mode
+                            png_data = cairosvg.svg2png(
+                                bytestring=merged_svg_bytes,
+                                background_color="white"
+                            )
+                            # Native Image rendering activates VS Code toolbars
+                            display(Image(data=png_data, width=width))
+                        except ImportError:
+                            logger.error(
+                                "Cannot preview PNG: 'cairosvg' missing. "
+                                "Falling back to SVG display."
+                            )
+                            # Safe fallback to SVG if Cairo is missing
+                            container_style = (
+                                f"width:{w_css}; max-width:100%; margin: 0 auto; "
+                                f"height:auto; background-color: white;"
+                            )
+                            display(HTML(
+                                f'<div style="{container_style}">{merged_svg_str}</div>'
+                            ))
+                            
+            except Exception as e:
+                # Silently catch to keep terminal logs clean in headless mode
+                logger.debug(f"Jupyter rendering bypassed: {e}")
 
         return True
 
@@ -263,7 +342,8 @@ class VisualAssetReporter:
                 continue
             # Execute SVG stitching
             stitch_svg_grids(
-                svg_paths=input_svgs, output_name=svg_out, cols=cols
+                svg_paths=input_svgs, file_path=svg_out, cols=cols,
+                save_format="svg", display_format="png",
             )
         logger.success(f"Report SVG assets compiled at: {assets_path}")
 
@@ -835,7 +915,7 @@ class NarrativeStatsReporter:
             subprocess.run(
                 [
                     conda_exe, "install", "-c", "conda-forge", 
-                    "weasyprint", "pango", "-y"
+                    "weasyprint", "pango", "tinycss2", "-y"
                 ],
                 check=True,
                 capture_output=True,

@@ -437,7 +437,7 @@ class MetaboIntAssessor(core_classes.MetaboInt):
         vis.save_and_close_fig(
             fig=vis.plot_qc_corr_heatmap(
                 corr_matrix=corr_mat, corr_mask=qc_mask, batches=batches, 
-                method=corr_method),
+                method=corr_method, cluster = "none"),
             file_path=os.path.join(output_dir, "QC_Correlation_Heatmap"))
 
         vis.save_and_close_fig(
@@ -756,41 +756,194 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                         label.set_color(color)
                         break
 
-    def plot_qc_corr_heatmap(
-        self, corr_matrix, corr_mask, batches, method="spearman", 
-        vmin=0.85, vmax=1.0, ax=None
-    ):
-        """Plot sample-level correlation matrix heatmap of Pooled QCs.
+    # def plot_qc_corr_heatmap(
+    #     self, corr_matrix, corr_mask, batches, method="spearman", 
+    #     vmin=0.85, vmax=1.0, ax=None
+    # ):
+    #     """Plot sample-level correlation matrix heatmap of Pooled QCs.
         
-        Dynamically adapts annotation visibility, tick rotations, and font sizes 
-        based on the rendering context (standalone figure vs. rigid patchwork 
-        grid) and the total number of QC samples.
-        """
-        n_samples = corr_matrix.shape[0]
+    #     Dynamically adapts annotation visibility, tick rotations, and font sizes 
+    #     based on the rendering context (standalone figure vs. rigid patchwork 
+    #     grid) and the total number of QC samples.
+    #     """
+    #     n_samples = corr_matrix.shape[0]
         
-        # Context-aware dynamic sizing & annotation logic
-        is_constrained = (ax is not None)
+    #     # Context-aware dynamic sizing & annotation logic
+    #     is_constrained = (ax is not None)
         
-        if not is_constrained:
-            # Standalone Mode: Dynamically expand figure size
-            fig_w = max(5.0, n_samples * 0.2 + 2.0)
-            fig_h = max(4.0, n_samples * 0.2 + 1.5)
-            fig, current_ax = plt.subplots(figsize=(fig_w, fig_h))
+    #     if not is_constrained:
+    #         # Standalone Mode: Dynamically expand figure size
+    #         fig_w = max(5.0, n_samples * 0.2 + 2.0)
+    #         fig_h = max(4.0, n_samples * 0.2 + 1.5)
+    #         fig, current_ax = plt.subplots(figsize=(fig_w, fig_h))
             
-            # Allow annotations for up to 15 QCs in a fully expanded plot
-            show_annot = n_samples <= 15
-            tick_size = max(3.0, min(8.0, 90.0 / max(1, n_samples)))
-            annot_size = max(4.0, min(8.0, 60.0 / max(1, n_samples)))
-        else:
-            # Grid Mode (Patchwork): Locked by parent brick size
-            current_ax = ax
-            fig = current_ax.figure
+    #         # Allow annotations for up to 15 QCs in a fully expanded plot
+    #         show_annot = n_samples <= 15
+    #         tick_size = max(3.0, min(8.0, 90.0 / max(1, n_samples)))
+    #         annot_size = max(4.0, min(8.0, 60.0 / max(1, n_samples)))
+    #     else:
+    #         # Grid Mode (Patchwork): Locked by parent brick size
+    #         current_ax = ax
+    #         fig = current_ax.figure
             
-            # Stricter threshold for grid mode to prevent annotation overlap
-            show_annot = n_samples <= 6
-            tick_size = max(3.0, min(8.0, 60.0 / max(1, n_samples)))
-            annot_size = max(4.0, min(8.0, 40.0 / max(1, n_samples)))
+    #         # Stricter threshold for grid mode to prevent annotation overlap
+    #         show_annot = n_samples <= 6
+    #         tick_size = max(3.0, min(8.0, 60.0 / max(1, n_samples)))
+    #         annot_size = max(4.0, min(8.0, 40.0 / max(1, n_samples)))
 
+    #     custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
+    #     color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
+        
+    #     tick_colors = pu.extract_linear_cmap(
+    #         cmap=custom_cmap, cmin=0.5, cmax=1.0, n_colors=len(batches)
+    #     )
+    #     tick_color_dict = dict(zip(batches, tick_colors))
+        
+    #     cbar_ax = current_ax.inset_axes([1.05, 0.1, 0.05, 0.8])
+        
+    #     # Adapt string formatting and grid lines based on density
+    #     annot_fmt = ".3f" if n_samples <= 15 else ".2f"
+    #     grid_lw = 0.5 if n_samples <= 20 else 0.05
+        
+    #     with sns.axes_style("white"):
+    #         hm = sns.heatmap(
+    #             corr_matrix, mask=corr_mask, xticklabels=1, yticklabels=1, 
+    #             vmin=vmin if vmin else corr_matrix.min().min(),
+    #             vmax=vmax, cmap=color_map, annot=show_annot, fmt=annot_fmt,
+    #             linewidths=grid_lw, linecolor="white", square=True,
+    #             ax=current_ax, cbar_ax=cbar_ax,
+    #             annot_kws={"size": annot_size},  # Explicit dynamic scaling
+    #             cbar_kws={
+    #                 "label": f"{method.title()} Correlation",
+    #                 "format": "%.2f"
+    #             }
+    #         )
+            
+    #     # Force explicit tick rotations to override Seaborn defaults
+    #     current_ax.set_yticklabels(
+    #         current_ax.get_yticklabels(), rotation=0
+    #     )
+        
+    #     x_rot = 45 if n_samples <= 15 else 90
+    #     current_ax.set_xticklabels(
+    #         current_ax.get_xticklabels(), rotation=x_rot, ha="right", 
+    #         va="center", rotation_mode="anchor"
+    #     )
+        
+    #     self._apply_standard_format(
+    #         ax=current_ax, title="Pooled QCs Correlation", xlabel="Pooled QCs", 
+    #         ylabel="Pooled QCs", title_fontsize=14, label_fontsize=12, 
+    #         tick_fontsize=tick_size, append_stage=True
+    #     )
+        
+    #     self._format_heatmap_ticks(hm=hm, tick_color_dict=tick_color_dict)
+        
+    #     return fig
+
+    def plot_qc_corr_heatmap(
+        self, 
+        corr_matrix: pd.DataFrame, 
+        corr_mask: Optional[np.ndarray], 
+        batches: list, 
+        method: str = "spearman", 
+        vmin: float = 0.85, 
+        vmax: float = 1.0, 
+        cluster: str = "within-group",
+        ax: Optional[Any] = None
+    ):
+        """Plot sample-level correlation matrix with rigorous clustering forests.
+        
+        Features:
+        1. Cluster modes: 'total' (global), 'within-group' (batch-isolated forests), or 'none'.
+        2. Absolute mathematical alignment using GridSpec (bypassing bounding-box drift).
+        3. Standardized formatting via _apply_standard_format with dynamic tick scaling.
+        4. Complete eradication of auto-generated axis labels to preserve grid cleanliness.
+
+        Args:
+            corr_matrix (pd.DataFrame): Correlation matrix of QC samples.
+            corr_mask (Optional[np.ndarray]): (Ignored, hardcoded to lower-triangle geometrically).
+            batches (list): List of unique batch identifiers.
+            method (str): Correlation metric used.
+            vmin/vmax (float): Colormap bounds.
+            cluster (str): 'total', 'within-group', or 'none'.
+            ax (Optional[Any]): Matplotlib Axes for constrained plotting.
+
+        Returns:
+            matplotlib.figure.Figure: The fully assembled figure object.
+        """
+        import scipy.cluster.hierarchy as sch
+        from scipy.spatial.distance import squareform
+        import matplotlib.patches as mpatches
+
+        n_samples = corr_matrix.shape[0]
+        is_multi_idx = isinstance(corr_matrix.index, pd.MultiIndex)
+        
+        # =====================================================================
+        # 1. Clustering Strategy Routing
+        # =====================================================================
+        Z_list = []
+        n_list = []
+        new_order = []
+        
+        cluster_mode = str(cluster).lower().strip()
+        
+        if cluster_mode == "total":
+            sub_corr = corr_matrix.values.astype(float)
+            np.fill_diagonal(sub_corr, 1.0)
+            dist_mat = np.sqrt(np.clip(1.0 - sub_corr, 0.0, 2.0))
+            dist_mat = (dist_mat + dist_mat.T) / 2.0
+            condensed = squareform(dist_mat, checks=False)
+            
+            Z = sch.linkage(condensed, method='ward')
+            leaf_order = sch.leaves_list(Z)
+            
+            Z_list.append(Z)
+            n_list.append(n_samples)
+            new_order = list(leaf_order)
+            
+        elif cluster_mode == "within-group":
+            for b in batches:
+                if is_multi_idx:
+                    b_mask = (corr_matrix.index.get_level_values(self.bat_col) == b)
+                else:
+                    b_mask = corr_matrix.index.str.startswith(f"{b}")
+                    
+                idx_b = np.where(b_mask)[0]
+                n_b = len(idx_b)
+                
+                if n_b > 1:
+                    sub_corr = corr_matrix.iloc[idx_b, idx_b].values.astype(float)
+                    np.fill_diagonal(sub_corr, 1.0)
+                    dist_mat = np.sqrt(np.clip(1.0 - sub_corr, 0.0, 2.0))
+                    dist_mat = (dist_mat + dist_mat.T) / 2.0
+                    condensed = squareform(dist_mat, checks=False)
+                    
+                    Z_b = sch.linkage(condensed, method='ward')
+                    leaf_order = sch.leaves_list(Z_b)
+                    
+                    Z_list.append(Z_b)
+                    n_list.append(n_b)
+                    new_order.extend(idx_b[leaf_order])
+                elif n_b == 1:
+                    Z_list.append(None)
+                    n_list.append(n_b)
+                    new_order.extend(idx_b)
+            
+            missing = list(set(range(n_samples)) - set(new_order))
+            if missing:
+                new_order.extend(missing)
+                Z_list.append(None)
+                n_list.append(len(missing))
+                
+        else: # "none"
+            new_order = list(range(n_samples))
+
+        if cluster_mode in ["total", "within-group"]:
+            corr_matrix = corr_matrix.iloc[new_order, new_order]
+
+        # =====================================================================
+        # 2. Batch Colors Preparation
+        # =====================================================================
         custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
         color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
         
@@ -799,45 +952,193 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         )
         tick_color_dict = dict(zip(batches, tick_colors))
         
-        cbar_ax = current_ax.inset_axes([1.05, 0.1, 0.05, 0.8])
+        if is_multi_idx:
+            ordered_batches = corr_matrix.index.get_level_values(self.bat_col).values
+        else:
+            ordered_batches = [str(x).split("-")[0] for x in corr_matrix.index]
+
+        # =====================================================================
+        # 3. Canvas & Layout Integration (Matplotlib GridSpec)
+        # =====================================================================
+        hm_size = max(5.0, n_samples * 0.2 + 1.0)
         
-        # Adapt string formatting and grid lines based on density
         annot_fmt = ".3f" if n_samples <= 15 else ".2f"
+        show_annot = n_samples <= 15
+        annot_size = max(4.0, min(8.0, 60.0 / max(1, n_samples)))
         grid_lw = 0.5 if n_samples <= 20 else 0.05
         
-        with sns.axes_style("white"):
-            hm = sns.heatmap(
-                corr_matrix, mask=corr_mask, xticklabels=1, yticklabels=1, 
-                vmin=vmin if vmin else corr_matrix.min().min(),
-                vmax=vmax, cmap=color_map, annot=show_annot, fmt=annot_fmt,
-                linewidths=grid_lw, linecolor="white", square=True,
-                ax=current_ax, cbar_ax=cbar_ax,
-                annot_kws={"size": annot_size},  # Explicit dynamic scaling
-                cbar_kws={
-                    "label": f"{method.title()} Correlation",
-                    "format": "%.2f"
-                }
-            )
+        # CRITICAL FIX 1: Dynamic tick font sizing. Calculate maximum pt size based on physical inch per cell.
+        tick_size = max(2.0, min(10.0, (hm_size * 72) / max(1, n_samples) * 0.6))
+
+        if ax is None:
+            fig = plt.figure(figsize=(hm_size * 1.25, hm_size * 1.25), constrained_layout=True)
+            if cluster_mode in ["total", "within-group"]:
+                gs = fig.add_gridspec(
+                    2, 2, 
+                    width_ratios=[1, 6], height_ratios=[6, 1]
+                )
+                ax_heatmap = fig.add_subplot(gs[0, 1])
+                ax_dendro_left = fig.add_subplot(gs[0, 0])
+                ax_dendro_bottom = fig.add_subplot(gs[1, 1])
+            else:
+                ax_heatmap = fig.add_subplot(111)
+        else:
+            fig = ax.figure if hasattr(ax, 'figure') else plt.gcf()
+            ax_heatmap = ax
+            if cluster_mode in ["total", "within-group"]:
+                ax_dendro_left = ax_heatmap.inset_axes([-0.15, 0, 0.12, 1.0])
+                ax_dendro_bottom = ax_heatmap.inset_axes([0, -0.15, 1.0, 0.12])
+
+        # ---------------------------------------------------------------------
+        # Dendrogram Renderer Engine
+        # ---------------------------------------------------------------------
+        def _draw_shifted_dendrograms(Z_lst, n_lst, target_ax, orientation):
+            offset = 0
+            max_dist = 0.0 
             
-        # Force explicit tick rotations to override Seaborn defaults
-        current_ax.set_yticklabels(
-            current_ax.get_yticklabels(), rotation=0
-        )
+            for Z, n in zip(Z_lst, n_lst):
+                if Z is not None:
+                    max_dist = max(max_dist, np.max(Z[:, 2]))
+                    n_coll = len(target_ax.collections)
+                    n_lines = len(target_ax.lines)
+                    
+                    sch.dendrogram(Z, ax=target_ax, orientation=orientation, no_labels=True)
+                    
+                    shift = offset * 10 
+                    
+                    for coll in target_ax.collections[n_coll:]:
+                        for path in coll.get_paths():
+                            if orientation == 'bottom':
+                                path.vertices[:, 0] += shift
+                            else:
+                                path.vertices[:, 1] += shift
+                        coll.set_linewidth(1.0)
+                        coll.set_color('#334155')
+                        
+                    for line in target_ax.lines[n_lines:]:
+                        if orientation == 'bottom':
+                            line.set_xdata(line.get_xdata() + shift)
+                        else:
+                            line.set_ydata(line.get_ydata() + shift)
+                        line.set_linewidth(1.0)
+                        line.set_color('#334155')
+                        
+                offset += n
+                
+            if orientation == 'bottom':
+                target_ax.set_xlim(0, offset * 10)
+                target_ax.set_ylim(max_dist * 1.05, 0)
+            else: 
+                target_ax.set_xlim(max_dist * 1.05, 0)
+                target_ax.set_ylim(offset * 10, 0)
+                
+            target_ax.axis('off')
+
+        if cluster_mode in ["total", "within-group"]:
+            _draw_shifted_dendrograms(Z_list, n_list, ax_dendro_left, 'left')
+            _draw_shifted_dendrograms(Z_list, n_list, ax_dendro_bottom, 'bottom')
         
+        # =====================================================================
+        # 4. Main Lower-Triangle Heatmap
+        # =====================================================================
+        geom_mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+        
+        cbar_ax = ax_heatmap.inset_axes([0.60, 0.88, 0.35, 0.035])
+        
+        with sns.axes_style("white"):
+            sns.heatmap(
+                corr_matrix, mask=geom_mask,
+                vmin=vmin if vmin else corr_matrix.min().min(), vmax=vmax, 
+                cmap=color_map, annot=show_annot, fmt=annot_fmt,
+                linewidths=grid_lw, linecolor="white", square=False, 
+                xticklabels=1, yticklabels=1, # CRITICAL FIX 2: Force explicit rendering of every single tick
+                ax=ax_heatmap, cbar_ax=cbar_ax,
+                annot_kws={"size": annot_size},
+                cbar_kws={"label": f"{method.title()} Corr", "orientation": "horizontal"}
+            )
+            cbar_ax.xaxis.set_ticks_position('top')
+            cbar_ax.xaxis.set_label_position('top')
+
+        # Color Patches
+        thickness = max(0.4, n_samples * 0.015)
+        gap = max(0.1, n_samples * 0.005)
+
+        for i, b in enumerate(ordered_batches):
+            c = tick_color_dict.get(b, "tab:gray")
+            ax_heatmap.add_patch(plt.Rectangle(
+                (i, n_samples + gap), 1, thickness, 
+                facecolor=c, edgecolor='k', linewidth=0.5, clip_on=False
+            ))
+            ax_heatmap.add_patch(plt.Rectangle(
+                (-thickness - gap, i), thickness, 1, 
+                facecolor=c, edgecolor='k', linewidth=0.5, clip_on=False
+            ))
+
+        # Padding math
+        pt_per_unit = (hm_size * 72) / n_samples
+        patch_width_in_pt = thickness * pt_per_unit
+        pad_amount = max(15, int(patch_width_in_pt + 15))
+        
+        ax_heatmap.tick_params(axis='x', pad=pad_amount)
+        ax_heatmap.tick_params(axis='y', pad=pad_amount)
+
+        def _rename_tick(label_text):
+            parts = re.split("-", label_text)
+            if len(parts) > 4: return "-".join([parts[0]] + parts[4:])
+            return label_text
+
+        ax_heatmap.set_yticklabels(
+            [_rename_tick(e.get_text()) for e in ax_heatmap.get_yticklabels()], rotation=0
+        )
         x_rot = 45 if n_samples <= 15 else 90
-        current_ax.set_xticklabels(
-            current_ax.get_xticklabels(), rotation=x_rot, ha="right", 
-            va="center", rotation_mode="anchor"
+        ax_heatmap.set_xticklabels(
+            [_rename_tick(e.get_text()) for e in ax_heatmap.get_xticklabels()], 
+            rotation=x_rot, ha="right", va="center", rotation_mode="anchor"
         )
         
+        # CRITICAL FIX 3: Violently destroy Seaborn's auto-injected DataFrame axis names.
+        # This prevents 'inject_order' from being squeezed between ticks and dendrograms.
+        ax_heatmap.set_xlabel("")
+        ax_heatmap.set_ylabel("")
+        
+        # =====================================================================
+        # 5. Standardized Formatting & Inset Legend Injection
+        # =====================================================================
+        # Route to standardized formatting pipeline seamlessly, injecting the optimized tick_size
         self._apply_standard_format(
-            ax=current_ax, title="Pooled QCs Correlation", xlabel="Pooled QCs", 
-            ylabel="Pooled QCs", title_fontsize=14, label_fontsize=12, 
-            tick_fontsize=tick_size, append_stage=True
+            ax=ax_heatmap, 
+            title=f"Pooled QCs Correlation\n[{self.attrs.get('pipeline_stage', '')}]",
+            xlabel="", ylabel="",
+            title_fontsize=14, label_fontsize=12, tick_fontsize=tick_size,
+            append_stage=False # Stage is already integrated into the title
         )
         
-        self._format_heatmap_ticks(hm=hm, tick_color_dict=tick_color_dict)
+        legend_handles = [
+            mpatches.Patch(facecolor=c, edgecolor='k', linewidth=0.5, label=str(b))
+            for b, c in tick_color_dict.items()
+        ]
         
+        ax_heatmap.legend(
+            handles=legend_handles, title="Batch", 
+            loc="upper right", bbox_to_anchor=(0.95, 0.82),
+            frameon=True, edgecolor='k'
+        )
+        
+        try:
+            visualizer_classes.format_single_legend(ax_heatmap)
+        except Exception:
+            try:
+                self._format_single_legend(ax_heatmap)
+            except Exception:
+                pass 
+                
+        # Defensive property re-assignment post-standardization
+        if ax_heatmap.get_legend() is not None:
+            ax_heatmap.get_legend().set_title("Batch")
+            ax_heatmap.get_legend().get_title().set_fontweight('bold')
+            ax_heatmap.get_legend().get_title().set_fontsize(11)
+            ax_heatmap.get_legend().set_bbox_to_anchor((0.95, 0.82))
+
         return fig
 
     def plot_batch_corr_heatmap(
@@ -1357,7 +1658,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         # FIX: Use integer ceil division to strictly limit max ticks to 30.
         # Legacy floor division '//' caused step=1 for 41-79 samples, 
         # showing all labels and causing massive text overlap.
-        max_ticks = 40
+        max_ticks = 55
         step = max(1, (n_samples + max_ticks - 1) // max_ticks)
 
         for i, (ax, metric, col, pal) in enumerate(

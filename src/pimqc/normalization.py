@@ -549,7 +549,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             
         return res_df.fillna(0)
     
-    
     # ====================================================================
     # Core Execution Logic (Single Lane Refactored)
     # ====================================================================

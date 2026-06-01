@@ -1,6 +1,5 @@
 # `pi-metaboqc`: $\pi$-Metabolomics-Quality Control
 
-[![Status](https://badgen.net/badge/status/alpha/yellow)](https://github.com/KaikunXu/pi-metaboqc)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://badgen.net/github/license/KaikunXu/pi-metaboqc)](https://github.com/KaikunXu/pi-metaboqc/blob/main/LICENSE)
 
@@ -18,13 +17,13 @@
 
 * **End-to-End Quality Assessment (QA):** Provides comprehensive data evaluation functions spanning the entire pipeline. From raw data import and missing value handling to signal drift correction and normalization, the distribution and quality of your data are clearly monitored and controllable at every single step.
 
-* **Dual-Tier Automated Reporting & Publication-Ready Visualizations:** The pipeline silently captures critical retention metrics and statistical parameters across all stages, offering users the flexibility to generate either **Brief** (executive summary) or **Comprehensive** (deep-dive audit) PDF/Markdown reports with a single click. Furthermore, all diagnostic plots are natively exported in lossless **SVG** format, ensuring they are instantly ready for high-fidelity editing in Adobe Illustrator or Microsoft PowerPoint for journal submission.
+* **Dual-Tier Automated Reporting & Publication-Ready Visualizations:** The pipeline silently captures critical retention metrics and statistical parameters across all stages, offering users the flexibility to generate either **Brief** (executive summary) or **Comprehensive** (deep-dive audit) PDF/Markdown reports with a single click. Furthermore, all diagnostic plots are natively exported in lossless **SVG** or **PDF** format, ensuring they are instantly ready for high-fidelity editing in Adobe Illustrator or Microsoft PowerPoint for journal submission.
 
 ## 📦 Installation
 
 We strongly recommend installing `pi-metaboqc` within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/), or [Anaconda](https://www.anaconda.com/download).
 
-Generating high-fidelity HTML and PDF reports requires advanced graphical engines (`pandoc`, `weasyprint`, and `librsvg`). These tools depend on complex, system-level C libraries (e.g., GTK3, Pango) that are notoriously difficult to compile and configure via standard `pip`, particularly on Windows.
+Generating high-fidelity HTML and PDF reports requires advanced graphical engines (`pandoc`, `weasyprint`, `tinycss2` and `librsvg`). These tools depend on complex, system-level C libraries (e.g., GTK3, Pango) that are notoriously difficult to compile and configure via standard `pip`, particularly on Windows.
 
 Conda effortlessly resolves these low-level dependencies. To guarantee maximum stability across all operating systems, please follow the **Standard Installation** guide below.
 
@@ -39,10 +38,10 @@ conda activate metaboqc
 
 ### Step 2: Pre-install Graphical Engines (Recommended)
 
-Install `pandoc`, `weasyprint` and `librsvg` via `conda-forge` to ensure all necessary system graphical libraries are correctly linked before installing the Python package:
+Install `pandoc`, `weasyprint`, `tinycss2` and `librsvg` via `conda-forge` to ensure all necessary system graphical libraries are correctly linked before installing the Python package:
 
 ```bash
-conda install -c conda-forge pandoc weasyprint librsvg tinycss2 -y
+conda install -c conda-forge pandoc weasyprint tinycss2 librsvg -y
 ```
 
 ### Step 3: Install `pi-metaboqc`
@@ -77,12 +76,11 @@ We provide execution modalities for different use cases in the `examples/` direc
 
 ### 1. Interactive Notebook (Recommended for Onboarding)
 
-**Interactive Tutorial (`interactive_tutorial.ipynb`)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards (including `model_overview` plots with Q2 metrics, natively rendered as high-fidelity SVGs), and intuitively grasp the core algorithmic logic.
+**Interactive Tutorial (`interactive_tutorial.ipynb`)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards, and intuitively grasp the core algorithmic logic.
 
-Choose the access method that best suits your network environment:
+With our newly optimized visualization engine, all plots are natively rendered and fully compatible with GitHub's default interface.
 
-* **[Pre-rendered HTML Viewer](https://raw.githack.com/KaikunXu/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage to ensure all inline SVG plots and Q2 metrics are displayed instantly without any GitHub API or nbviewer rendering limits.
-* **[Google Colab](https://colab.research.google.com/github/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: A cloud-executable environment. Best for global users who wish to run the pipeline dynamically with zero local configuration.
+* **[GitHub Native Preview](https://github.com/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: Instantly view the fully executed notebook directly on GitHub. All diagnostic plots and metrics are beautifully rendered inline as PNGs, providing a seamless browsing experience without leaving the repository.
 
 ### 2. Headless CLI Execution (For Production & Batch Processing)
 
@@ -156,10 +154,14 @@ To demonstrate the robustness, reproducibility, and correction efficacy of `pi-m
 👉 **[pi-metaboqc-casestudy](https://github.com/KaikunXu/pi-metaboqc-casestudy)**
 
 The case study repository contains:
-- **Diverse Real-World & Benchmark Datasets**: Includes actual metabolomics datasets generated in-house and benchmark data from published tools. Both the originally downloaded raw datasets and the fully pre-processed versions are provided.
-- **Transparent Data Preparation**: We provide all data cleaning and formatting scripts used to convert raw matrices into the standardized input formats required by `pi-metaboqc`. 
-- **Highly Organized Project Structure**: All ready-to-run data is systematically categorized by project under the `data/processed/` directory. Each project directory is self-contained with its specific matrices, metadata, and a dedicated `pipeline_parameters.toml` configuration file.
-- **Project-Specific Analytical Notebooks**: For every dataset, you will find a dedicated, interactive Jupyter Notebook that executes the complete `pi-metaboqc` analytical pipeline under the `scripts/evaluation` directory, providing step-by-step demonstrations and embedded diagnostic visualizations.
+
+* **Diverse Real-World & Benchmark Datasets**: Includes actual metabolomics datasets generated in-house and benchmark data from published tools. Both the originally downloaded raw datasets and the fully pre-processed versions are provided.
+
+* **Transparent Data Preparation**: We provide all data cleaning and formatting scripts used to convert raw matrices into the standardized input formats required by `pi-metaboqc`.
+
+* **Highly Organized Project Structure**: All ready-to-run data is systematically categorized by project under the `data/processed/` directory. Each project directory is self-contained with its specific matrices, metadata, and a dedicated `pipeline_parameters.toml` configuration file.
+
+* **Project-Specific Analytical Notebooks**: For every dataset, you will find a dedicated, interactive Jupyter Notebook that executes the complete `pi-metaboqc` analytical pipeline under the `scripts/evaluation` directory, providing step-by-step demonstrations and embedded diagnostic visualizations.
 
 We highly recommend new users start with the case study to familiarize themselves with the pipeline's configuration and capabilities.
 

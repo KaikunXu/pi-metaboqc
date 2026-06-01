@@ -17,9 +17,10 @@ import logging
 from loguru import logger
 logging.getLogger("fontTools").setLevel(logging.WARNING)
 
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 from . import plot_utils as pu
+from . import io_utils as iu
 
 
 class BaseMetaboVisualizer:
@@ -29,12 +30,20 @@ class BaseMetaboVisualizer:
     to ensure consistent visual style across the pipeline, specifically
     targeting Adobe Illustrator compatibility and background consistency.
     """
-
-    def __init__(self, metabo_obj) -> None:
+    FIG_SAVE_FORMAT = ["svg", "pdf"] # or "svg" 
+    FIG_DISPLAY_FORMAT = "png"
+    
+    def __init__(
+        self, 
+        metabo_obj,
+        save_format: Optional[Union[str, list, tuple]] = None, 
+        display_format: Optional[str] = None) -> None:
         """Initialize the visualizer with global styles.
 
         Args:
             metabo_obj: A MetaboInt or inherited object containing data.
+            save_format: (Optional) Override the global default save format(s).
+            display_format: (Optional) Override the global default display format.
         """
         # ==========================================
         # Global Matplotlib & Seaborn Configuration
@@ -94,6 +103,8 @@ class BaseMetaboVisualizer:
         self.attrs = metabo_obj.attrs
         self.params = self.attrs.get("pipeline_parameters", {})
         meta_params = self.params.get("MetaboInt", {})
+        self.default_save_fmt = save_format or self.FIG_SAVE_FORMAT
+        self.default_display_fmt = display_format or self.FIG_DISPLAY_FORMAT
         
         # Column Mapping from Metadata
         self.st_col = meta_params.get("sample_type", "Sample Type")
@@ -581,100 +592,250 @@ class BaseMetaboVisualizer:
         
         return [final_leg]
     
-    
-    def save_and_close_fig(
-        self, fig, file_path, **kwargs
+    def _render_jupyter_display(
+        self,
+        obj: Any,
+        is_patchwork: bool,
+        display_format: str = "svg",
+        width: Optional[Union[int, str]] = "60%",
+        transparent: bool = True
     ) -> None:
-        """Save standard Matplotlib/Seaborn figures with AI font compatibility."""
-        if fig is None:
-            return
-            
+        """Render plots within a Jupyter Notebook with explicit format control.
+
+        Handles architectural discrepancies between Matplotlib and Patchworklib.
+        SVG outputs utilize HTML wrapping for responsive CSS width control.
+        PNG outputs revert to native IPython Image rendering to guarantee 
+        compatibility with native IDE image toolbars (e.g., VS Code copy/save), 
+        while injecting a solid white background to prevent dark-mode blending.
+
+        Args:
+            obj (Any): The figure or patchwork composite object to display.
+            is_patchwork (bool): True if the object is from patchworklib.
+            display_format (str): Inline format, strictly 'svg' or 'png'.
+            width (Optional[Union[int, str]]): Target CSS display width (SVG only).
+            transparent (bool): Active alpha transparency indicator.
+        """
+        from IPython.display import HTML, Image, display
         import io
+        import tempfile
+        import os
+        import re
 
-        is_patchwork = type(fig).__module__.startswith("patchworklib")
-        if is_patchwork:
+        display_fmt = display_format.lower()
+        if display_fmt not in ["svg", "png"]:
             logger.warning(
-                "Passed patchwork object to save_and_close_fig. "
-                "Use save_and_show_pw.")
-            return
+                f"Unsupported display format: '{display_format}'. "
+                "Defaulting to 'svg'."
+            )
+            display_fmt = "svg"
 
-        path_obj = Path(file_path)
-        svg_path = path_obj.with_suffix(".svg")
-        os.makedirs(svg_path.parent, exist_ok=True)
+        # Resolve CSS width explicitly (applies only to SVG HTML wrapper)
+        w_css = f"{width}px" if isinstance(width, int) else (
+            width if width else "100%"
+        )
 
-        save_params = {"format": "svg", "transparent": True}
-        save_params.update(kwargs)
+        # Define consistent HTML container style for responsive SVG rendering
+        container_style = (
+            f"width:{w_css}; max-width:100%; margin: 0; "
+            f"height:auto; background-color: white;"
+        )
 
-        try:
-            # Step 1: Save figure to a string buffer instead of disk
-            buf = io.StringIO()
-            fig.savefig(buf, **save_params)
+        if is_patchwork:
+            # Isolate Patchworklib rendering in a secure temporary directory
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = os.path.join(tmpdir, f"preview.{display_fmt}")
+                
+                if display_fmt == "svg":
+                    # Maintain SVG transparency for HTML rendering
+                    obj.savefig(tmp_path, transparent=transparent)
+                    self._clean_svg_fonts_for_ai(tmp_path)
+                    
+                    with open(tmp_path, "r", encoding="utf-8") as f:
+                        raw_svg = f.read()
+                    
+                    # Inject flexible responsiveness mappers
+                    preview_svg = re.sub(
+                        r'(<svg[^>]*?\s)width="[^"]+"', 
+                        r'\1width="100%"', 
+                        raw_svg, count=1
+                    )
+                    preview_svg = re.sub(
+                        r'(<svg[^>]*?\s)height="[^"]+"', 
+                        r'\1height="auto"', 
+                        preview_svg, count=1
+                    )
+
+                    display(HTML(
+                        f'<div style="{container_style}">{preview_svg}</div>'
+                    ))
+                        
+                elif display_fmt == "png":
+                    # Force white background and opaque rendering for the temporary 
+                    # preview image to ensure visibility in dark-themed IDEs
+                    obj.savefig(tmp_path, transparent=False, facecolor="white")
+                    with open(tmp_path, "rb") as f:
+                        img_data = f.read()
+                    
+                    # Output raw image MIME type to activate native VS Code toolbars
+                    display(Image(data=img_data, width=width))
+        else:
+            # Native matplotlib figure pipeline via raw BytesIO memory buffers
+            buf = io.BytesIO()
+            if display_fmt == "svg":
+                obj.savefig(buf, format="svg", transparent=transparent)
+                svg_data = buf.getvalue().decode("utf-8")
+                
+                svg_data = re.sub(
+                    r'(<svg[^>]*?\s)width="[^"]+"', 
+                    r'\1width="100%"', 
+                    svg_data, count=1
+                )
+                svg_data = re.sub(
+                    r'(<svg[^>]*?\s)height="[^"]+"', 
+                    r'\1height="auto"', 
+                    svg_data, count=1
+                )
+                
+                display(HTML(f'<div style="{container_style}">{svg_data}</div>'))
+                    
+            elif display_fmt == "png":
+                dpi_setting = plt.rcParams.get("savefig.dpi", 300)
+                
+                # Force white background for memory stream
+                obj.savefig(
+                    buf, 
+                    format="png", 
+                    transparent=False, 
+                    facecolor="white", 
+                    dpi=dpi_setting
+                )
+                img_data = buf.getvalue()
+                
+                # Output raw image MIME type to activate native VS Code toolbars
+                display(Image(data=img_data, width=width))
+
+
+    def save_and_close_fig(
+        self, 
+        fig: plt.Figure, 
+        file_path: Optional[str] = None, 
+        show_plot: bool = False, 
+        save_format: Optional[str] = None,
+        display_format: str = None,
+        width: Optional[Union[int, str]] = "30%",
+        transparent: bool = True
+    ) -> None:
+        """Save a Matplotlib figure and manage targeted Jupyter display.
+
+        Args:
+            fig (matplotlib.figure.Figure): Target plot object.
+            file_path (Optional[str]): Physical storage destination path.
+            show_plot (bool): Inline deployment control flag.
+            save_format (Optional[str]): Extension layout for physical file.
+            display_format (str): Layout specification for notebook preview.
+            width (Optional[Union[int, str]]): Notebook canvas bounding width.
+            transparent (bool): Alpha-channel background indicator.
+        """
+        actual_save_fmt = save_format or self.default_save_fmt
+        actual_display_fmt = display_format or self.default_display_fmt
+        
+        # Execute Notebook inline display prior to figure state destruction
+        if show_plot and iu.is_jupyter():
+            self._render_jupyter_display(
+                obj=fig, 
+                is_patchwork=False, 
+                display_format=actual_display_fmt, 
+                width=width,
+                transparent=transparent
+            )
+
+        if file_path and actual_save_fmt:
+            filepath_str = str(file_path)
+            base_path = (
+                filepath_str.rsplit(".", 1)[0] 
+                if "." in Path(filepath_str).name else filepath_str
+            )
             
-            # Step 2: Intercept and physically clean the SVG string
-            clean_svg = self._clean_svg_fonts_for_ai(buf.getvalue())
-            
-            # Step 3: Write the purified SVG to disk
-            with open(svg_path, "w", encoding="utf-8") as f:
-                f.write(clean_svg)
-        except Exception as e:
-            logger.error(f"Failed to save clean SVG figure at {svg_path}: {e}")
-        finally:
-            plt.close(fig)
+            format_list = (
+                [actual_save_fmt] if isinstance(actual_save_fmt, str) 
+                else list(actual_save_fmt)
+            )
+
+            for fmt in format_list:
+                clean_fmt = fmt.lower().strip(".")
+                out_path = f"{base_path}.{clean_fmt}"
+                
+                fig.savefig(out_path, transparent=transparent, format=clean_fmt)
+                
+                if clean_fmt == "svg":
+                    self._clean_svg_fonts_for_ai(out_path)
+
+        plt.close(fig)
+
 
     def save_and_show_pw(
-        self, pw_obj, file_path=None, show_plot=True, width=800, **kwargs
-    ):
-        """Save and display patchworklib object with safe AI font styling."""
-        if pw_obj is None:
-            return
+        self, 
+        pw_obj: Any, 
+        file_path: Optional[str] = None, 
+        show_plot: bool = True, 
+        save_format: Optional[str] = None,
+        display_format: str = None,
+        width: Optional[Union[int, str]] = "60%", 
+        transparent: bool = True
+    ) -> None:
+        """Save a Patchworklib brick composite and route targeted display.
 
-        from . import io_utils as iu  # Local import for environment check
+        Order of execution is strategically inverted: inline notebook rendering 
+        is processed first, avoiding canvas state destruction before file export.
 
+        Args:
+            pw_obj (Any): Target patchworklib brick composite object.
+            file_path (Optional[str]): Physical storage destination path.
+            show_plot (bool): Inline deployment control flag.
+            save_format (Optional[str]): Extension layout for physical file.
+            display_format (str): Layout specification for notebook preview.
+            width (Optional[Union[int, str]]): Notebook canvas bounding width.
+            transparent (bool): Alpha-channel background indicator.
+        """
+        actual_save_fmt = save_format or self.default_save_fmt
+        actual_display_fmt = display_format or self.default_display_fmt
+        
         try:
-            buf = io.StringIO()
-            pw_obj.savefig(buf, format="svg", **kwargs)
-            
-            # 1. Clean fonts but keep absolute dimensions for disk saving
-            clean_svg = self._clean_svg_fonts_for_ai(buf.getvalue())
-            plt.close("all")
-
-            # 2. Write the robust, absolute-sized SVG to disk
-            if file_path:
-                path_obj = Path(file_path)
-                svg_path = path_obj.with_suffix(".svg")
-                os.makedirs(svg_path.parent, exist_ok=True)
-                with open(svg_path, "w", encoding="utf-8") as f:
-                    f.write(clean_svg)
-
-            # 3. Dynamic layout adjustment strictly for Jupyter/VS Code display
+            # CRITICAL OPTIMIZATION: Process notebook visualization first.
+            # This captures the canvas state perfectly before physical file compilation.
             if show_plot and iu.is_jupyter():
-                # Safe import: Only triggered if inside a Jupyter environment
-                from IPython.display import HTML, SVG, display
-                
-                preview_svg = clean_svg
-                # Convert absolute sizes to 100% only in the temporary string
-                preview_svg = re.sub(
-                    r'(<svg[^>]*?\s)width="[^"]+"', r'\1width="100%"', 
-                    preview_svg, count=1
+                self._render_jupyter_display(
+                    obj=pw_obj, 
+                    is_patchwork=True, 
+                    display_format=actual_display_fmt,
+                    width=width,
+                    transparent=transparent
                 )
-                preview_svg = re.sub(
-                    r'(<svg[^>]*?\s)height="[^"]+"', r'\1height="100%"', 
-                    preview_svg, count=1
-                )
-
-                if width:
-                    w_css = f"{width}px" if isinstance(width, int) else width
-                    html_wrapper = (
-                        f'<div style="width:{w_css}; max-width:100%; '
-                        f'height:auto;">{preview_svg}</div>'
-                    )
-                    display(HTML(html_wrapper))
-                else:
-                    display(SVG(data=preview_svg))
-                    
         except Exception as e:
-            # logger.error(f"Failed to process patchwork object: {e}")
-            # Silently handle IPython import bugs in Python 3.13 terminal mode
-            # Ensure memory is safely cleared without polluting console logs
-            plt.close("all")
+            logger.error(f"Jupyter rendering stage encountered an error: {e}")
             pass
+
+        # Execute physical storage compilation
+        if file_path and actual_save_fmt:
+            filepath_str = str(file_path)
+            base_path = (
+                filepath_str.rsplit(".", 1)[0] 
+                if "." in Path(filepath_str).name else filepath_str
+            )
+            
+            format_list = (
+                [actual_save_fmt] if isinstance(actual_save_fmt, str) 
+                else list(actual_save_fmt)
+            )
+
+            for fmt in format_list:
+                clean_fmt = fmt.lower().strip(".")
+                out_path = f"{base_path}.{clean_fmt}"
+                
+                pw_obj.savefig(out_path, transparent=transparent)
+                
+                if clean_fmt == "svg":
+                    self._clean_svg_fonts_for_ai(out_path)
+
+        # Secure teardown barrier
+        plt.close("all")

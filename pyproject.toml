@@ -77,11 +77,14 @@ dependencies = [
     "patchworklib>=0.6.2",   # Composition tool for matplotlib subplots
     "svgutils>=0.3.4",       # Composition and layout manipulation for SVG grids
     "ipython>=7.0.0",        # Interactive display support for Jupyter
+    "cairosvg>=2.7.0",       # Vector to raster/PDF conversion engine
+
 
     # --- Markdown & PDF Report Generation ---
     "Jinja2>=3.1.0",         # Templating for dynamic MD reports
     "tabulate>=0.10.0",      # Converts DataFrames to MD tables
     "pypandoc[tinytex]>=1.11"# MD to PDF engine with automated LaTeX fallback
+
 ]
 
 # ==============================================================================

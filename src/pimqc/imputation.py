@@ -494,56 +494,93 @@ class MetaboIntImputer(core_classes.MetaboInt):
     def generate_gmm_noise_mask(
         df_log: pd.DataFrame, 
         mask_ratio: float, 
-        noise_factor: float = 0.7,
-        global_seed: int = 123
+        noise_factor: float = 1.5,
+        global_seed: int = 123,
+        batch_array: Optional[np.ndarray] = None
     ) -> pd.DataFrame:
-        """Generate a MNAR mask using GMM probability scoring with added noise.
-        
-        This function uses GMM to determine the baseline probability of a 
-        feature being instrument noise/low abundance. It then adds random noise 
-        to this probability before ranking, simulating the probabilistic nature 
-        of instrument detection limits (where some very low signals might be 
-        detected, and some moderate signals might be missed).
+        """
+        Generate a MNAR mask using GMM probability scoring, optimized for 
+        batch-wise evaluation.
         """
         from sklearn.mixture import GaussianMixture
         rng = np.random.default_rng(global_seed)
-        
         shape = df_log.shape
-
-        # Extract valid data (exclude pre-existing NaNs to avoid GMM errors)
-        valid_mask = ~df_log.isna().values
-        valid_data = df_log.values[valid_mask].reshape(-1, 1)
-        
-        target_nas = int(valid_mask.sum() * mask_ratio)
-        
-        if target_nas == 0:
-            return pd.DataFrame(
-                False, index=df_log.index, columns=df_log.columns)
-            
-        # Fit GMM to resolve the bimodal distribution (noise vs. true signal)
-        gmm = GaussianMixture(n_components=2, random_state=global_seed)
-        gmm.fit(valid_data)
-        lower_cluster_idx = np.argmin(gmm.means_)
-        
-        # The base_prob values typically range from 0.0 to 1.0
-        base_prob = gmm.predict_proba(valid_data)[:, lower_cluster_idx]
-        
-        # Introduce randomness: Generate uniform noise.
-        # The generated noise strictly ranges from 0 to noise_factor
-        noise = rng.uniform(0, noise_factor, size=base_prob.shape)
-        
-        # Calculate final score = baseline probability + uniform noise
-        final_score = base_prob + noise
-        
-        # Truncate based on the final score to guarantee the exact missing ratio
-        cutoff_score = np.sort(final_score)[-target_nas]
-        
         mask_arr = np.zeros(shape, dtype=bool)
-        mask_arr[valid_mask] = final_score >= cutoff_score
-        
+
+        # Fallback to Global GMM if no batch metadata is provided
+        if batch_array is None or len(np.unique(batch_array)) <= 1:
+            valid_mask = ~df_log.isna().values
+            valid_data = df_log.values[valid_mask].reshape(-1, 1)
+            target_nas = int(valid_mask.sum() * mask_ratio)
+            
+            if target_nas == 0 or len(valid_data) < 10:
+                return pd.DataFrame(
+                    False, index=df_log.index, columns=df_log.columns)
+                
+            gmm = GaussianMixture(n_components=2, random_state=global_seed)
+            gmm.fit(valid_data)
+            lower_cluster_idx = np.argmin(gmm.means_)
+            
+            base_prob = gmm.predict_proba(valid_data)[:, lower_cluster_idx]
+            final_score = base_prob + rng.uniform(
+                0, noise_factor, size=base_prob.shape)
+            cutoff_score = np.sort(final_score)[-target_nas]
+            
+            mask_arr[valid_mask] = final_score >= cutoff_score
+            return pd.DataFrame(
+                mask_arr, index=df_log.index, columns=df_log.columns)
+
+        # Advanced Logic: Batch-wise independent GMM masking
+        unique_batches = np.unique(batch_array)
+        for b in unique_batches:
+            b_cols_idx = np.where(batch_array == b)[0]
+            b_data = df_log.iloc[:, b_cols_idx].values
+            
+            valid_mask_b = ~np.isnan(b_data)
+            valid_data_b = b_data[valid_mask_b].reshape(-1, 1)
+            target_nas_b = int(valid_mask_b.sum() * mask_ratio)
+            
+            if target_nas_b == 0:
+                continue
+                
+            # Defensive mechanism for extremely small batches
+            if len(valid_data_b) < 10:
+                if len(valid_data_b) > 0:
+                    cutoff_val = np.percentile(
+                        valid_data_b, (target_nas_b / len(valid_data_b)) * 100)
+                    b_mask = np.zeros_like(b_data, dtype=bool)
+                    b_mask[valid_mask_b] = valid_data_b.flatten() <= cutoff_val
+                    mask_arr[:, b_cols_idx] = b_mask
+                continue
+
+            try:
+                gmm = GaussianMixture(n_components=2, random_state=global_seed)
+                gmm.fit(valid_data_b)
+                lower_cluster_idx = np.argmin(gmm.means_)
+                
+                base_prob = gmm.predict_proba(valid_data_b)[
+                    :, lower_cluster_idx]
+                final_score = base_prob + rng.uniform(
+                    0, noise_factor, size=base_prob.shape)
+                cutoff_score = np.sort(final_score)[-target_nas_b]
+                
+                b_mask = np.zeros_like(b_data, dtype=bool)
+                b_mask[valid_mask_b] = final_score >= cutoff_score
+                mask_arr[:, b_cols_idx] = b_mask
+            except Exception as e:
+                # Soft fallback to percentile truncation if GMM fails to 
+                # converge on edge-case batches
+                logger.debug(
+                    f"GMM failed for batch {b}: {e}. "
+                    "Falling back to empirical percentile.")
+                cutoff_val = np.percentile(
+                    valid_data_b, (target_nas_b / len(valid_data_b)) * 100)
+                b_mask = np.zeros_like(b_data, dtype=bool)
+                b_mask[valid_mask_b] = valid_data_b.flatten() <= cutoff_val
+                mask_arr[:, b_cols_idx] = b_mask
+
         return pd.DataFrame(
-            mask_arr, index=df_log.index, columns=df_log.columns
-        )
+            mask_arr, index=df_log.index, columns=df_log.columns)
 
     @staticmethod
     def compute_stratified_nrmse(df_true, df_imp, mask_df, lod_q=0.25):
@@ -585,15 +622,18 @@ class MetaboIntImputer(core_classes.MetaboInt):
         target_cols: pd.Index,
         method: str,
         ratio: float = 0.05,
-        global_seed: int = 123
+        global_seed: int = 123,
+        batch_array: Optional[np.ndarray] = None
     ) -> tuple:
         """Runs MNAR/MAR mask simulation strictly on MAR features."""
         # 1. Isolate the MAR subset for benchmarking
         mar_data = df_log.loc[idx_mar, target_cols].astype(float)
         
-        # 2. Generate the boolean mask (True where values should be removed)
+        # 2. Generate the boolean mask with batch-awareness
         mask = self.generate_gmm_noise_mask(
-            mar_data, ratio, global_seed=global_seed)
+            mar_data, ratio, noise_factor=1.5, global_seed=global_seed,
+            batch_array=batch_array
+        )
         
         # 3. Apply the mask to create the simulated missing dataset
         masked_df = mar_data.copy()
@@ -630,10 +670,11 @@ class MetaboIntImputer(core_classes.MetaboInt):
         idx_mar: pd.Index,
         target_cols: pd.Index,
         ratio: float = 0.05,
-        global_seed: int =123
+        global_seed: int = 123,
+        batch_array: Optional[np.ndarray] = None
     ) -> tuple:
         """Autonomously selects the best algorithm using MAR-only subset."""
-        candidates = ["KNN", "MinProb","Median", "LLS"]
+        candidates = ["KNN", "MinProb", "Median", "LLS"]
         best_method = "KNN"
         best_nrmse = float("inf")
         cache = {}
@@ -641,7 +682,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
         for cand in candidates:
             logger.info(f'Simulating "{cand}" on MAR subset...')
             emet, tv, pv = self.run_benchmark_simulation(
-                df_log, idx_mar, target_cols, cand, ratio, global_seed
+                df_log=df_log, idx_mar=idx_mar, target_cols=target_cols,
+                method=cand, ratio=ratio, global_seed=global_seed,
+                batch_array=batch_array
             )
             cache[cand] = (emet, tv, pv)
             
@@ -742,7 +785,10 @@ class MetaboIntImputer(core_classes.MetaboInt):
 
         _seed = self.attrs.get("global_seed", 123)
         target_cols = self.columns.difference(self._blank.columns)
-
+        
+        batch_col = self.attrs.get("batch", "Batch")
+        batch_array = target_cols.get_level_values(batch_col).values
+        
         mnar_info = f"{_mnar}" if (str(_mnar).upper() == "QRILC") else (
             f"{_mnar} (LOD={_frac}x)")
         
@@ -798,12 +844,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
         if len(idx_mar) > 0:
             if is_auto:
                 _mar, cache = self.select_best_algorithm(
-                    df_log, idx_mar, target_cols, _ratio, _seed)
+                    df_log, idx_mar, target_cols, _ratio, _seed, batch_array
+                )
                 eval_met, t_vals, p_vals = cache[_mar]
             else:
                 eval_met, t_vals, p_vals = self.run_benchmark_simulation(
-                    df_log, idx_mar, target_cols, _mar, _ratio, _seed)
-                cache = {_mar: (eval_met, t_vals, p_vals)}
+                    df_log, idx_mar, target_cols, _mar, _ratio, _seed,
+                    batch_array
+                )
                 
             logger.info(f"Executing isolated '{_mar}' on MAR features.")
             mar_slice = df_log.loc[idx_mar, target_cols]
@@ -878,7 +926,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                     vis.save_and_show_pw(
                         pw_obj=fig_cands, 
                         file_path=os.path.join(output_dir, "Imputer_Candidates"),
-                        width=600
+                        width="80%"
                     )
                 
                 fig_grid = vis.plot_imputation_summary_grid(
@@ -1158,8 +1206,8 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
 
         # 1. Dynamically calculate optimal column count
         layout_map = {
-            1: 1, 2: 2, 3: 3, 4: 2, 
-            5: 3, 6: 3, 7: 4, 8: 4, 9: 3
+            1: 1, 2: 2, 3: 3, 4: 4, 
+            5: 3, 6: 3, 7: 4, 8: 4, 9: 5
         }
         # Fallback to square root logic for >9 plots, capped at 4 columns
         n_cols = layout_map.get(

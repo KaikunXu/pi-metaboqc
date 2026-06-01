@@ -1013,7 +1013,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             if grid_obj is not None:
                 vis.save_and_show_pw(
                     pw_obj=grid_obj, 
-                    width=800, 
+                    width="60%", 
                     file_path=os.path.join(
                         output_dir, "QC_RSD_Evaluation_Grid.svg"
                     )
@@ -1027,7 +1027,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             stage_oof_dfs=m_res.get("stage_oof_dfs", {})
         )
         vis.save_and_show_pw(
-            pw_obj=fig_rsd, width=300,
+            pw_obj=fig_rsd, width="30%",
             file_path=os.path.join(output_dir, f"QC_RSD_{best_method}.svg")
         )
 
@@ -1228,7 +1228,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             legend_elements.append(
                 Patch(
                     facecolor=c_cv, edgecolor="k", linewidth=1.0,
-                    linestyle="--", label="CV (OOF) Model"
+                    linestyle="--", label="OOF Model"
                 )
             )
         legend_elements.append(
@@ -1321,7 +1321,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                 # Append asterisk strictly to the CV metric if it's the final stage
                 prefix = "* " if is_last else ""
                 medians_text.append(
-                    f"{prefix}{clean_name} (CV): {cv_rsd.median() * 100:.2f}%"
+                    f"{prefix}{clean_name} (OOF): {cv_rsd.median() * 100:.2f}%"
                 )
                 medians_text.append(
                     f"{clean_name} (Full): {full_rsd.median() * 100:.2f}%"
@@ -1580,7 +1580,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             bricks = []
             
             for stage_name, df in stage_dfs.items():
-                brick = pw.Brick(figsize=(6.5, 3.0))
+                brick = pw.Brick(figsize=(6.5, 2.0))
                 
                 # Directly reuse existing base plotter for individual panels
                 self.plot_single_is_scatter(
@@ -1618,7 +1618,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                 left_col = left_col / b
                 
             # Assemble right column (Standalone Legend Brick)
-            leg_h = len(bricks) * 3.0
+            leg_h = len(bricks) * 2.0
             leg_brick = pw.Brick(figsize=(2.5, leg_h))
             
             self._plot_standalone_is_legend(
@@ -1636,7 +1636,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
     ):
         """Plot a single scatter panel with calculated boundaries."""
         if ax is None:
-            fig, current_ax = plt.subplots(figsize=(7.5, 3))
+            fig, current_ax = plt.subplots(figsize=(7.5, 2.5))
         else:
             current_ax = ax
             fig = current_ax.figure
@@ -1681,7 +1681,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         num_cols = 2
         num_rows = int(np.ceil(len(valid) / num_cols))
         fig = plt.figure(
-            figsize=(7.5 * num_cols, 3 * num_rows), layout="constrained")
+            figsize=(7.5 * num_cols, 2.5 * num_rows), layout="constrained")
         
         for n, feat in enumerate(valid):
             ax = plt.subplot(num_rows, num_cols, n + 1)
