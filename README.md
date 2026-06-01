@@ -78,9 +78,7 @@ We provide execution modalities for different use cases in the `examples/` direc
 
 **Interactive Tutorial (`interactive_tutorial.ipynb`)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards, and intuitively grasp the core algorithmic logic.
 
-With our newly optimized visualization engine, all plots are natively rendered and fully compatible with GitHub's default interface.
-
-* **[GitHub Native Preview](https://github.com/KaikunXu/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: Instantly view the fully executed notebook directly on GitHub. All diagnostic plots and metrics are beautifully rendered inline as PNGs, providing a seamless browsing experience without leaving the repository.
+* **[Pre-rendered HTML Viewer](https://raw.githack.com/KaikunXu/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage. This ensures all inline high-resolution plots and metrics are displayed instantly, bypassing any GitHub API rendering timeouts or file size limits..
 
 ### 2. Headless CLI Execution (For Production & Batch Processing)
 
