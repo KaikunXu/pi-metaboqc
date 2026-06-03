@@ -26,6 +26,8 @@ from .imputation import MetaboIntImputer
 from .normalization import MetaboIntNormalizer
 from .filtering import MetaboIntFilter
 
+# Package Version
+__version__ = __about__.__version__
 
 # Define public API
 __all__ = [
@@ -38,9 +40,6 @@ __all__ = [
     "build_dataset",
     "run_pipeline"
 ]
-
-# Package Version
-__version__ = "1.1.2a1"
 
 # Global initialization state lock
 iu.setup_loguru_logger(level="INFO")

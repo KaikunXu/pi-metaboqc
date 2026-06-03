@@ -14,7 +14,7 @@ build-backend = "setuptools.build_meta"
 name = "pi-metaboqc"
 dynamic = ["version", "readme"]  # Metadata extracted from source and files
 authors = [
-    { name="KaikunXu", email="xukaikun.bio@qq.com"},
+    {name="KaikunXu", email="xukaikun.bio@qq.com"},
 ]
 keywords = [
     "chemistry",
@@ -29,7 +29,7 @@ keywords = [
 ]
 description = "A comprehensive LC-MS metabolomics data quality control module."
 
-requires-python = ">=3.10"       # Supports modern Python features and type hints
+requires-python = ">=3.10"      # Supports modern Python features and type hints
 license = {file = "LICENSE"}    # Path to the MIT license file
 classifiers = [
     "Development Status :: 3 - Alpha",
