@@ -1,12 +1,21 @@
 # src/pimqc/core_classes.py
+"""
+Script purpose: Define the core MetaboInt dataframe used by pi-metaboqc.
+
+MetaboInt subclasses pandas.DataFrame to preserve metabolomics-specific state
+through slicing, arithmetic, and staged preprocessing. It stores sample-label
+mappings, feature annotations, pipeline parameters, boundary rules, cached QC
+subsets, internal-standard and reference-feature lists, and dataset-level
+metrics.
+This shared container is the common contract used by builders, assessors,
+filters, correctors, imputers, normalizers, visualizers, and report exporters.
+"""
 
 import copy
 import numpy as np
 import pandas as pd
 from functools import cached_property
-from typing import Dict, List, Tuple, Any, Optional, Union
-
-from . import plot_utils as pu
+from typing import Dict, List, Any, Optional, Union
 
 
 class MetaboInt(pd.DataFrame):
@@ -21,7 +30,7 @@ class MetaboInt(pd.DataFrame):
 
     def __init__(
         self,
-        *args: Any,
+        *args: object,
         pipeline_params: Optional[Dict[str, Any]] = None,
         mode: Optional[str] = None,
         sample_name: Optional[str] = None,
@@ -33,7 +42,7 @@ class MetaboInt(pd.DataFrame):
         internal_standard: Optional[Union[List[str], str]] = None,
         outlier_ref_feat: Optional[Union[List[str], str]] = None,
         global_seed: Optional[int] = None,
-        **kwargs: Any
+        **kwargs: object,
     ) -> None:
         """Initialize the MetaboInt data structure.
 
@@ -87,7 +96,7 @@ class MetaboInt(pd.DataFrame):
             },
             "internal_standard": [],
             "outlier_ref_feat": [],
-            "global_seed": 123
+            "global_seed": 123,
         }
 
         # 2. TOML configuration overrides base defaults
@@ -97,24 +106,26 @@ class MetaboInt(pd.DataFrame):
         # 3. Explicit kwargs override TOML (Highest priority)
         local_args = locals()
         explicit_params = [
-            "mode", "sample_name", "sample_type", "bio_group", 
-            "batch", "inject_order", "sample_dict", "global_seed"
+            "mode",
+            "sample_name",
+            "sample_type",
+            "bio_group",
+            "batch",
+            "inject_order",
+            "sample_dict",
+            "global_seed",
         ]
         for param in explicit_params:
             if local_args[param] is not None:
                 base_configs[param] = local_args[param]
-                
+
         # 4. Action: Initialize numpy global random state
         np.random.seed(base_configs.get("global_seed", 123))
-                
+
         if internal_standard is not None:
-            base_configs["internal_standard"] = self._to_list(
-                internal_standard
-            )
+            base_configs["internal_standard"] = self._to_list(internal_standard)
         if outlier_ref_feat is not None:
-            base_configs["outlier_ref_feat"] = self._to_list(
-                outlier_ref_feat
-            )
+            base_configs["outlier_ref_feat"] = self._to_list(outlier_ref_feat)
 
         # 5. Finalize state
         self.attrs.update(base_configs)
@@ -126,16 +137,16 @@ class MetaboInt(pd.DataFrame):
         # This acts as the genesis state for downstream dynamic visualizations.
         if "pipeline_stage" not in self.attrs:
             self.attrs["pipeline_stage"] = "Raw data"
-            
+
         if "is_logged" not in self.attrs:
             self.attrs["is_logged"] = False
             self.attrs["log_base"] = "None"
-            
+
         if "is_scaled" not in self.attrs:
             self.attrs["is_scaled"] = False
             self.attrs["scale_method"] = "None"
 
-    def _to_list(self, x: Any) -> List[Any]:
+    def _to_list(self, x: object) -> List[Any]:
         """Convert input element to list safely."""
         if x is None:
             return []
@@ -156,7 +167,7 @@ class MetaboInt(pd.DataFrame):
     #     return self
 
     def __finalize__(
-        self, other: Any, method: Optional[str] = None, **kwargs: Any
+        self, other: object, method: Optional[str] = None, **kwargs: object
     ) -> "MetaboInt":
         """Copy custom attributes safely, avoiding Pandas array bugs."""
         try:
@@ -174,45 +185,44 @@ class MetaboInt(pd.DataFrame):
             self.attrs = copy.deepcopy(other.attrs)
         if hasattr(other, "stats"):
             self.stats = copy.deepcopy(other.stats)
-            
+
         return self
 
     @cached_property
     def _qc(self) -> "MetaboInt":
         """Subset containing only QC samples."""
-        return self.loc[:,
-            self.columns.get_level_values(
-                level=self.attrs["sample_type"]
-            ) == self.attrs["sample_dict"]["QC sample"]
+        return self.loc[
+            :,
+            self.columns.get_level_values(level=self.attrs["sample_type"])
+            == self.attrs["sample_dict"]["QC sample"],
         ]
 
     @cached_property
     def _blank(self) -> "MetaboInt":
         """Subset containing only Blank samples."""
-        return self.loc[:,
-            self.columns.get_level_values(
-                level=self.attrs["sample_type"]
-            ) == self.attrs["sample_dict"]["Blank sample"]
+        return self.loc[
+            :,
+            self.columns.get_level_values(level=self.attrs["sample_type"])
+            == self.attrs["sample_dict"]["Blank sample"],
         ]
 
     @cached_property
     def _actual_sample(self) -> "MetaboInt":
         """Subset containing only Actual samples."""
-        return self.loc[:,
-            self.columns.get_level_values(
-                level=self.attrs["sample_type"]
-            ) == self.attrs["sample_dict"]["Actual sample"]
+        return self.loc[
+            :,
+            self.columns.get_level_values(level=self.attrs["sample_type"])
+            == self.attrs["sample_dict"]["Actual sample"],
         ]
 
     @property
     def is_multi_batch_flag(self) -> bool:
         """Determine whether the current object contains multiple batches."""
         bt_col = self.attrs.get("batch", "Batch")
-        
+
         if bt_col in self.columns.names:
             return len(self.columns.get_level_values(bt_col).unique()) > 1
         return False
-
 
     @cached_property
     def valid_is(self) -> List[str]:
@@ -221,26 +231,21 @@ class MetaboInt(pd.DataFrame):
         configured_is = self.attrs.get("internal_standard", [])
         if not configured_is:
             return []
-            
+
         # Convert configured IS to lowercase and store in a set for O(1) lookup.
         target_is_lower = {str(item).lower() for item in configured_is}
-        
-        # Match using lowercase to ensure case-insensitivity, 
+
+        # Match using lowercase to ensure case-insensitivity,
         # but retain the original naming format from the index.
-        return [
-            item for item in self.index 
-            if str(item).lower() in target_is_lower
-        ]
-        
+        return [item for item in self.index if str(item).lower() in target_is_lower]
+
     @cached_property
     def valid_orf(self) -> List[str]:
         """
-        List of valid manually specified outlier reference features in 
+        List of valid manually specified outlier reference features in
         the current index.
         """
-        return list(
-            set(self.index).intersection(set(self.attrs["outlier_ref_feat"]))
-        )
+        return list(set(self.index).intersection(set(self.attrs["outlier_ref_feat"])))
 
     def int_order_info(self, feat_type: str = "IS") -> pd.DataFrame:
         """Extract Intensity-Order info of the specified feature type."""
@@ -253,30 +258,30 @@ class MetaboInt(pd.DataFrame):
         int_order_df = self.loc[feats].transpose()
         valid_samples = [
             self.attrs["sample_dict"]["Actual sample"],
-            self.attrs["sample_dict"]["QC sample"]
+            self.attrs["sample_dict"]["QC sample"],
         ]
-        
+
         mask = int_order_df.index.get_level_values(
             level=self.attrs["sample_type"]
         ).isin(valid_samples)
-        
-        int_order_df = int_order_df.loc[mask].reset_index([
-            self.attrs["sample_type"], 
-            self.attrs["inject_order"]
-        ])
-        
+
+        int_order_df = int_order_df.loc[mask].reset_index(
+            [self.attrs["sample_type"], self.attrs["inject_order"]]
+        )
+
         int_order_df[self.attrs["inject_order"]] = int_order_df[
             self.attrs["inject_order"]
         ].astype(int)
-        
+
         int_order_df = int_order_df.sort_values(
-            by=[self.attrs["sample_type"], self.attrs["inject_order"]],
-            ascending=True
+            by=[self.attrs["sample_type"], self.attrs["inject_order"]], ascending=True
         )
         return int_order_df
-    
+
     @staticmethod
-    def calculate_boundaries(x: np.ndarray, boundary_type: str = "IQR"):
+    def calculate_boundaries(
+        x: np.ndarray, boundary_type: str = "IQR"
+    ) -> tuple[float, float, float]:
         """Calculate statistical boundaries of a 1-dimensional array.
 
         Args:
@@ -285,27 +290,27 @@ class MetaboInt(pd.DataFrame):
 
         Returns:
             Tuple[float, float, float]: Central line, lower limit, upper limit.
-        """        
+        """
         if boundary_type in ("mean-std", "sigma"):
             solid = float(np.nanmean(x))
             std_val = float(np.nanstd(x, ddof=1))
             return solid, solid - 3 * std_val, solid + 3 * std_val
-            
+
         elif boundary_type == "IQR":
             solid = float(np.nanmedian(x))
             q1 = float(np.nanquantile(x, 0.25))
             q3 = float(np.nanquantile(x, 0.75))
             iqr = q3 - q1
             return solid, q1 - 1.5 * iqr, q3 + 1.5 * iqr
-            
+
         return 0.0, 0.0, 0.0
 
     @cached_property
-    def dataset_metrics(self):
+    def dataset_metrics(self) -> Dict[str, Any]:
         """Extracts comprehensive summary metrics of the current dataset.
 
         Calculates total feature counts, internal standard counts, sample
-        distributions, and analytical batches sorted by their starting 
+        distributions, and analytical batches sorted by their starting
         injection order.
 
         Returns:
@@ -317,7 +322,7 @@ class MetaboInt(pd.DataFrame):
             from . import __version__ as pkg_version
         except ImportError:
             pkg_version = "v1.0.0"
-            
+
         mode = self.attrs.get("mode", "ESI+")
         sample_dict = self.attrs.get("sample_dict", {})
         qc_lbl = sample_dict.get("QC sample", "QC")
@@ -348,44 +353,44 @@ class MetaboInt(pd.DataFrame):
             "features": {
                 "total": self.shape[0],
                 "internal_standards": self.valid_is,
-                "internal_standards_count": is_count
+                "internal_standards_count": is_count,
             },
             "samples": {
                 "total": self.shape[1],
                 "qc": self._qc.shape[1] if hasattr(self, "_qc") else 0,
-                "blank": self._blank.shape[1] if hasattr(
-                    self, "_blank") else 0,
-                "actual": self._actual_sample.shape[1] if hasattr(
-                    self, "_actual_sample") else 0
+                "blank": self._blank.shape[1] if hasattr(self, "_blank") else 0,
+                "actual": (
+                    self._actual_sample.shape[1]
+                    if hasattr(self, "_actual_sample")
+                    else 0
+                ),
             },
             "batches": {
                 "batch_count": len(ordered_batches),
                 "ordered_batches": ordered_batches,
                 "batch_distribution": {},
-            }
+            },
         }
 
         if bt_col in self.columns.names and st_col in self.columns.names:
             col_df = self.columns.to_frame(index=False)
-            dist_df = col_df.groupby(
-                [bt_col, st_col]
-            ).size().unstack(fill_value=0)
+            dist_df = col_df.groupby([bt_col, st_col]).size().unstack(fill_value=0)
 
             for b_id in ordered_batches:
                 if b_id in dist_df.index:
                     row = dist_df.loc[b_id]
-                    
+
                     # Extract injection order range for the current batch
                     batch_mask = col_df[bt_col] == b_id
                     orders = col_df.loc[batch_mask, io_col].astype(int)
                     order_range = f"{orders.min()} ~ {orders.max()}"
-                    
+
                     metrics["batches"]["batch_distribution"][str(b_id)] = {
                         "Total": int(row.sum()),
                         "QC": int(row.get(qc_lbl, 0)),
                         "Blank": int(row.get(blk_lbl, 0)),
                         "Sample": int(row.get(act_lbl, 0)),
-                        "Inject Order": order_range
+                        "Inject Order": order_range,
                     }
 
         return metrics

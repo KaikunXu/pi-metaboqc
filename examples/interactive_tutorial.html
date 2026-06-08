@@ -7806,8 +7806,8 @@ a.anchor-link {
 <div class="highlight hl-ipython3"><pre><span></span><span class="c1"># ====================================================================</span>
 <span class="c1"># Developer Utility: Module Auto-Reloading</span>
 <span class="c1"># --------------------------------------------------------------------</span>
-<span class="c1"># Uncomment the lines below if you are actively modifying the underlying </span>
-<span class="c1"># pi-metaboqc source code. It ensures that changes in .py files are </span>
+<span class="c1"># Uncomment the lines below if you are actively modifying the underlying</span>
+<span class="c1"># pi-metaboqc source code. It ensures that changes in .py files are</span>
 <span class="c1"># dynamically reloaded without restarting the Jupyter kernel.</span>
 <span class="c1"># ====================================================================</span>
 
@@ -7850,35 +7850,40 @@ a.anchor-link {
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">importlib.resources</span><span class="w"> </span><span class="kn">import</span> <span class="n">files</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">loguru</span><span class="w"> </span><span class="kn">import</span> <span class="n">logger</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">pimqc</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pimqc.io_utils</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">iu</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">pimqc.report_utils</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">ru</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pimqc</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">build_dataset</span><span class="p">,</span>
+    <span class="n">MetaboIntAssessor</span><span class="p">,</span>
+    <span class="n">MetaboIntFilter</span><span class="p">,</span>
+    <span class="n">MetaboIntCorrector</span><span class="p">,</span>
+    <span class="n">MetaboIntImputer</span><span class="p">,</span>
+    <span class="n">MetaboIntNormalizer</span><span class="p">,</span>
+<span class="p">)</span>
+
 <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">"pimqc.__version__: </span><span class="si">{</span><span class="n">pimqc</span><span class="o">.</span><span class="n">__version__</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 <span class="n">pimqc</span><span class="o">.</span><span class="n">init</span><span class="p">(</span><span class="n">check_hardware</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">log_level</span><span class="o">=</span><span class="s2">"INFO"</span><span class="p">,</span> <span class="n">show_progress</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">pimqc</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">build_dataset</span><span class="p">,</span> <span class="n">MetaboIntAssessor</span><span class="p">,</span> <span class="n">MetaboIntFilter</span><span class="p">,</span> <span class="n">MetaboIntCorrector</span><span class="p">,</span>
-    <span class="n">MetaboIntImputer</span><span class="p">,</span> <span class="n">MetaboIntNormalizer</span>
-<span class="p">)</span>
 
 <span class="c1"># Define standard directories</span>
-<span class="n">DATA_DIR</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s2">".."</span><span class="p">,</span> <span class="s2">"src"</span><span class="p">,</span> <span class="s2">"pimqc"</span><span class="p">,</span> <span class="s2">"data"</span><span class="p">)</span>
+<span class="n">DATA_DIR</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">files</span><span class="p">(</span><span class="s2">"pimqc"</span><span class="p">)</span> <span class="o">/</span> <span class="s2">"data"</span><span class="p">)</span>
 <span class="n">OUTPUT_DIR</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s2">"."</span><span class="p">,</span> <span class="s2">"tutorial_output"</span><span class="p">)</span>
 <span class="n">iu</span><span class="o">.</span><span class="n">_check_dir_exists</span><span class="p">(</span><span class="n">dir_path</span><span class="o">=</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="n">handle</span><span class="o">=</span><span class="s2">"makedirs"</span><span class="p">)</span>
 
 <span class="c1"># Load pipeline parameters</span>
 <span class="n">PARAMS_PATH</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">DATA_DIR</span><span class="p">,</span> <span class="s2">"pipeline_parameters.toml"</span><span class="p">)</span>
-<span class="n">params</span> <span class="o">=</span> <span class="n">iu</span><span class="o">.</span><span class="n">load_pipeline_config</span><span class="p">(</span><span class="n">config_path</span><span class="o">=</span><span class="n">PARAMS_PATH</span><span class="p">)</span>
+<span class="n">params</span> <span class="o">=</span> <span class="n">iu</span><span class="o">.</span><span class="n">load_pipeline_config</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">PARAMS_PATH</span><span class="p">))</span>
 
 <span class="c1"># Load raw matrices</span>
-<span class="n">meta_df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">read_csv</span><span class="p">(</span>
-    <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">DATA_DIR</span><span class="p">,</span> <span class="s2">"project_meta.csv"</span><span class="p">),</span> <span class="n">header</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> 
-
+<span class="n">meta_df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">read_csv</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">DATA_DIR</span><span class="p">,</span> <span class="s2">"project_meta.csv"</span><span class="p">),</span> <span class="n">header</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
 <span class="n">int_df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">read_csv</span><span class="p">(</span>
-    <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">DATA_DIR</span><span class="p">,</span> <span class="s2">"project_intensity.csv"</span><span class="p">),</span> <span class="n">index_col</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">header</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">DATA_DIR</span><span class="p">,</span> <span class="s2">"project_intensity.csv"</span><span class="p">),</span> <span class="n">index_col</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">header</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -7891,8 +7896,13 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:30.732</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">8</span> - <span class="ansi-bold">pimqc.__version__: 1.1.2a1</span>
-<span class="ansi-green-fg">2026-06-01 14:26:30.737</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:load_pipeline_config</span>:<span class="ansi-cyan-fg">385</span> - <span class="ansi-green-intense-fg ansi-bold">Pipeline configuration successfully loaded and validated via Pydantic.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:24:55.881</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">18</span> - <span class="ansi-bold">pimqc.__version__: 1.1.3</span>
+<span class="ansi-green-fg">2026-06-08 16:24:55.883</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output.</span>
+<span class="ansi-green-fg">2026-06-08 16:24:55.887</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:load_pipeline_config</span>:<span class="ansi-cyan-fg">412</span> - <span class="ansi-green-intense-fg ansi-bold">Pipeline configuration successfully loaded and validated via Pydantic.</span>
+<span class="ansi-green-fg">2026-06-08 16:24:55.883</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output.</span>
+<span class="ansi-green-fg">2026-06-08 16:24:55.887</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:load_pipeline_config</span>:<span class="ansi-cyan-fg">412</span> - <span class="ansi-green-intense-fg ansi-bold">Pipeline configuration successfully loaded and validated via Pydantic.</span>
 </pre>
 </div>
 </div>
@@ -7921,10 +7931,7 @@ a.anchor-link {
 
 <span class="n">step1_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="s2">"01_Raw_Data"</span><span class="p">)</span>
 <span class="n">raw_data</span> <span class="o">=</span> <span class="n">build_dataset</span><span class="p">(</span>
-    <span class="n">meta_info</span><span class="o">=</span><span class="n">meta_df</span><span class="p">,</span>
-    <span class="n">int_df</span><span class="o">=</span><span class="n">int_df</span><span class="p">,</span>
-    <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span>
-    <span class="n">output_dir</span><span class="o">=</span><span class="n">step1_dir</span>
+    <span class="n">meta_info</span><span class="o">=</span><span class="n">meta_df</span><span class="p">,</span> <span class="n">int_df</span><span class="o">=</span><span class="n">int_df</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span> <span class="n">output_dir</span><span class="o">=</span><span class="n">step1_dir</span>
 <span class="p">)</span>
 <span class="n">is_multi_batch_flag</span> <span class="o">=</span> <span class="n">raw_data</span><span class="o">.</span><span class="n">attrs</span><span class="p">[</span><span class="s2">"is_multi_batch"</span><span class="p">]</span>
 </pre></div>
@@ -7939,11 +7946,13 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:30.850</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 01: Dataset Construction...</span>
-<span class="ansi-green-fg">2026-06-01 14:26:30.966</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:execute_build</span>:<span class="ansi-cyan-fg">377</span> - <span class="ansi-bold">MetaboInt raw dataset saved as: .\tutorial_output\01_Raw_Data\Raw_Data_Intensity.csv</span>
-<span class="ansi-green-fg">2026-06-01 14:26:30.968</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:execute_build</span>:<span class="ansi-cyan-fg">393</span> - <span class="ansi-bold">MetaboInt object built: 376 metabolites, 466 samples.</span>
-<span class="ansi-green-fg">2026-06-01 14:26:30.968</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:_audit_dataset_health</span>:<span class="ansi-cyan-fg">246</span> - <span class="ansi-bold">Executing dataset health audit...</span>
-<span class="ansi-green-fg">2026-06-01 14:26:30.971</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:_audit_dataset_health</span>:<span class="ansi-cyan-fg">271</span> - <span class="ansi-bold">[Audit] No Outlier Reference Features (ORF) detected. This is normal for untargeted datasets; ORF diagnostics will be skipped.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:24:56.038</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 01: Dataset Construction...</span>
+<span class="ansi-green-fg">2026-06-08 16:24:56.050</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\01_Raw_Data.</span>
+<span class="ansi-green-fg">2026-06-08 16:24:56.143</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:execute_build</span>:<span class="ansi-cyan-fg">387</span> - <span class="ansi-bold">MetaboInt raw dataset saved as: .\tutorial_output\01_Raw_Data\Raw_Data_Intensity.csv</span>
+<span class="ansi-green-fg">2026-06-08 16:24:56.144</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:execute_build</span>:<span class="ansi-cyan-fg">404</span> - <span class="ansi-bold">MetaboInt object built: 376 metabolites, 466 samples.</span>
+<span class="ansi-green-fg">2026-06-08 16:24:56.145</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:_audit_dataset_health</span>:<span class="ansi-cyan-fg">253</span> - <span class="ansi-bold">Executing dataset health audit...</span>
+<span class="ansi-green-fg">2026-06-08 16:24:56.147</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:_audit_dataset_health</span>:<span class="ansi-cyan-fg">278</span> - <span class="ansi-bold">[Audit] No Outlier Reference Features (ORF) detected. This is normal for untargeted datasets; ORF diagnostics will be skipped.</span>
 </pre>
 </div>
 </div>
@@ -7956,8 +7965,9 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:32.611</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:execute_build</span>:<span class="ansi-cyan-fg">409</span> - <span class="ansi-bold">Global acquisition overview plot saved as: .\tutorial_output\01_Raw_Data\Global_Acquisition_Overview.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:26:32.613</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "build_dataset": 00:00:01.760.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:24:57.367</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">dataset_builder:execute_build</span>:<span class="ansi-cyan-fg">421</span> - <span class="ansi-bold">Global acquisition overview plot saved as: .\tutorial_output\01_Raw_Data\Global_Acquisition_Overview.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:24:57.369</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "build_dataset": 00:00:01.329.</span>
+<span class="ansi-green-fg">2026-06-08 16:24:57.369</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "build_dataset": 00:00:01.329.</span>
 </pre>
 </div>
 </div>
@@ -7999,7 +8009,9 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:32.650</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 01: Quality Assessment of Raw Data...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:24:57.408</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 01: Quality Assessment of Raw Data...</span>
+<span class="ansi-green-fg">2026-06-08 16:24:57.410</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\QA_01_Raw_Data.</span>
 </pre>
 </div>
 </div>
@@ -8012,9 +8024,11 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:43.901</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">504</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_01_Raw_Data\QA_Summary_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:26:43.902</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">505</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:26:43.903</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:11.250.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:25:03.527</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">541</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_01_Raw_Data\QA_Summary_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:25:03.528</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:03.529</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.118.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:03.528</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:03.529</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.118.</span>
 </pre>
 </div>
 </div>
@@ -8056,7 +8070,9 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:43.943</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 02: High Missing Value Feature Filter...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:25:03.562</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 02: High Missing Value Feature Filter...</span>
+<span class="ansi-green-fg">2026-06-08 16:25:03.574</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\02_MV_Filtered.</span>
 </pre>
 </div>
 </div>
@@ -8069,9 +8085,11 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:46.707</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:_execute_s1_visualization</span>:<span class="ansi-cyan-fg">486</span> - <span class="ansi-bold">High-MV Filter summary dashboard saved as: .\tutorial_output\02_MV_Filtered\MV_Classification_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:26:46.708</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">filtering:execute_mv_filtering</span>:<span class="ansi-cyan-fg">393</span> - <span class="ansi-green-intense-fg ansi-bold">High-missing value feature filtering completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:26:46.708</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_mv_filtering": 00:00:02.762.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:25:05.540</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:_execute_s1_visualization</span>:<span class="ansi-cyan-fg">526</span> - <span class="ansi-bold">High-MV Filter summary dashboard saved as: .\tutorial_output\02_MV_Filtered\MV_Classification_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:25:05.541</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">filtering:execute_mv_filtering</span>:<span class="ansi-cyan-fg">423</span> - <span class="ansi-green-intense-fg ansi-bold">High-missing value feature filtering completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:05.542</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_mv_filtering": 00:00:01.978.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:05.541</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">filtering:execute_mv_filtering</span>:<span class="ansi-cyan-fg">423</span> - <span class="ansi-green-intense-fg ansi-bold">High-missing value feature filtering completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:05.542</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_mv_filtering": 00:00:01.978.</span>
 </pre>
 </div>
 </div>
@@ -8093,12 +8111,12 @@ a.anchor-link {
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [6]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"QA-Step 02: Quality Assessment of High-MV Filtered Data..."</span><span class="p">)</span>
 
-<span class="n">qa_step2_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span>  <span class="s2">"QA_02_MV_Filtered"</span><span class="p">)</span>
+<span class="n">qa_step2_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="s2">"QA_02_MV_Filtered"</span><span class="p">)</span>
 <span class="n">qa_mv_filter_engine</span> <span class="o">=</span> <span class="n">MetaboIntAssessor</span><span class="p">(</span>
     <span class="n">data</span><span class="o">=</span><span class="n">mv_filter_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
 <span class="n">qa_mv_filter_engine</span><span class="o">.</span><span class="n">execute_assessment</span><span class="p">(</span><span class="n">output_dir</span><span class="o">=</span><span class="n">qa_step2_dir</span><span class="p">)</span>
@@ -8114,7 +8132,9 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:46.739</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 02: Quality Assessment of High-MV Filtered Data...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:25:05.573</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 02: Quality Assessment of High-MV Filtered Data...</span>
+<span class="ansi-green-fg">2026-06-08 16:25:05.576</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\QA_02_MV_Filtered.</span>
 </pre>
 </div>
 </div>
@@ -8127,9 +8147,11 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:57.206</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">504</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_02_MV_Filtered\QA_Summary_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:26:57.207</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">505</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:26:57.208</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:10.465.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:25:11.971</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">541</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_02_MV_Filtered\QA_Summary_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:25:11.972</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:11.973</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.396.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:11.972</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:11.973</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.396.</span>
 </pre>
 </div>
 </div>
@@ -8177,14 +8199,16 @@ a.anchor-link {
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:26:57.238</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 03: Signal Drift &amp; Batch Effect Correction...</span>
-<span class="ansi-green-fg">2026-06-01 14:26:57.244</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">964</span> - <span class="ansi-bold">AUTO mode enabled. Evaluating multiple methods.</span>
-<span class="ansi-green-fg">2026-06-01 14:26:57.245</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">801</span> - <span class="ansi-bold">--- Evaluating Method: QC-RLSC ---</span>
-<span class="ansi-green-fg">2026-06-01 14:26:57.246</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">240</span> - <span class="ansi-bold">Phase 1: Executing Intra-batch drift correction with QC-RLSC...</span>
-<span class="ansi-green-fg">2026-06-01 14:27:02.853</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">331</span> - <span class="ansi-bold">Phase 2: Executing Inter-batch median alignment...</span>
-<span class="ansi-green-fg">2026-06-01 14:27:03.406</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">902</span> - <span class="ansi-bold">QC-RLSC Eval QC RSD: 14.42%</span>
-<span class="ansi-green-fg">2026-06-01 14:27:03.407</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">801</span> - <span class="ansi-bold">--- Evaluating Method: QC-RFSC ---</span>
-<span class="ansi-green-fg">2026-06-01 14:27:03.407</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">240</span> - <span class="ansi-bold">Phase 1: Executing Intra-batch drift correction with QC-RFSC...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:25:12.004</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 03: Signal Drift &amp; Batch Effect Correction...</span>
+<span class="ansi-green-fg">2026-06-08 16:25:12.010</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\03_Corrected_Data.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:12.011</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1036</span> - <span class="ansi-bold">AUTO mode enabled. Evaluating multiple methods.</span>
+<span class="ansi-green-fg">2026-06-08 16:25:12.012</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">873</span> - <span class="ansi-bold">--- Evaluating Method: QC-RLSC ---</span>
+<span class="ansi-green-fg">2026-06-08 16:25:12.012</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">280</span> - <span class="ansi-bold">Phase 1: Executing Intra-batch drift correction with QC-RLSC...</span>
+<span class="ansi-green-fg">2026-06-08 16:25:17.737</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">373</span> - <span class="ansi-bold">Phase 2: Executing Inter-batch median alignment...</span>
+<span class="ansi-green-fg">2026-06-08 16:25:18.292</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">976</span> - <span class="ansi-bold">QC-RLSC Eval QC RSD: 14.42%</span>
+<span class="ansi-green-fg">2026-06-08 16:25:18.293</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">873</span> - <span class="ansi-bold">--- Evaluating Method: QC-RFSC ---</span>
+<span class="ansi-green-fg">2026-06-08 16:25:18.293</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">280</span> - <span class="ansi-bold">Phase 1: Executing Intra-batch drift correction with QC-RFSC...</span>
 </pre>
 </div>
 </div>
@@ -8193,17 +8217,17 @@ a.anchor-link {
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="application/vnd.jupyter.stderr" tabindex="0">
 <pre>SC [B1]: 100%|███████████████████████████████████████████████████████████████████| 347/347 [Elapsed: 00:13 | ETA: 00:00]
 SC [B2]: 100%|███████████████████████████████████████████████████████████████████| 347/347 [Elapsed: 00:09 | ETA: 00:00]
-SC [B3]: 100%|███████████████████████████████████████████████████████████████████| 347/347 [Elapsed: 00:10 | ETA: 00:00]
+SC [B3]: 100%|███████████████████████████████████████████████████████████████████| 347/347 [Elapsed: 00:09 | ETA: 00:00]
 </pre>
 </div>
 </div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:27:57.910</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">331</span> - <span class="ansi-bold">Phase 2: Executing Inter-batch median alignment...</span>
-<span class="ansi-green-fg">2026-06-01 14:27:58.492</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">902</span> - <span class="ansi-bold">QC-RFSC Eval QC RSD: 13.20%</span>
-<span class="ansi-green-fg">2026-06-01 14:27:58.493</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">801</span> - <span class="ansi-bold">--- Evaluating Method: QC-SVR ---</span>
-<span class="ansi-green-fg">2026-06-01 14:27:58.494</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">240</span> - <span class="ansi-bold">Phase 1: Executing Intra-batch drift correction with QC-SVR...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:26:10.701</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">373</span> - <span class="ansi-bold">Phase 2: Executing Inter-batch median alignment...</span>
+<span class="ansi-green-fg">2026-06-08 16:26:11.256</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">976</span> - <span class="ansi-bold">QC-RFSC Eval QC RSD: 13.20%</span>
+<span class="ansi-green-fg">2026-06-08 16:26:11.257</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">873</span> - <span class="ansi-bold">--- Evaluating Method: QC-SVR ---</span>
+<span class="ansi-green-fg">2026-06-08 16:26:11.257</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">280</span> - <span class="ansi-bold">Phase 1: Executing Intra-batch drift correction with QC-SVR...</span>
 </pre>
 </div>
 </div>
@@ -8219,44 +8243,32 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:21.687</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">331</span> - <span class="ansi-bold">Phase 2: Executing Inter-batch median alignment...</span>
-<span class="ansi-green-fg">2026-06-01 14:28:22.283</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">902</span> - <span class="ansi-bold">QC-SVR Eval QC RSD: 14.32%</span>
-<span class="ansi-green-fg">2026-06-01 14:28:22.284</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">801</span> - <span class="ansi-bold">--- Evaluating Method: SERRF ---</span>
-<span class="ansi-green-fg">2026-06-01 14:28:22.285</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_prepare_serrf_correlation_matrix</span>:<span class="ansi-cyan-fg">747</span> - <span class="ansi-bold">Calculating Spearman correlation on features...</span>
-<span class="ansi-green-fg">2026-06-01 14:28:22.293</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">482</span> - <span class="ansi-bold">Initializing High-Performance Hybrid SERRF Corrector...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:26:35.786</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">373</span> - <span class="ansi-bold">Phase 2: Executing Inter-batch median alignment...</span>
+<span class="ansi-green-fg">2026-06-08 16:26:36.523</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">976</span> - <span class="ansi-bold">QC-SVR Eval QC RSD: 14.32%</span>
+<span class="ansi-green-fg">2026-06-08 16:26:36.524</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">873</span> - <span class="ansi-bold">--- Evaluating Method: SERRF ---</span>
+<span class="ansi-green-fg">2026-06-08 16:26:36.525</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_prepare_serrf_correlation_matrix</span>:<span class="ansi-cyan-fg">816</span> - <span class="ansi-bold">Calculating Spearman correlation on features...</span>
+<span class="ansi-green-fg">2026-06-08 16:26:36.535</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">538</span> - <span class="ansi-bold">Initializing High-Performance Hybrid SERRF Corrector...</span>
 </pre>
 </div>
 </div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="application/vnd.jupyter.stderr" tabindex="0">
-<pre>SERRF: 100%|█████████████████████████████████████████████████████████████████████| 347/347 [Elapsed: 00:11 | ETA: 00:00]</pre>
-</div>
-</div>
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:33.765</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">902</span> - <span class="ansi-bold">SERRF Eval QC RSD: 10.00%</span>
-<span class="ansi-green-fg">2026-06-01 14:28:33.766</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">801</span> - <span class="ansi-bold">--- Evaluating Method: RUV ---</span>
-</pre>
-</div>
-</div>
-<div class="jp-OutputArea-child">
-<div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
-<div class="jp-RenderedText jp-OutputArea-output" data-mime-type="application/vnd.jupyter.stderr" tabindex="0">
-<pre>
+<pre>SERRF: 100%|█████████████████████████████████████████████████████████████████████| 347/347 [Elapsed: 00:12 | ETA: 00:00]
 </pre>
 </div>
 </div>
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:33.782</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_prepare_ruv_control_features</span>:<span class="ansi-cyan-fg">786</span> - <span class="ansi-bold">RUV-III Control Features: 20 total (5 predefined, 17 empirical).</span>
-<span class="ansi-green-fg">2026-06-01 14:28:33.783</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">543</span> - <span class="ansi-bold">Executing Global RUV-III (k=5)...</span>
-<span class="ansi-green-fg">2026-06-01 14:28:33.788</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">558</span> - <span class="ansi-yellow-intense-fg ansi-bold">NaNs detected. Applying median imputation...</span>
-<span class="ansi-green-fg">2026-06-01 14:28:33.893</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">902</span> - <span class="ansi-bold">RUV Eval QC RSD: 11.09%</span>
-<span class="ansi-green-fg">2026-06-01 14:28:33.896</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">992</span> - <span class="ansi-green-intense-fg ansi-bold">Auto selection: SERRF is optimal (Eval QC RSD = 10.00%).</span>
-<span class="ansi-green-fg">2026-06-01 14:28:33.897</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1010</span> - <span class="ansi-bold">Assembling evaluation grid for all methods...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:26:49.479</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">976</span> - <span class="ansi-bold">SERRF Eval QC RSD: 10.00%</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.480</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">873</span> - <span class="ansi-bold">--- Evaluating Method: RUV ---</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.498</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_prepare_ruv_control_features</span>:<span class="ansi-cyan-fg">853</span> - <span class="ansi-bold">RUV-III Control Features: 20 total (5 predefined, 17 empirical).</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.499</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">602</span> - <span class="ansi-bold">Executing Global RUV-III (k=5)...</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.505</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">correction:fit_transform</span>:<span class="ansi-cyan-fg">617</span> - <span class="ansi-yellow-intense-fg ansi-bold">NaNs detected. Applying median imputation...</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.636</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:_evaluate_all_methods</span>:<span class="ansi-cyan-fg">976</span> - <span class="ansi-bold">RUV Eval QC RSD: 11.09%</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.639</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1064</span> - <span class="ansi-green-intense-fg ansi-bold">Auto selection: SERRF is optimal (Eval QC RSD = 10.00%).</span>
+<span class="ansi-green-fg">2026-06-08 16:26:49.640</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1082</span> - <span class="ansi-bold">Assembling evaluation grid for all methods...</span>
 </pre>
 </div>
 </div>
@@ -8269,7 +8281,7 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:35.698</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1023</span> - <span class="ansi-bold">Generating specific RSD plot for: SERRF</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:26:51.335</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1093</span> - <span class="ansi-bold">Generating specific RSD plot for: SERRF</span>
 </pre>
 </div>
 </div>
@@ -8282,10 +8294,14 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:36.092</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1066</span> - <span class="ansi-bold">Generating IS plots for SERRF...</span>
-<span class="ansi-green-fg">2026-06-01 14:28:41.254</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1096</span> - <span class="ansi-bold">Bypassing IS baseline prediction for SERRF.</span>
-<span class="ansi-green-fg">2026-06-01 14:28:41.255</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1099</span> - <span class="ansi-green-intense-fg ansi-bold">Signal drift correction (SERRF) completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:28:41.278</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_signal_correction": 00:01:44.035.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:26:51.644</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1136</span> - <span class="ansi-bold">Generating IS plots for SERRF...</span>
+<span class="ansi-green-fg">2026-06-08 16:26:51.646</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\03_Corrected_Data\Internal_Standard_Scatters.</span>
+<span class="ansi-green-fg">2026-06-08 16:26:51.646</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\03_Corrected_Data\Internal_Standard_Scatters.</span>
+<span class="ansi-green-fg">2026-06-08 16:26:54.485</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1177</span> - <span class="ansi-bold">Bypassing IS baseline prediction for SERRF.</span>
+<span class="ansi-green-fg">2026-06-08 16:26:54.487</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">correction:execute_signal_correction</span>:<span class="ansi-cyan-fg">1179</span> - <span class="ansi-green-intense-fg ansi-bold">Signal drift correction (SERRF) completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:26:54.507</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_signal_correction": 00:01:42.499.</span>
 </pre>
 </div>
 </div>
@@ -8307,7 +8323,7 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [8]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">qa_step3_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="s2">"QA_03_Corrected_Data"</span><span class="p">)</span>
@@ -8315,7 +8331,7 @@ SC [B3]: 100%|██████████████████████
 <span class="n">qa_engines_dict</span> <span class="o">=</span> <span class="p">{}</span>
 <span class="k">for</span> <span class="n">stage_name</span><span class="p">,</span> <span class="n">stage_data</span> <span class="ow">in</span> <span class="n">corrected_stages</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
     <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Executing Quality Assessment (QA) for: </span><span class="si">{</span><span class="n">stage_name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-    <span class="n">qa_corr_engine</span> <span class="o">=</span> <span class="n">MetaboIntAssessor</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">stage_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span> 
+    <span class="n">qa_corr_engine</span> <span class="o">=</span> <span class="n">MetaboIntAssessor</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">stage_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
     <span class="n">qa_corr_engine</span><span class="o">.</span><span class="n">execute_assessment</span><span class="p">(</span>
         <span class="n">output_dir</span><span class="o">=</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">qa_step3_dir</span><span class="p">,</span> <span class="n">stage_name</span><span class="p">))</span>
     <span class="n">qa_engines_dict</span><span class="p">[</span><span class="n">stage_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">qa_corr_engine</span>
@@ -8331,8 +8347,8 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:41.323</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">5</span> - <span class="ansi-bold">Executing Quality Assessment (QA) for: Global SERRF</span>
-<span class="ansi-green-fg">2026-06-01 14:28:41.327</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">421</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+<pre><span class="ansi-green-fg">2026-06-08 16:26:54.542</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">5</span> - <span class="ansi-bold">Executing Quality Assessment (QA) for: Global SERRF</span>
+<span class="ansi-green-fg">2026-06-08 16:26:54.545</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
 	.\tutorial_output\QA_03_Corrected_Data\Global SERRF.</span>
 </pre>
 </div>
@@ -8346,9 +8362,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:52.435</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">504</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_03_Corrected_Data\Global SERRF\QA_Summary_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:28:52.437</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">505</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:28:52.437</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:11.109.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:01.713</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">541</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_03_Corrected_Data\Global SERRF\QA_Summary_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.714</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.716</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:07.170.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.714</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.716</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:07.170.</span>
 </pre>
 </div>
 </div>
@@ -8370,7 +8388,7 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [9]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Step 04: Low-Quality Feature Filtering..."</span><span class="p">)</span>
@@ -8379,7 +8397,8 @@ SC [B3]: 100%|██████████████████████
 <span class="n">fltr_low_quality_engine</span> <span class="o">=</span> <span class="n">MetaboIntFilter</span><span class="p">(</span>
     <span class="n">data</span><span class="o">=</span><span class="n">final_corr_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
 <span class="n">low_quality_filter_data</span> <span class="o">=</span> <span class="n">fltr_low_quality_engine</span><span class="o">.</span><span class="n">execute_quality_filtering</span><span class="p">(</span>
-    <span class="n">output_dir</span><span class="o">=</span><span class="n">step4_dir</span><span class="p">)</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="n">step4_dir</span>
+<span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -8392,11 +8411,13 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:52.478</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 04: Low-Quality Feature Filtering...</span>
-<span class="ansi-green-fg">2026-06-01 14:28:52.484</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">629</span> - <span class="ansi-bold">Features before filtering: 347</span>
-<span class="ansi-green-fg">2026-06-01 14:28:52.495</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">649</span> - <span class="ansi-bold">Features after Blank/QC check: 261</span>
-<span class="ansi-green-fg">2026-06-01 14:28:52.512</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">670</span> - <span class="ansi-bold">Features after QC RSD check: 248</span>
-<span class="ansi-green-fg">2026-06-01 14:28:52.608</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">704</span> - <span class="ansi-bold">Data after low-quality features filtering saved as: .\tutorial_output\04_Quality_Filtered\Filtered_Data_Low-quality_Features.csv</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:01.753</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 04: Low-Quality Feature Filtering...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.760</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">661</span> - <span class="ansi-bold">Features before filtering: 347</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.772</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">679</span> - <span class="ansi-bold">Features after Blank/QC check: 261</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.785</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">698</span> - <span class="ansi-bold">Features after QC RSD check: 248</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.802</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\04_Quality_Filtered.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:01.894</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">735</span> - <span class="ansi-bold">Data after low-quality features filtering saved as: .\tutorial_output\04_Quality_Filtered\Filtered_Data_Low-quality_Features.csv</span>
 </pre>
 </div>
 </div>
@@ -8409,9 +8430,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:54.520</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:_execute_s2_visualization</span>:<span class="ansi-cyan-fg">792</span> - <span class="ansi-bold">Low-quality Filter summary dashboard saved as: .\tutorial_output\04_Quality_Filtered\Low-quality_Filtering_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:28:54.521</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">715</span> - <span class="ansi-green-intense-fg ansi-bold">Low-quality features filtering completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:28:54.522</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_quality_filtering": 00:00:02.038.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:03.267</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">filtering:_execute_s2_visualization</span>:<span class="ansi-cyan-fg">833</span> - <span class="ansi-bold">Low-quality Filter summary dashboard saved as: .\tutorial_output\04_Quality_Filtered\Low-quality_Filtering_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:27:03.268</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">747</span> - <span class="ansi-green-intense-fg ansi-bold">Low-quality features filtering completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:03.269</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_quality_filtering": 00:00:01.509.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:03.268</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">filtering:execute_quality_filtering</span>:<span class="ansi-cyan-fg">747</span> - <span class="ansi-green-intense-fg ansi-bold">Low-quality features filtering completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:03.269</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_quality_filtering": 00:00:01.509.</span>
 </pre>
 </div>
 </div>
@@ -8436,12 +8459,12 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-InputPrompt jp-InputArea-prompt">In [10]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
-<div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-    <span class="s2">"QA-Step 04: Quality Assessment on Low-Quality Feature Filtered Data..."</span><span class="p">)</span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"QA-Step 04: Quality Assessment on Low-Quality Feature Filtered Data..."</span><span class="p">)</span>
 
 <span class="n">qa_step4_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="s2">"QA_04_Quality_Filtered"</span><span class="p">)</span>
 <span class="n">qa_low_quality_filter_engine</span> <span class="o">=</span> <span class="n">MetaboIntAssessor</span><span class="p">(</span>
-    <span class="n">data</span><span class="o">=</span><span class="n">low_quality_filter_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
+    <span class="n">data</span><span class="o">=</span><span class="n">low_quality_filter_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span>
+<span class="p">)</span>
 <span class="n">qa_low_quality_filter_engine</span><span class="o">.</span><span class="n">execute_assessment</span><span class="p">(</span><span class="n">output_dir</span><span class="o">=</span><span class="n">qa_step4_dir</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -8455,7 +8478,9 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:28:54.557</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 04: Quality Assessment on Low-Quality Feature Filtered Data...</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:03.315</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 04: Quality Assessment on Low-Quality Feature Filtered Data...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:03.318</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+	.\tutorial_output\QA_04_Quality_Filtered.</span>
 </pre>
 </div>
 </div>
@@ -8468,9 +8493,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:29:06.155</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">504</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_04_Quality_Filtered\QA_Summary_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:29:06.156</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">505</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:06.157</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:11.598.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:10.991</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">541</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_04_Quality_Filtered\QA_Summary_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:27:10.992</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:10.993</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:07.675.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:10.992</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:10.993</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:07.675.</span>
 </pre>
 </div>
 </div>
@@ -8493,7 +8520,7 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [11]:</div>
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Step 05: Missing Value Imputation..."</span><span class="p">)</span>
@@ -8514,19 +8541,19 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:29:06.193</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 05: Missing Value Imputation...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:06.200</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">805</span> - <span class="ansi-bold">Hybrid Imputation Engine Initialized. MAR: Auto (Evaluating KNN=5, LLS (K=15), MinProb, Median) | MNAR: QRILC | Sim_Mask: 0.05</span>
-<span class="ansi-green-fg">2026-06-01 14:29:06.213</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">819</span> - <span class="ansi-bold">Applying QRILC to 3 MNAR features.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:06.417</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">683</span> - <span class="ansi-bold">Simulating "KNN" on MAR subset...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:08.406</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">683</span> - <span class="ansi-bold">Simulating "MinProb" on MAR subset...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:09.130</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">683</span> - <span class="ansi-bold">Simulating "Median" on MAR subset...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:09.678</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">683</span> - <span class="ansi-bold">Simulating "LLS" on MAR subset...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:09.963</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">696</span> - <span class="ansi-bold">Optimal MAR algorithm selected: KNN</span>
-<span class="ansi-green-fg">2026-06-01 14:29:09.964</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">856</span> - <span class="ansi-bold">Executing isolated 'KNN' on MAR features.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:10.122</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">906</span> - <span class="ansi-bold">Calculating imputation-related metrics...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:10.734</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">421</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+<pre><span class="ansi-green-fg">2026-06-08 16:27:11.036</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 05: Missing Value Imputation...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:11.043</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">872</span> - <span class="ansi-bold">Hybrid Imputation Engine Initialized. MAR: Auto (Evaluating KNN=5, LLS (K=15), MinProb, Median) | MNAR: QRILC | Sim_Mask: 0.05</span>
+<span class="ansi-green-fg">2026-06-08 16:27:11.057</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">885</span> - <span class="ansi-bold">Applying QRILC to 3 MNAR features.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:11.301</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">732</span> - <span class="ansi-bold">Simulating "KNN" on MAR subset...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:13.487</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">732</span> - <span class="ansi-bold">Simulating "MinProb" on MAR subset...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:14.704</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">732</span> - <span class="ansi-bold">Simulating "Median" on MAR subset...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:15.244</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">732</span> - <span class="ansi-bold">Simulating "LLS" on MAR subset...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:15.482</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:select_best_algorithm</span>:<span class="ansi-cyan-fg">749</span> - <span class="ansi-bold">Optimal MAR algorithm selected: KNN</span>
+<span class="ansi-green-fg">2026-06-08 16:27:15.483</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">920</span> - <span class="ansi-bold">Executing isolated 'KNN' on MAR features.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:15.641</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">974</span> - <span class="ansi-bold">Calculating imputation-related metrics...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:16.223</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
 	.\tutorial_output\05_Imputation.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:10.851</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">918</span> - <span class="ansi-bold">Generating diagnostic plots for imputation...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:16.345</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">984</span> - <span class="ansi-bold">Generating diagnostic plots for imputation...</span>
 </pre>
 </div>
 </div>
@@ -8545,9 +8572,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:29:17.688</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">939</span> - <span class="ansi-bold">Imputer summary dashboard saved as: .\tutorial_output\05_Imputation\Imputation_Dashboard_KNN.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:29:17.689</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">942</span> - <span class="ansi-green-intense-fg ansi-bold">Missing value imputation completed successfully.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:17.692</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_imputation": 00:00:11.496.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:22.013</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">1006</span> - <span class="ansi-bold">Imputer summary dashboard saved as: .\tutorial_output\05_Imputation\Imputation_Dashboard_KNN.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:27:22.014</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">1008</span> - <span class="ansi-green-intense-fg ansi-bold">Missing value imputation completed successfully.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:22.015</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_imputation": 00:00:10.975.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:22.014</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">imputation:execute_imputation</span>:<span class="ansi-cyan-fg">1008</span> - <span class="ansi-green-intense-fg ansi-bold">Missing value imputation completed successfully.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:22.015</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_imputation": 00:00:10.975.</span>
 </pre>
 </div>
 </div>
@@ -8589,8 +8618,8 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:29:17.727</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 05: Quality Assessment of Imputated Data...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:17.729</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">421</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+<pre><span class="ansi-green-fg">2026-06-08 16:27:22.050</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 05: Quality Assessment of Imputated Data...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:22.052</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
 	.\tutorial_output\QA_05_Imputed_Data.</span>
 </pre>
 </div>
@@ -8604,9 +8633,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:29:29.326</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">504</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_05_Imputed_Data\QA_Summary_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:29:29.327</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">505</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:29.328</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:11.598.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:27:28.192</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">541</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_05_Imputed_Data\QA_Summary_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.192</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.193</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.140.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.192</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.193</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.140.</span>
 </pre>
 </div>
 </div>
@@ -8635,8 +8666,7 @@ SC [B3]: 100%|██████████████████████
 
 <span class="n">step6_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="s2">"06_Normalized_Data"</span><span class="p">)</span>
 <span class="n">norm_engine</span> <span class="o">=</span> <span class="n">MetaboIntNormalizer</span><span class="p">(</span><span class="n">imputed_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
-<span class="n">normalized_data</span> <span class="o">=</span> <span class="n">norm_engine</span><span class="o">.</span><span class="n">execute_normalization</span><span class="p">(</span>
-    <span class="n">output_dir</span><span class="o">=</span><span class="n">step6_dir</span><span class="p">)</span>
+<span class="n">normalized_data</span> <span class="o">=</span> <span class="n">norm_engine</span><span class="o">.</span><span class="n">execute_normalization</span><span class="p">(</span><span class="n">output_dir</span><span class="o">=</span><span class="n">step6_dir</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -8649,13 +8679,13 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:29:29.362</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 06: Data Normalization...</span>
-<span class="ansi-green-fg">2026-06-01 14:29:29.365</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">421</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+<pre><span class="ansi-green-fg">2026-06-08 16:27:28.226</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 06: Data Normalization...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.229</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
 	.\tutorial_output\06_Normalized_Data.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:29.369</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">669</span> - <span class="ansi-bold">Permanently dropping 24 Blank samples.</span>
-<span class="ansi-green-fg">2026-06-01 14:29:29.370</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">671</span> - <span class="ansi-bold">Applying Normalization | Method: VSN | Log: False</span>
-<span class="ansi-green-fg">2026-06-01 14:30:04.391</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">693</span> - <span class="ansi-bold">Calculating normalization-related metrics...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:07.587</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">700</span> - <span class="ansi-bold">Generating diagnostic plots for normalization...</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.233</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">674</span> - <span class="ansi-bold">Permanently dropping 24 Blank samples.</span>
+<span class="ansi-green-fg">2026-06-08 16:27:28.233</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">676</span> - <span class="ansi-bold">Applying Normalization | Method: VSN | Log: False</span>
+<span class="ansi-green-fg">2026-06-08 16:28:02.542</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">694</span> - <span class="ansi-bold">Calculating normalization-related metrics...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:05.797</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">701</span> - <span class="ansi-bold">Generating diagnostic plots for normalization...</span>
 </pre>
 </div>
 </div>
@@ -8668,9 +8698,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:30:14.095</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">710</span> - <span class="ansi-bold">Normalization summary dashboard saved as: .\tutorial_output\06_Normalized_Data\Normalization_Dashboard_VSN.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:30:14.096</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">711</span> - <span class="ansi-green-intense-fg ansi-bold">Data normalization completed successfully.</span>
-<span class="ansi-green-fg">2026-06-01 14:30:14.096</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_normalization": 00:00:44.731.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:28:11.943</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">713</span> - <span class="ansi-bold">Normalization summary dashboard saved as: .\tutorial_output\06_Normalized_Data\Normalization_Dashboard_VSN.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:28:11.944</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">714</span> - <span class="ansi-green-intense-fg ansi-bold">Data normalization completed successfully.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:11.945</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_normalization": 00:00:43.716.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:11.944</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">normalization:execute_normalization</span>:<span class="ansi-cyan-fg">714</span> - <span class="ansi-green-intense-fg ansi-bold">Data normalization completed successfully.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:11.945</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_normalization": 00:00:43.716.</span>
 </pre>
 </div>
 </div>
@@ -8698,8 +8730,7 @@ SC [B3]: 100%|██████████████████████
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"QA-Step 06: Quality Assessment of Normalized Data..."</span><span class="p">)</span>
 
 <span class="n">qa_step6_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">OUTPUT_DIR</span><span class="p">,</span> <span class="s2">"QA_06_Norm_Data"</span><span class="p">)</span>
-<span class="n">qa_norm_engine</span> <span class="o">=</span> <span class="n">MetaboIntAssessor</span><span class="p">(</span>
-    <span class="n">data</span><span class="o">=</span><span class="n">normalized_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
+<span class="n">qa_norm_engine</span> <span class="o">=</span> <span class="n">MetaboIntAssessor</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="n">normalized_data</span><span class="p">,</span> <span class="n">pipeline_params</span><span class="o">=</span><span class="n">params</span><span class="p">)</span>
 <span class="n">qa_norm_engine</span><span class="o">.</span><span class="n">execute_assessment</span><span class="p">(</span><span class="n">output_dir</span><span class="o">=</span><span class="n">qa_step6_dir</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -8713,8 +8744,8 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:30:14.129</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 06: Quality Assessment of Normalized Data...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:14.131</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">421</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
+<pre><span class="ansi-green-fg">2026-06-08 16:28:11.978</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">QA-Step 06: Quality Assessment of Normalized Data...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:11.981</span> | <span class="ansi-yellow-intense-fg ansi-bold">WARNING </span> | <span class="ansi-cyan-fg">io_utils:_check_dir_exists</span>:<span class="ansi-cyan-fg">450</span> - <span class="ansi-yellow-intense-fg ansi-bold">No such directory, creating a new directory:
 	.\tutorial_output\QA_06_Norm_Data.</span>
 </pre>
 </div>
@@ -8728,9 +8759,11 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:30:24.721</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">504</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_06_Norm_Data\QA_Summary_Dashboard.svg</span>
-<span class="ansi-green-fg">2026-06-01 14:30:24.722</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">505</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
-<span class="ansi-green-fg">2026-06-01 14:30:24.722</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">446</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:10.591.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:28:18.044</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">541</span> - <span class="ansi-bold">Assessor summary dashboard saved as: .\tutorial_output\QA_06_Norm_Data\QA_Summary_Dashboard.svg</span>
+<span class="ansi-green-fg">2026-06-08 16:28:18.045</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:18.046</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.065.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:18.045</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">assessment:execute_assessment</span>:<span class="ansi-cyan-fg">542</span> - <span class="ansi-green-intense-fg ansi-bold">Data quality assessment completed.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:18.046</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">io_utils:time_wrap</span>:<span class="ansi-cyan-fg">479</span> - <span class="ansi-green-intense-fg ansi-bold">Execution time of "execute_assessment": 00:00:06.065.</span>
 </pre>
 </div>
 </div>
@@ -8758,7 +8791,7 @@ SC [B3]: 100%|██████████████████████
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Step 07: Sequential Audit Report Compilation..."</span><span class="p">)</span>
 
 <span class="n">REPORT_DIR</span> <span class="o">=</span> <span class="s2">"07_Report_Summary"</span>
-<span class="c1"># 1. Process Visual Assets </span>
+<span class="c1"># 1. Process Visual Assets</span>
 <span class="n">visual_rep</span> <span class="o">=</span> <span class="n">ru</span><span class="o">.</span><span class="n">VisualAssetReporter</span><span class="p">(</span><span class="n">base_dir</span><span class="o">=</span><span class="n">OUTPUT_DIR</span><span class="p">)</span>
 <span class="n">visual_rep</span><span class="o">.</span><span class="n">compile_assessor_report</span><span class="p">(</span>
     <span class="n">report_folder</span><span class="o">=</span><span class="n">REPORT_DIR</span><span class="p">,</span> <span class="n">is_multi_batch</span><span class="o">=</span><span class="n">is_multi_batch_flag</span>
@@ -8769,7 +8802,7 @@ SC [B3]: 100%|██████████████████████
 <span class="n">stage_key_map</span> <span class="o">=</span> <span class="p">{</span>
     <span class="s2">"Intra-batch corrected"</span><span class="p">:</span> <span class="s2">"intra_batch_correction"</span><span class="p">,</span>
     <span class="s2">"Inter-batch corrected"</span><span class="p">:</span> <span class="s2">"inter_batch_correction"</span><span class="p">,</span>
-    <span class="s2">"Global SERRF"</span><span class="p">:</span> <span class="s2">"global_correction"</span>
+    <span class="s2">"Global SERRF"</span><span class="p">:</span> <span class="s2">"global_correction"</span><span class="p">,</span>
 <span class="p">}</span>
 
 <span class="k">for</span> <span class="n">stage_name</span><span class="p">,</span> <span class="n">engine</span> <span class="ow">in</span> <span class="n">qa_engines_dict</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
@@ -8780,21 +8813,21 @@ SC [B3]: 100%|██████████████████████
 <span class="n">pipeline_metrics_objs</span> <span class="o">=</span> <span class="p">{</span>
     <span class="s2">"raw_dataset"</span><span class="p">:</span> <span class="n">raw_data</span><span class="o">.</span><span class="n">dataset_metrics</span><span class="p">,</span>
     <span class="s2">"high_mv_feature_filtering"</span><span class="p">:</span> <span class="n">mv_filter_data</span><span class="o">.</span><span class="n">mv_filtering_metrics</span><span class="p">,</span>
-    <span class="s2">"signal_correction"</span><span class="p">:</span> <span class="n">final_corr_data</span><span class="o">.</span><span class="n">correction_metrics</span><span class="p">,</span> 
+    <span class="s2">"signal_correction"</span><span class="p">:</span> <span class="n">final_corr_data</span><span class="o">.</span><span class="n">correction_metrics</span><span class="p">,</span>
     <span class="s2">"low_quality_feature_filtering"</span><span class="p">:</span> 
         <span class="n">low_quality_filter_data</span><span class="o">.</span><span class="n">quality_filtering_metrics</span><span class="p">,</span>
     <span class="s2">"missing_value_imputation"</span><span class="p">:</span> <span class="n">imputed_data</span><span class="o">.</span><span class="n">imputation_metrics</span><span class="p">,</span>
-    <span class="s2">"normalization"</span><span class="p">:</span> <span class="n">normalized_data</span><span class="o">.</span><span class="n">normalization_metrics</span>
+    <span class="s2">"normalization"</span><span class="p">:</span> <span class="n">normalized_data</span><span class="o">.</span><span class="n">normalization_metrics</span><span class="p">,</span>
 <span class="p">}</span>
 
 <span class="n">qa_metrics_objs</span> <span class="o">=</span> <span class="p">{</span>
     <span class="s2">"raw_dataset"</span><span class="p">:</span> <span class="n">qa_raw_engine</span><span class="o">.</span><span class="n">assessment_metrics</span><span class="p">,</span>
     <span class="s2">"high_mv_feature_filtering"</span><span class="p">:</span> <span class="n">qa_mv_filter_engine</span><span class="o">.</span><span class="n">assessment_metrics</span><span class="p">,</span>
-    <span class="o">**</span><span class="n">qa_corr_metrics</span><span class="p">,</span> 
+    <span class="o">**</span><span class="n">qa_corr_metrics</span><span class="p">,</span>
     <span class="s2">"low_quality_feature_filtering"</span><span class="p">:</span> 
-        <span class="n">qa_low_quality_filter_engine</span><span class="o">.</span><span class="n">assessment_metrics</span><span class="p">,</span> 
+        <span class="n">qa_low_quality_filter_engine</span><span class="o">.</span><span class="n">assessment_metrics</span><span class="p">,</span>
     <span class="s2">"missing_value_imputation"</span><span class="p">:</span> <span class="n">qa_imp_engine</span><span class="o">.</span><span class="n">assessment_metrics</span><span class="p">,</span>
-    <span class="s2">"normalization"</span><span class="p">:</span> <span class="n">qa_norm_engine</span><span class="o">.</span><span class="n">assessment_metrics</span>
+    <span class="s2">"normalization"</span><span class="p">:</span> <span class="n">qa_norm_engine</span><span class="o">.</span><span class="n">assessment_metrics</span><span class="p">,</span>
 <span class="p">}</span>
 
 <span class="c1"># 4. Initialize reporter and generate ONE markdown file</span>
@@ -8802,9 +8835,9 @@ SC [B3]: 100%|██████████████████████
 <span class="n">md_reporter</span> <span class="o">=</span> <span class="n">ru</span><span class="o">.</span><span class="n">NarrativeStatsReporter</span><span class="p">(</span><span class="n">base_dir</span><span class="o">=</span><span class="n">OUTPUT_DIR</span><span class="p">)</span>
 
 <span class="n">md_reporter</span><span class="o">.</span><span class="n">generate_markdown</span><span class="p">(</span>
-    <span class="n">pipeline_metrics</span><span class="o">=</span><span class="n">pipeline_metrics_objs</span><span class="p">,</span> 
+    <span class="n">pipeline_metrics</span><span class="o">=</span><span class="n">pipeline_metrics_objs</span><span class="p">,</span>
     <span class="n">qa_metrics</span><span class="o">=</span><span class="n">qa_metrics_objs</span><span class="p">,</span>
-    <span class="n">report_folder</span><span class="o">=</span><span class="n">REPORT_DIR</span>
+    <span class="n">report_folder</span><span class="o">=</span><span class="n">REPORT_DIR</span><span class="p">,</span>
 <span class="p">)</span>
 
 <span class="n">success</span> <span class="o">=</span> <span class="n">md_reporter</span><span class="o">.</span><span class="n">export_report</span><span class="p">(</span><span class="n">pdf_engine</span><span class="o">=</span><span class="s2">"weasyprint"</span><span class="p">)</span>
@@ -8823,8 +8856,8 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:30:24.759</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 07: Sequential Audit Report Compilation...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:24.762</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:compile_assessor_report</span>:<span class="ansi-cyan-fg">306</span> - <span class="ansi-bold">Multi-batch design detected. Assembling Batch Grid.</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:28:18.083</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">1</span> - <span class="ansi-bold">Step 07: Sequential Audit Report Compilation...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:18.086</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:compile_assessor_report</span>:<span class="ansi-cyan-fg">325</span> - <span class="ansi-bold">Multi-batch design detected. Assembling Batch Grid.</span>
 </pre>
 </div>
 </div>
@@ -8855,21 +8888,21 @@ SC [B3]: 100%|██████████████████████
 <div class="jp-OutputArea-child">
 <div class="jp-OutputPrompt jp-OutputArea-prompt"></div>
 <div class="jp-RenderedText jp-OutputArea-output" data-mime-type="text/plain" tabindex="0">
-<pre><span class="ansi-green-fg">2026-06-01 14:30:27.167</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:compile_assessor_report</span>:<span class="ansi-cyan-fg">348</span> - <span class="ansi-green-intense-fg ansi-bold">Report SVG assets compiled at: tutorial_output\07_Report_Summary\assets</span>
+<pre><span class="ansi-green-fg">2026-06-08 16:28:21.376</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:compile_assessor_report</span>:<span class="ansi-cyan-fg">370</span> - <span class="ansi-green-intense-fg ansi-bold">Report SVG assets compiled at: tutorial_output\07_Report_Summary\assets</span>
 Initializing narrative reporter at workspace: .\tutorial_output
-<span class="ansi-green-fg">2026-06-01 14:30:27.309</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1146</span> - <span class="ansi-bold">Generating COMPREHENSIVE narrative report...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:27.351</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1156</span> - <span class="ansi-green-intense-fg ansi-bold">Comprehensive report generated: tutorial_output\07_Report_Summary\Report_Comprehensive.md</span>
-<span class="ansi-green-fg">2026-06-01 14:30:27.352</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1146</span> - <span class="ansi-bold">Generating BRIEF narrative report...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:27.364</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1156</span> - <span class="ansi-green-intense-fg ansi-bold">Brief report generated: tutorial_output\07_Report_Summary\Report_Brief.md</span>
-<span class="ansi-green-fg">2026-06-01 14:30:27.537</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1301</span> - <span class="ansi-bold">--- Exporting PDF for: Report_Comprehensive.md ---</span>
-<span class="ansi-green-fg">2026-06-01 14:30:27.537</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1228</span> - <span class="ansi-bold">Attempting PDF export via WeasyPrint...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:33.877</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1250</span> - <span class="ansi-green-intense-fg ansi-bold">PDF generated: tutorial_output\07_Report_Summary\Report_Comprehensive.pdf</span>
-<span class="ansi-green-fg">2026-06-01 14:30:33.878</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1330</span> - <span class="ansi-green-intense-fg ansi-bold">[Report_Comprehensive.md] completed using WeasyPrint.</span>
-<span class="ansi-green-fg">2026-06-01 14:30:33.879</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1301</span> - <span class="ansi-bold">--- Exporting PDF for: Report_Brief.md ---</span>
-<span class="ansi-green-fg">2026-06-01 14:30:33.880</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1228</span> - <span class="ansi-bold">Attempting PDF export via WeasyPrint...</span>
-<span class="ansi-green-fg">2026-06-01 14:30:36.380</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1250</span> - <span class="ansi-green-intense-fg ansi-bold">PDF generated: tutorial_output\07_Report_Summary\Report_Brief.pdf</span>
-<span class="ansi-green-fg">2026-06-01 14:30:36.381</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1330</span> - <span class="ansi-green-intense-fg ansi-bold">[Report_Brief.md] completed using WeasyPrint.</span>
-<span class="ansi-green-fg">2026-06-01 14:30:36.383</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">56</span> - <span class="ansi-green-intense-fg ansi-bold">PI-METABOQC PIPELINE COMPLETED SUCCESSFULLY.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:21.507</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1209</span> - <span class="ansi-bold">Generating COMPREHENSIVE narrative report...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:21.550</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1219</span> - <span class="ansi-green-intense-fg ansi-bold">Comprehensive report generated: tutorial_output\07_Report_Summary\Report_Comprehensive.md</span>
+<span class="ansi-green-fg">2026-06-08 16:28:21.551</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1209</span> - <span class="ansi-bold">Generating BRIEF narrative report...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:21.564</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:generate_markdown</span>:<span class="ansi-cyan-fg">1219</span> - <span class="ansi-green-intense-fg ansi-bold">Brief report generated: tutorial_output\07_Report_Summary\Report_Brief.md</span>
+<span class="ansi-green-fg">2026-06-08 16:28:21.744</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1370</span> - <span class="ansi-bold">--- Exporting PDF for: Report_Comprehensive.md ---</span>
+<span class="ansi-green-fg">2026-06-08 16:28:21.745</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1291</span> - <span class="ansi-bold">Attempting PDF export via WeasyPrint...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:28.486</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1314</span> - <span class="ansi-green-intense-fg ansi-bold">PDF generated: tutorial_output\07_Report_Summary\Report_Comprehensive.pdf</span>
+<span class="ansi-green-fg">2026-06-08 16:28:28.487</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1398</span> - <span class="ansi-green-intense-fg ansi-bold">[Report_Comprehensive.md] completed using WeasyPrint.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:28.488</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1370</span> - <span class="ansi-bold">--- Exporting PDF for: Report_Brief.md ---</span>
+<span class="ansi-green-fg">2026-06-08 16:28:28.489</span> | <span class="ansi-bold">INFO    </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1291</span> - <span class="ansi-bold">Attempting PDF export via WeasyPrint...</span>
+<span class="ansi-green-fg">2026-06-08 16:28:31.161</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:_render_weasyprint</span>:<span class="ansi-cyan-fg">1314</span> - <span class="ansi-green-intense-fg ansi-bold">PDF generated: tutorial_output\07_Report_Summary\Report_Brief.pdf</span>
+<span class="ansi-green-fg">2026-06-08 16:28:31.162</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">report_utils:export_report</span>:<span class="ansi-cyan-fg">1398</span> - <span class="ansi-green-intense-fg ansi-bold">[Report_Brief.md] completed using WeasyPrint.</span>
+<span class="ansi-green-fg">2026-06-08 16:28:31.163</span> | <span class="ansi-green-intense-fg ansi-bold">SUCCESS </span> | <span class="ansi-cyan-fg">__main__:&lt;module&gt;</span>:<span class="ansi-cyan-fg">56</span> - <span class="ansi-green-intense-fg ansi-bold">PI-METABOQC PIPELINE COMPLETED SUCCESSFULLY.</span>
 </pre>
 </div>
 </div>
@@ -8883,7 +8916,7 @@ Initializing narrative reporter at workspace: .\tutorial_output
 <div class="jp-InputPrompt jp-InputArea-prompt">In [16]:</div>
 <div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="cm-editor cm-s-jupyter">
-<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># md_reporter.consolidate_metrics(pipeline_metrics=pipeline_metrics_objs, </span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="c1"># md_reporter.consolidate_metrics(pipeline_metrics=pipeline_metrics_objs,</span>
 <span class="c1">#     qa_metrics=qa_metrics_objs)</span>
 </pre></div>
 </div>

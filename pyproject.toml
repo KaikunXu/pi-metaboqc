@@ -3,7 +3,7 @@
 # Defines the PEP 517 build backend and requirements for packaging.
 # ==============================================================================
 [build-system]
-requires = ["setuptools>=61.0"]  # Minimal version supporting pyproject.toml
+requires = ["setuptools>=77.0"]  # Minimal version supporting pyproject.toml
 build-backend = "setuptools.build_meta"
 
 # ==============================================================================
@@ -30,11 +30,11 @@ keywords = [
 description = "A comprehensive LC-MS metabolomics data quality control module."
 
 requires-python = ">=3.10"      # Supports modern Python features and type hints
-license = {file = "LICENSE"}    # Path to the MIT license file
+license = "MIT"                 # Lisence 
+license-files = ["LICENSE"]     # Path to the license file
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
@@ -104,11 +104,16 @@ where = ["src"]                 # Locate source code under the src directory
 include = ["pimqc*"]            # Include only packages starting with pimqc
 
 [tool.setuptools.package-data]
-"pimqc.data" = ["*.csv", "*.toml", "*.json"]   # Demo data and config files
-"pimqc.templates" = ["*.j2"]                   # Template files for report
+"pimqc" = [
+    "VERSION",                  # Version of the moudle
+    "data/*.csv",               # Demo meta and intensity data files
+    "data/*.toml",              # Demo config file (default format)
+    "data/*.json",              # Demo config file (optional for webserver)
+    "templates/*.j2",           # Template files for report
+]   
 
 [tool.setuptools.dynamic]
-version = {attr = "pimqc.__version__"} # Extract version from __init__.py
+version = {file = "src/pimqc/VERSION"} # Extract version from VERSION
 readme = {file = "README.md", content-type = "text/markdown"}
 
 # ==============================================================================

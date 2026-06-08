@@ -1,26 +1,33 @@
 # src/pimqc/visualizer_classes.py
 """
-Purpose of script: Base classes for visualization suites.
+Script purpose: Define common visualization behavior for pi-metaboqc modules.
+
+This module provides the BaseMetaboVisualizer class used by builder,
+assessment, filtering, correction, imputation, and normalization visualizers.
+It configures matplotlib/seaborn defaults, applies shared axis and legend
+formatting, cleans SVG font metadata, supports Jupyter display, and saves or
+closes matplotlib and patchwork-style figures consistently.
+Centralizing these behaviors keeps plot output stable across pipeline stages.
 """
+
 import io
-import os, re
+import os
+import re
 import itertools
+from typing import Optional, Union
 from pathlib import Path
 
-import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.markers import MarkerStyle
 import seaborn as sns
 
 # Avoid INFO level logging to console when saving figures as .pdf
 import logging
 from loguru import logger
-logging.getLogger("fontTools").setLevel(logging.WARNING)
-
-from typing import Optional, Union, Any
 
 from . import plot_utils as pu
 from . import io_utils as iu
+
+logging.getLogger("fontTools").setLevel(logging.WARNING)
 
 
 class BaseMetaboVisualizer:
@@ -30,14 +37,16 @@ class BaseMetaboVisualizer:
     to ensure consistent visual style across the pipeline, specifically
     targeting Adobe Illustrator compatibility and background consistency.
     """
-    FIG_SAVE_FORMAT = "svg" # or ["svg", "pdf"]
+
+    FIG_SAVE_FORMAT = "svg"  # or ["svg", "pdf"]
     FIG_DISPLAY_FORMAT = "png"
-    
+
     def __init__(
-        self, 
-        metabo_obj,
-        save_format: Optional[Union[str, list, tuple]] = None, 
-        display_format: Optional[str] = None) -> None:
+        self,
+        metabo_obj: object,
+        save_format: Optional[Union[str, list, tuple]] = None,
+        display_format: Optional[str] = None,
+    ) -> None:
         """Initialize the visualizer with global styles.
 
         Args:
@@ -54,39 +63,42 @@ class BaseMetaboVisualizer:
         plt.rcParams["svg.fonttype"] = "none"
         plt.rcParams["savefig.dpi"] = 300
         plt.rcParams["savefig.bbox"] = "tight"
-        
+
         # Hard-lock to Arial to prevent AI from throwing DejaVu errors
         plt.rcParams["font.family"] = "Arial"
         plt.rcParams["font.sans-serif"] = ["Arial"]
-        
+
         # Force white style to ensure background consistency
         sns.set_style("ticks")
         plt.rcParams["axes.facecolor"] = "white"
         plt.rcParams["figure.facecolor"] = "white"
-        
+
         # [CRITICAL UPDATE]: Comprehensive hook for SVG editability
         import matplotlib.axes
+
         if not hasattr(matplotlib.axes.Axes, "_pi_metaboqc_patched"):
             _orig_init = matplotlib.axes.Axes.__init__
-            
-            def _new_init(self_ax, *args, **kwargs):
+
+            def _new_init(
+                self_ax: matplotlib.axes.Axes, *args: object, **kwargs: object
+            ) -> None:
                 _orig_init(self_ax, *args, **kwargs)
-                
+
                 # 1. Rasterize elements with zorder < 2 (e.g., scatters)
                 # This keeps the data as a bitmap while axes/text remain vector.
                 self_ax.set_rasterization_zorder(2)
-                
+
                 # 2. Force lift text elements to the highest layer (zorder=10)
                 # This ensures they are NEVER rasterized and are easy to select.
                 self_ax.title.set_zorder(10)
                 self_ax.xaxis.label.set_zorder(10)
                 self_ax.yaxis.label.set_zorder(10)
-                
-                # 3. Disable clipping for labels to prevent AI 'Clipping Mask' 
+
+                # 3. Disable clipping for labels to prevent AI 'Clipping Mask'
                 # lock. This allows the text tool (T) to directly access them.
                 self_ax.xaxis.label.set_clip_on(False)
                 self_ax.yaxis.label.set_clip_on(False)
-                
+
                 # 4. Handle Ticks and Tick-labels (Critical for Colorbars)
                 # We iterate through major ticks to ensure labels are vector
                 for axis in [self_ax.xaxis, self_ax.yaxis]:
@@ -94,7 +106,7 @@ class BaseMetaboVisualizer:
                     for label in axis.get_ticklabels():
                         label.set_zorder(10)
                         label.set_clip_on(False)
-                        
+
             matplotlib.axes.Axes.__init__ = _new_init
             matplotlib.axes.Axes._pi_metaboqc_patched = True
 
@@ -105,14 +117,14 @@ class BaseMetaboVisualizer:
         meta_params = self.params.get("MetaboInt", {})
         self.default_save_fmt = save_format or self.FIG_SAVE_FORMAT
         self.default_display_fmt = display_format or self.FIG_DISPLAY_FORMAT
-        
+
         # Column Mapping from Metadata
         self.st_col = meta_params.get("sample_type", "Sample Type")
         self.bat_col = meta_params.get("batch", "Batch")
         self.io_col = meta_params.get("inject_order", "Inject Order")
         self.bg_col = meta_params.get("bio_group", "Bio Group")
         self.group_order = meta_params.get("group_order", None)
-        
+
         # Label Mapping
         sample_dict = meta_params.get("sample_dict", {})
         self.qc_lbl = sample_dict.get("QC sample", "QC")
@@ -124,48 +136,46 @@ class BaseMetaboVisualizer:
             self.obj.columns.get_level_values(self.bat_col).unique()
         )
         n_batches = len(self.all_batches)
-        
+
         # Strategy A: Use standard filled markers for typical cohort sizes (<=15)
         if n_batches <= 10:
             available_markers = ["o", "s", "^", "D", "v", "<", ">", "p", "*", "X"]
             marker_generator = itertools.cycle(available_markers)
-            
+
             self.style_map = {
                 batch_id: next(marker_generator) for batch_id in self.all_batches
             }
-            
+
         # Strategy B: Switch to MathText (Alphanumeric) for large cohorts (>15)
         else:
-            # Renders explicit numbers (e.g., '1', '2', '3') to guarantee 
+            # Renders explicit numbers (e.g., '1', '2', '3') to guarantee
             # absolute distinguishability and zero cognitive load in complex plots.
             self.style_map = {
-                batch_id: f"${i}$" for i, batch_id in enumerate(
-                    self.all_batches, start=1)
+                batch_id: f"${i}$"
+                for i, batch_id in enumerate(self.all_batches, start=1)
             }
-        
+
         # Global Palette Definition
         self.pal = {
-            self.qc_lbl: "tab:red", 
+            self.qc_lbl: "tab:red",
             self.act_lbl: "tab:gray",
-            True: "tab:red", 
-            False: "tab:gray"
+            True: "tab:red",
+            False: "tab:gray",
         }
 
         # Global Legend Style Configuration
         self.LEGEND_KWARGS = dict(
-            frameon=True, 
-            shadow=True, 
-            edgecolor="black", 
-            fontsize=10, 
+            frameon=True,
+            shadow=True,
+            edgecolor="black",
+            fontsize=10,
             title_fontsize=11,
             borderpad=0.4,
-            facecolor="white"
+            facecolor="white",
         )
 
     @staticmethod
-    def _clean_svg_fonts_for_ai(
-        svg_data: str, target_font: str = "Arial"
-    ) -> str:
+    def _clean_svg_fonts_for_ai(svg_data: str, target_font: str = "Arial") -> str:
         """Purify SVG font definitions safely for Adobe Illustrator compatibility.
 
         This method removes all fallback font declarations generated by Matplotlib
@@ -179,7 +189,6 @@ class BaseMetaboVisualizer:
         Returns:
             The purified SVG XML string.
         """
-        import re
 
         # 1. Clean inline CSS styles (e.g., style="font-family: 'DejaVu Sans';").
         # The regex matches "font-family:" followed by any whitespace, and then
@@ -187,37 +196,31 @@ class BaseMetaboVisualizer:
         # quote ("). This safely removes single-quoted fallback fonts without
         # corrupting surrounding HTML attributes or XML tags.
         svg_data = re.sub(
-            r'font-family:\s*[^;"]+', 
-            f'font-family: {target_font}', 
-            svg_data
+            r'font-family:\s*[^;"]+', f"font-family: {target_font}", svg_data
         )
 
         # 2. Clean standard XML attributes (e.g., font-family="DejaVu Sans").
         svg_data = re.sub(
-            r'font-family="[^"]+"', 
-            f'font-family="{target_font}"', 
-            svg_data
+            r'font-family="[^"]+"', f'font-family="{target_font}"', svg_data
         )
 
         # 3. Clean single-quoted attributes (e.g., font-family='DejaVu Sans').
         svg_data = re.sub(
-            r"font-family='[^']+'", 
-            f"font-family='{target_font}'", 
-            svg_data
+            r"font-family='[^']+'", f"font-family='{target_font}'", svg_data
         )
 
         return svg_data
 
     def _apply_standard_format(
         self,
-        ax,
-        title="",
-        xlabel="",
-        ylabel="",
-        append_stage=True,
-        custom_stage=None,
-        **kwargs
-    ):
+        ax: plt.Axes,
+        title: str = "",
+        xlabel: str = "",
+        ylabel: str = "",
+        append_stage: bool = True,
+        custom_stage: str | None = None,
+        **kwargs: object,
+    ) -> None:
         """Applies global standard formatting to a given matplotlib axis.
 
         Args:
@@ -234,13 +237,10 @@ class BaseMetaboVisualizer:
                 stage_label = ""
                 # Iterates through instance attributes to find the data object
                 for _, attr_value in vars(self).items():
-                    if (
-                        hasattr(attr_value, "attrs")
-                        and isinstance(attr_value.attrs, dict)
+                    if hasattr(attr_value, "attrs") and isinstance(
+                        attr_value.attrs, dict
                     ):
-                        stage_label = attr_value.attrs.get(
-                            "pipeline_stage", ""
-                        )
+                        stage_label = attr_value.attrs.get("pipeline_stage", "")
                         if stage_label:
                             break
 
@@ -256,13 +256,12 @@ class BaseMetaboVisualizer:
         pu.change_weight(ax=ax, axis="xy")
         pu.change_fontsize(ax=ax, axis="xy")
 
-
     def _format_single_legend(
         self,
-        ax,
+        ax: plt.Axes,
         loc: str = "upper right",
-        bbox_to_anchor: tuple = (1.05, 1.0),
-        **kwargs
+        bbox_to_anchor: tuple[float, float] = (1.05, 1.0),
+        **kwargs: object,
     ) -> None:
         """
         Format and position a standard single-group legend robustly.
@@ -280,14 +279,12 @@ class BaseMetaboVisualizer:
         if leg:
             labels = [t.get_text() for t in leg.get_texts()]
             # Support both Matplotlib 3.x and legacy handle attribute names
-            handles = getattr(
-                leg, "legend_handles", getattr(leg, "legendHandles", [])
-            )
-            
+            handles = getattr(leg, "legend_handles", getattr(leg, "legendHandles", []))
+
             # If extraction failed, fallback to physical axes scan
             if not handles:
                 handles, labels = ax.get_legend_handles_labels()
-                
+
             # Safely remove the old legend only AFTER extraction
             leg.remove()
         else:
@@ -304,15 +301,11 @@ class BaseMetaboVisualizer:
 
         # 5. Generate the new stylized legend and bind it to the Axes
         ax.legend(
-            handles,
-            labels,
-            loc=loc,
-            bbox_to_anchor=bbox_to_anchor,
-            **legend_kwargs
+            handles, labels, loc=loc, bbox_to_anchor=bbox_to_anchor, **legend_kwargs
         )
 
     # def _format_multi_legends(
-    #     self, ax, group_titles: list, loc: str = "upper left", 
+    #     self, ax, group_titles: list, loc: str = "upper left",
     #     start_bbox: tuple = (1.05, 1.0), group_pad: float = 0.04, **kwargs
     # ) -> list:
     #     """
@@ -346,10 +339,10 @@ class BaseMetaboVisualizer:
     #     # Dynamic coordinate offset calculation based on absolute font size
     #     f_size = leg_kwargs.get("fontsize", 10)
     #     t_size = leg_kwargs.get("title_fontsize", 11)
-        
+
     #     fig_h = ax.figure.get_size_inches()[1]
     #     ax_h = ax.get_position().height * fig_h
-        
+
     #     dy_row = (f_size / 72.0 * 1.6) / ax_h
     #     dy_title = (t_size / 72.0 * 1.8) / ax_h
 
@@ -360,20 +353,20 @@ class BaseMetaboVisualizer:
     #         s_idx, e_idx = title_idx[i], title_idx[i + 1]
     #         sub_h = handles[s_idx + 1:e_idx]
     #         sub_l = labels[s_idx + 1:e_idx]
-            
+
     #         if not sub_h:
     #             continue
 
     #         new_leg = ax.legend(
-    #             sub_h, sub_l, title=labels[s_idx], loc=loc, 
+    #             sub_h, sub_l, title=labels[s_idx], loc=loc,
     #             bbox_to_anchor=(x_pos, y_pos), **leg_kwargs
     #         )
-            
-    #         # [CRITICAL]: add_artist trick. 
+
+    #         # [CRITICAL]: add_artist trick.
     #         # Leave the final legend as ax.legend_ to force PW bbox expansion.
     #         if i < len(title_idx) - 2:
     #             ax.add_artist(new_leg)
-                
+
     #         created.append(new_leg)
 
     #         # Calculate precise step drop for the next box
@@ -384,38 +377,42 @@ class BaseMetaboVisualizer:
     #             y_pos += drop
 
     #     is_pw = (
-    #         type(ax).__module__.startswith("patchworklib") or 
+    #         type(ax).__module__.startswith("patchworklib") or
     #         type(getattr(ax, "figure", None)).__module__.startswith(
     #             "patchworklib"
     #         )
     #     )
-        
+
     #     if getattr(ax, "figure", None) is not None and not is_pw:
     #         for obj in created:
     #             if obj not in ax.figure.legends:
     #                 ax.figure.legends.append(obj)
-                    
+
     #     return created
-    
+
     def _format_multi_legends(
-        self, ax, group_titles: list, loc: str = "upper left", 
-        start_bbox: tuple = (1.05, 1.0), group_pad: float = 0.04, 
-        ncols: int = 1, col_pad: float = 0.15, **kwargs
-    ) -> list:
+        self,
+        ax: plt.Axes,
+        group_titles: list[str],
+        loc: str = "upper left",
+        start_bbox: tuple[float, float] = (1.05, 1.0),
+        group_pad: float = 0.04,
+        ncols: int = 1,
+        col_pad: float = 0.15,
+        **kwargs: object,
+    ) -> list[object]:
         """
         Splits handles into separate boxes using the add_artist trick.
         Calculates dynamic offsets based on font size to prevent overlap,
-        supports dynamic multi-column grids (ncols), and ensures the final 
+        supports dynamic multi-column grids (ncols), and ensures the final
         legend dictates the patchworklib bbox.
         """
         import math
-        
+
         leg = ax.get_legend()
         if leg:
             labels = [t.get_text() for t in leg.get_texts()]
-            handles = getattr(
-                leg, "legend_handles", getattr(leg, "legendHandles", [])
-            )
+            handles = getattr(leg, "legend_handles", getattr(leg, "legendHandles", []))
             if not handles:
                 handles, _ = ax.get_legend_handles_labels()
             leg.remove()
@@ -425,7 +422,7 @@ class BaseMetaboVisualizer:
         if not handles or not group_titles:
             return []
 
-        title_idx = [i for i, l in enumerate(labels) if l in group_titles]
+        title_idx = [i for i, label in enumerate(labels) if label in group_titles]
         if not title_idx:
             return []
         title_idx.append(len(labels))
@@ -436,55 +433,59 @@ class BaseMetaboVisualizer:
         # Dynamic coordinate offset calculation based on absolute font size
         f_size = leg_kwargs.get("fontsize", 10)
         t_size = leg_kwargs.get("title_fontsize", 11)
-        
+
         fig_h = ax.figure.get_size_inches()[1]
         ax_h = ax.get_position().height * fig_h
-        
+
         dy_row = (f_size / 72.0 * 1.6) / ax_h
         dy_title = (t_size / 72.0 * 1.8) / ax_h
 
         created = []
         n_groups = len(title_idx) - 1
         grps_per_col = math.ceil(n_groups / max(1, ncols))
-        
+
         curr_x = start_bbox[0]
-        
+
         # Safely acquire renderer for dynamic width reading
         try:
             renderer = ax.figure.canvas.get_renderer()
         except Exception:
             renderer = None
-            
+
         global_grp_idx = 0
 
         for col_idx in range(ncols):
             curr_y = start_bbox[1]
             col_legends = []
-            
+
             for _ in range(grps_per_col):
                 if global_grp_idx >= n_groups:
                     break
-                    
+
                 s_idx = title_idx[global_grp_idx]
                 e_idx = title_idx[global_grp_idx + 1]
-                sub_h = handles[s_idx + 1:e_idx]
-                sub_l = labels[s_idx + 1:e_idx]
-                
+                sub_h = handles[s_idx + 1 : e_idx]
+                sub_l = labels[s_idx + 1 : e_idx]
+
                 global_grp_idx += 1
-                
+
                 if not sub_h:
                     continue
 
                 new_leg = ax.legend(
-                    sub_h, sub_l, title=labels[s_idx], loc=loc, 
-                    bbox_to_anchor=(curr_x, curr_y), **leg_kwargs
+                    sub_h,
+                    sub_l,
+                    title=labels[s_idx],
+                    loc=loc,
+                    bbox_to_anchor=(curr_x, curr_y),
+                    **leg_kwargs,
                 )
-                
-                # [CRITICAL]: add_artist trick. 
+
+                # [CRITICAL]: add_artist trick.
                 # Leave the final legend as ax.legend_ to force PW bbox expansion
                 if global_grp_idx < n_groups:
                     ax.add_artist(new_leg)
-                    
+
                 created.append(new_leg)
                 col_legends.append(new_leg)
 
@@ -503,30 +504,31 @@ class BaseMetaboVisualizer:
                         bbox = l_obj.get_window_extent(renderer)
                         ax_bbox = bbox.transformed(ax.transAxes.inverted())
                         col_max_w = max(col_max_w, ax_bbox.width)
-                
+
                 # Fallback horizontal shift if renderer fails
                 shift_w = col_max_w if col_max_w > 0 else 0.35
                 curr_x += shift_w + col_pad
 
         # Propagate to overall figure legends if not using patchworklib
-        is_pw = (
-            type(ax).__module__.startswith("patchworklib") or 
-            type(getattr(ax, "figure", None)).__module__.startswith(
-                "patchworklib"
-            )
-        )
-        
+        is_pw = type(ax).__module__.startswith("patchworklib") or type(
+            getattr(ax, "figure", None)
+        ).__module__.startswith("patchworklib")
+
         if getattr(ax, "figure", None) is not None and not is_pw:
             for obj in created:
                 if obj not in ax.figure.legends:
                     ax.figure.legends.append(obj)
-                    
+
         return created
-    
+
     def _format_unified_multi_legends(
-        self, ax, group_titles: list, loc: str = "upper left", 
-        start_bbox: tuple = (1.05, 1.0), **kwargs
-    ) -> list:
+        self,
+        ax: plt.Axes,
+        group_titles: list[str],
+        loc: str = "upper left",
+        start_bbox: tuple[float, float] = (1.05, 1.0),
+        **kwargs: object,
+    ) -> list[object]:
         """
         Merges handles into a single box but simulates a split visual style
         using invisible dummy handles for group headers.
@@ -536,9 +538,7 @@ class BaseMetaboVisualizer:
         leg = ax.get_legend()
         if leg:
             labels = [t.get_text() for t in leg.get_texts()]
-            handles = getattr(
-                leg, "legend_handles", getattr(leg, "legendHandles", [])
-            )
+            handles = getattr(leg, "legend_handles", getattr(leg, "legendHandles", []))
             if not handles:
                 handles, _ = ax.get_legend_handles_labels()
             leg.remove()
@@ -548,7 +548,7 @@ class BaseMetaboVisualizer:
         if not handles or not group_titles:
             return []
 
-        title_idx = [i for i, l in enumerate(labels) if l in group_titles]
+        title_idx = [i for i, label in enumerate(labels) if label in group_titles]
         if not title_idx:
             return []
         title_idx.append(len(labels))
@@ -558,54 +558,51 @@ class BaseMetaboVisualizer:
 
         combined_h, combined_l = [], []
         dummy = mpatches.Rectangle(
-            (0, 0), 1, 1, fill=False, edgecolor='none', visible=False
+            (0, 0), 1, 1, fill=False, edgecolor="none", visible=False
         )
 
         for i in range(len(title_idx) - 1):
             s_idx, e_idx = title_idx[i], title_idx[i + 1]
-            sub_h = handles[s_idx + 1:e_idx]
-            sub_l = labels[s_idx + 1:e_idx]
-            
+            sub_h = handles[s_idx + 1 : e_idx]
+            sub_l = labels[s_idx + 1 : e_idx]
+
             if not sub_h:
                 continue
-            
+
             # Inject simulated group header using text formatting
             combined_h.append(dummy)
             combined_l.append(f"--- {labels[s_idx]} ---")
-            
+
             combined_h.extend(sub_h)
             combined_l.extend(sub_l)
-            
+
             # Add a blank spacer if not the last group
             if i < len(title_idx) - 2:
                 combined_h.append(dummy)
                 combined_l.append("")
 
-        leg_kwargs.update({
-            "labelspacing": 0.4, "borderpad": 0.6, "handletextpad": 0.5
-        })
+        leg_kwargs.update({"labelspacing": 0.4, "borderpad": 0.6, "handletextpad": 0.5})
 
         final_leg = ax.legend(
-            combined_h, combined_l, loc=loc, 
-            bbox_to_anchor=start_bbox, **leg_kwargs
+            combined_h, combined_l, loc=loc, bbox_to_anchor=start_bbox, **leg_kwargs
         )
-        
+
         return [final_leg]
-    
+
     def _render_jupyter_display(
         self,
-        obj: Any,
+        obj: object,
         is_patchwork: bool,
         display_format: str = "svg",
         width: Optional[Union[int, str]] = "60%",
-        transparent: bool = True
+        transparent: bool = True,
     ) -> None:
         """Render plots within a Jupyter Notebook with explicit format control.
 
         Handles architectural discrepancies between Matplotlib and Patchworklib.
         SVG outputs utilize HTML wrapping for responsive CSS width control.
-        PNG outputs revert to native IPython Image rendering to guarantee 
-        compatibility with native IDE image toolbars (e.g., VS Code copy/save), 
+        PNG outputs revert to native IPython Image rendering to guarantee
+        compatibility with native IDE image toolbars (e.g., VS Code copy/save),
         while injecting a solid white background to prevent dark-mode blending.
 
         Args:
@@ -616,9 +613,7 @@ class BaseMetaboVisualizer:
             transparent (bool): Active alpha transparency indicator.
         """
         from IPython.display import HTML, Image, display
-        import io
         import tempfile
-        import os
         import re
 
         display_fmt = display_format.lower()
@@ -630,9 +625,7 @@ class BaseMetaboVisualizer:
             display_fmt = "svg"
 
         # Resolve CSS width explicitly (applies only to SVG HTML wrapper)
-        w_css = f"{width}px" if isinstance(width, int) else (
-            width if width else "100%"
-        )
+        w_css = f"{width}px" if isinstance(width, int) else (width if width else "100%")
 
         # Define consistent HTML container style for responsive SVG rendering
         container_style = (
@@ -644,38 +637,38 @@ class BaseMetaboVisualizer:
             # Isolate Patchworklib rendering in a secure temporary directory
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_path = os.path.join(tmpdir, f"preview.{display_fmt}")
-                
+
                 if display_fmt == "svg":
                     # Maintain SVG transparency for HTML rendering
                     obj.savefig(tmp_path, transparent=transparent)
                     self._clean_svg_fonts_for_ai(tmp_path)
-                    
+
                     with open(tmp_path, "r", encoding="utf-8") as f:
                         raw_svg = f.read()
-                    
+
                     # Inject flexible responsiveness mappers
                     preview_svg = re.sub(
-                        r'(<svg[^>]*?\s)width="[^"]+"', 
-                        r'\1width="100%"', 
-                        raw_svg, count=1
+                        r'(<svg[^>]*?\s)width="[^"]+"',
+                        r'\1width="100%"',
+                        raw_svg,
+                        count=1,
                     )
                     preview_svg = re.sub(
-                        r'(<svg[^>]*?\s)height="[^"]+"', 
-                        r'\1height="auto"', 
-                        preview_svg, count=1
+                        r'(<svg[^>]*?\s)height="[^"]+"',
+                        r'\1height="auto"',
+                        preview_svg,
+                        count=1,
                     )
 
-                    display(HTML(
-                        f'<div style="{container_style}">{preview_svg}</div>'
-                    ))
-                        
+                    display(HTML(f'<div style="{container_style}">{preview_svg}</div>'))
+
                 elif display_fmt == "png":
-                    # Force white background and opaque rendering for the temporary 
+                    # Force white background and opaque rendering for the temporary
                     # preview image to ensure visibility in dark-themed IDEs
                     obj.savefig(tmp_path, transparent=False, facecolor="white")
                     with open(tmp_path, "rb") as f:
                         img_data = f.read()
-                    
+
                     # Output raw image MIME type to activate native VS Code toolbars
                     display(Image(data=img_data, width=width))
         else:
@@ -684,46 +677,44 @@ class BaseMetaboVisualizer:
             if display_fmt == "svg":
                 obj.savefig(buf, format="svg", transparent=transparent)
                 svg_data = buf.getvalue().decode("utf-8")
-                
+
                 svg_data = re.sub(
-                    r'(<svg[^>]*?\s)width="[^"]+"', 
-                    r'\1width="100%"', 
-                    svg_data, count=1
+                    r'(<svg[^>]*?\s)width="[^"]+"', r'\1width="100%"', svg_data, count=1
                 )
                 svg_data = re.sub(
-                    r'(<svg[^>]*?\s)height="[^"]+"', 
-                    r'\1height="auto"', 
-                    svg_data, count=1
+                    r'(<svg[^>]*?\s)height="[^"]+"',
+                    r'\1height="auto"',
+                    svg_data,
+                    count=1,
                 )
-                
+
                 display(HTML(f'<div style="{container_style}">{svg_data}</div>'))
-                    
+
             elif display_fmt == "png":
                 dpi_setting = plt.rcParams.get("savefig.dpi", 300)
-                
+
                 # Force white background for memory stream
                 obj.savefig(
-                    buf, 
-                    format="png", 
-                    transparent=False, 
-                    facecolor="white", 
-                    dpi=dpi_setting
+                    buf,
+                    format="png",
+                    transparent=False,
+                    facecolor="white",
+                    dpi=dpi_setting,
                 )
                 img_data = buf.getvalue()
-                
+
                 # Output raw image MIME type to activate native VS Code toolbars
                 display(Image(data=img_data, width=width))
 
-
     def save_and_close_fig(
-        self, 
-        fig: plt.Figure, 
-        file_path: Optional[str] = None, 
-        show_plot: bool = False, 
+        self,
+        fig: plt.Figure,
+        file_path: Optional[str] = None,
+        show_plot: bool = False,
         save_format: Optional[str] = None,
-        display_format: str = None,
+        display_format: Optional[str] = None,
         width: Optional[Union[int, str]] = "30%",
-        transparent: bool = True
+        transparent: bool = True,
     ) -> None:
         """Save a Matplotlib figure and manage targeted Jupyter display.
 
@@ -738,54 +729,55 @@ class BaseMetaboVisualizer:
         """
         actual_save_fmt = save_format or self.default_save_fmt
         actual_display_fmt = display_format or self.default_display_fmt
-        
+
         # Execute Notebook inline display prior to figure state destruction
         if show_plot and iu.is_jupyter():
             self._render_jupyter_display(
-                obj=fig, 
-                is_patchwork=False, 
-                display_format=actual_display_fmt, 
+                obj=fig,
+                is_patchwork=False,
+                display_format=actual_display_fmt,
                 width=width,
-                transparent=transparent
+                transparent=transparent,
             )
 
         if file_path and actual_save_fmt:
             filepath_str = str(file_path)
             base_path = (
-                filepath_str.rsplit(".", 1)[0] 
-                if "." in Path(filepath_str).name else filepath_str
+                filepath_str.rsplit(".", 1)[0]
+                if "." in Path(filepath_str).name
+                else filepath_str
             )
-            
+
             format_list = (
-                [actual_save_fmt] if isinstance(actual_save_fmt, str) 
+                [actual_save_fmt]
+                if isinstance(actual_save_fmt, str)
                 else list(actual_save_fmt)
             )
 
             for fmt in format_list:
                 clean_fmt = fmt.lower().strip(".")
                 out_path = f"{base_path}.{clean_fmt}"
-                
+
                 fig.savefig(out_path, transparent=transparent, format=clean_fmt)
-                
+
                 if clean_fmt == "svg":
                     self._clean_svg_fonts_for_ai(out_path)
 
         plt.close(fig)
 
-
     def save_and_show_pw(
-        self, 
-        pw_obj: Any, 
-        file_path: Optional[str] = None, 
-        show_plot: bool = True, 
+        self,
+        pw_obj: object,
+        file_path: Optional[str] = None,
+        show_plot: bool = True,
         save_format: Optional[str] = None,
-        display_format: str = None,
-        width: Optional[Union[int, str]] = "60%", 
-        transparent: bool = True
+        display_format: Optional[str] = None,
+        width: Optional[Union[int, str]] = "60%",
+        transparent: bool = True,
     ) -> None:
         """Save a Patchworklib brick composite and route targeted display.
 
-        Order of execution is strategically inverted: inline notebook rendering 
+        Order of execution is strategically inverted: inline notebook rendering
         is processed first, avoiding canvas state destruction before file export.
 
         Args:
@@ -799,17 +791,17 @@ class BaseMetaboVisualizer:
         """
         actual_save_fmt = save_format or self.default_save_fmt
         actual_display_fmt = display_format or self.default_display_fmt
-        
+
         try:
             # CRITICAL OPTIMIZATION: Process notebook visualization first.
             # This captures the canvas state perfectly before physical file compilation.
             if show_plot and iu.is_jupyter():
                 self._render_jupyter_display(
-                    obj=pw_obj, 
-                    is_patchwork=True, 
+                    obj=pw_obj,
+                    is_patchwork=True,
                     display_format=actual_display_fmt,
                     width=width,
-                    transparent=transparent
+                    transparent=transparent,
                 )
         except Exception as e:
             logger.error(f"Jupyter rendering stage encountered an error: {e}")
@@ -819,21 +811,23 @@ class BaseMetaboVisualizer:
         if file_path and actual_save_fmt:
             filepath_str = str(file_path)
             base_path = (
-                filepath_str.rsplit(".", 1)[0] 
-                if "." in Path(filepath_str).name else filepath_str
+                filepath_str.rsplit(".", 1)[0]
+                if "." in Path(filepath_str).name
+                else filepath_str
             )
-            
+
             format_list = (
-                [actual_save_fmt] if isinstance(actual_save_fmt, str) 
+                [actual_save_fmt]
+                if isinstance(actual_save_fmt, str)
                 else list(actual_save_fmt)
             )
 
             for fmt in format_list:
                 clean_fmt = fmt.lower().strip(".")
                 out_path = f"{base_path}.{clean_fmt}"
-                
+
                 pw_obj.savefig(out_path, transparent=transparent)
-                
+
                 if clean_fmt == "svg":
                     self._clean_svg_fonts_for_ai(out_path)
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
+## [1.1.3] - 2026-06-08
+
+### Added
+
+- Added comprehensive type hints (`typing`) to all functions to improve code readability, IDE intellisense, and static analysis support.
+
+### Changed
+
+- Refactored and standardized code formatting across the entire codebase using `black` and `ruff`.
+
 ## [1.1.2a1] - 2026-06-01
 
 ### Added

@@ -1,14 +1,19 @@
 # src/pimqc/report_utils.py
 """
-Purpose of script: Global utility classes and functions for assembling, 
-rendering, and exporting automated project-level QC reports.
+Script purpose: Build narrative reports from completed pipeline artifacts.
+
+VisualAssetReporter.compile_assessor_report() scans the output workspace for
+QA folders, collects stage-specific SVG assets, stitches compatible grids, and
+places report-ready figures under the report asset directory. The narrative
+reporter consolidates pipeline metrics and QA metrics into a single Jinja2
+context, then generate_markdown() renders both comprehensive and brief reports.
+export_report() converts generated Markdown files to PDF/HTML with Pandoc and
+the configured rendering backend, handling dependency checks and fallbacks.
 """
 
 import os
 import sys
-import re
 import math
-import time
 from datetime import datetime
 
 import subprocess
@@ -18,7 +23,6 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 from tabulate import tabulate
 
-import logging
 from loguru import logger
 from typing import Union, Optional, Dict, Any
 
@@ -42,9 +46,18 @@ def _get_optimal_cols(n_docs: int, max_cols: int = 4) -> int:
     # Preset aesthetic mappings for typical plot counts to avoid
     # disproportionate grid aspect ratios (e.g., forcing 2x2 for 4 plots)
     layout_map = {
-        1: 1, 2: 2, 3: 3, 4: 2,
-        5: 3, 6: 3, 7: 4, 8: 4,
-        9: 3, 10: 4, 11: 4, 12: 4
+        1: 1,
+        2: 2,
+        3: 3,
+        4: 2,
+        5: 3,
+        6: 3,
+        7: 4,
+        8: 4,
+        9: 3,
+        10: 4,
+        11: 4,
+        12: 4,
     }
 
     if n_docs in layout_map:
@@ -57,20 +70,20 @@ def _get_optimal_cols(n_docs: int, max_cols: int = 4) -> int:
 
 
 def stitch_svg_grids(
-    svg_paths: list, 
-    file_path: str, 
-    cols: Union[int, str] = "auto", 
+    svg_paths: list,
+    file_path: str,
+    cols: Union[int, str] = "auto",
     max_cols: int = 4,
     show_plot: bool = True,
-    save_format: Optional[Union[str, list, tuple]] = ["svg","pdf"],
+    save_format: Optional[Union[str, list, tuple]] = ["svg", "pdf"],
     display_format: str = "png",
-    width: Optional[Union[int, str]] = "60%"
+    width: Optional[Union[int, str]] = "60%",
 ) -> bool:
     """Stitches multiple SVGs into a grid, saves to disk, and displays inline.
 
     Assembles individual SVG plots into a unified master SVG grid. Provides
-    dynamic file conversion to PDF/PNG via CairoSVG and aligns with the 
-    project's standard Jupyter rendering logic (supporting native VS Code 
+    dynamic file conversion to PDF/PNG via CairoSVG and aligns with the
+    project's standard Jupyter rendering logic (supporting native VS Code
     image toolbars and responsive layouts).
 
     Args:
@@ -95,8 +108,7 @@ def stitch_svg_grids(
     try:
         # 1. Validate and filter input paths
         valid_paths = [
-            p for p in svg_paths 
-            if Path(p).exists() and Path(p).stat().st_size > 0
+            p for p in svg_paths if Path(p).exists() and Path(p).stat().st_size > 0
         ]
         if not valid_paths:
             return False
@@ -104,8 +116,7 @@ def stitch_svg_grids(
         # 2. Calculate optimal grid dimensions
         n_docs = len(valid_paths)
         active_cols = (
-            _get_optimal_cols(n_docs, max_cols) 
-            if cols == "auto" else int(cols)
+            _get_optimal_cols(n_docs, max_cols) if cols == "auto" else int(cols)
         )
         rows = (n_docs + active_cols - 1) // active_cols
 
@@ -118,6 +129,7 @@ def stitch_svg_grids(
         # 4. Extract maximum dimensions for uniform grid alignment
         def parse_dim(val: str) -> float:
             import re
+
             match = re.search(r"(\d+\.?\d*)", str(val))
             return float(match.group(1)) if match else 0.0
 
@@ -145,28 +157,28 @@ def stitch_svg_grids(
         # 7. Assemble and set viewBox
         fig.append(plots)
         fig.root.set("viewBox", f"0 0 {total_w} {total_h}")
-        
+
         # Extract raw byte string for memory-based format conversion
         merged_svg_bytes = fig.to_str()
-        merged_svg_str = merged_svg_bytes.decode('utf-8')
+        merged_svg_str = merged_svg_bytes.decode("utf-8")
 
         # 8. Format Normalization & Physical Storage Logic
         filepath_str = str(file_path)
         base_path = (
-            filepath_str.rsplit(".", 1)[0] 
-            if "." in Path(filepath_str).name else filepath_str
+            filepath_str.rsplit(".", 1)[0]
+            if "." in Path(filepath_str).name
+            else filepath_str
         )
 
         if save_format:
             format_list = (
-                [save_format] if isinstance(save_format, str) 
-                else list(save_format)
+                [save_format] if isinstance(save_format, str) else list(save_format)
             )
 
             for fmt in format_list:
                 clean_fmt = fmt.lower().strip(".")
                 out_path = f"{base_path}.{clean_fmt}"
-                
+
                 if clean_fmt == "svg":
                     with open(out_path, "wb") as f:
                         f.write(merged_svg_bytes)
@@ -174,6 +186,7 @@ def stitch_svg_grids(
                     # Leverage CairoSVG for dynamic vector/raster conversion
                     try:
                         import cairosvg
+
                         if clean_fmt == "pdf":
                             cairosvg.svg2pdf(
                                 bytestring=merged_svg_bytes, write_to=out_path
@@ -192,44 +205,51 @@ def stitch_svg_grids(
         if show_plot:
             try:
                 from . import io_utils as iu
+
                 if iu.is_jupyter():
                     from IPython.display import HTML, Image, display
                     import re
-                    
+
                     display_fmt = display_format.lower()
                     if display_fmt not in ["svg", "png"]:
                         display_fmt = "svg"
-                        
-                    w_css = f"{width}px" if isinstance(width, int) else (
-                        width if width else "100%"
+
+                    w_css = (
+                        f"{width}px"
+                        if isinstance(width, int)
+                        else (width if width else "100%")
                     )
-                    
+
                     if display_fmt == "svg":
                         # Strip absolute dimensions for responsive UI preview
                         preview_svg = re.sub(
-                            r'(<svg[^>]*?\s)width="[^"]+"', r'\1width="100%"', 
-                            merged_svg_str, count=1
+                            r'(<svg[^>]*?\s)width="[^"]+"',
+                            r'\1width="100%"',
+                            merged_svg_str,
+                            count=1,
                         )
                         preview_svg = re.sub(
-                            r'(<svg[^>]*?\s)height="[^"]+"', r'\1height="auto"', 
-                            preview_svg, count=1
+                            r'(<svg[^>]*?\s)height="[^"]+"',
+                            r'\1height="auto"',
+                            preview_svg,
+                            count=1,
                         )
 
                         container_style = (
                             f"width:{w_css}; max-width:100%; margin: 0 auto; "
                             f"height:auto; background-color: white;"
                         )
-                        display(HTML(
-                            f'<div style="{container_style}">{preview_svg}</div>'
-                        ))
-                        
+                        display(
+                            HTML(f'<div style="{container_style}">{preview_svg}</div>')
+                        )
+
                     elif display_fmt == "png":
                         try:
                             import cairosvg
+
                             # Force solid white background for VS Code dark mode
                             png_data = cairosvg.svg2png(
-                                bytestring=merged_svg_bytes,
-                                background_color="white"
+                                bytestring=merged_svg_bytes, background_color="white"
                             )
                             # Native Image rendering activates VS Code toolbars
                             display(Image(data=png_data, width=width))
@@ -243,10 +263,12 @@ def stitch_svg_grids(
                                 f"width:{w_css}; max-width:100%; margin: 0 auto; "
                                 f"height:auto; background-color: white;"
                             )
-                            display(HTML(
-                                f'<div style="{container_style}">{merged_svg_str}</div>'
-                            ))
-                            
+                            display(
+                                HTML(
+                                    f'<div style="{container_style}">{merged_svg_str}</div>'
+                                )
+                            )
+
             except Exception as e:
                 # Silently catch to keep terminal logs clean in headless mode
                 logger.debug(f"Jupyter rendering bypassed: {e}")
@@ -254,16 +276,16 @@ def stitch_svg_grids(
         return True
 
     except Exception as e:
-        from loguru import logger
         logger.error(f"Failed to stitch SVG grid: {e}")
         return False
+
 
 # =========================================================================
 # Class 1: VisualAssetReporter (Handles QA Grids & Images)
 # =========================================================================
-class VisualAssetReporter: 
+class VisualAssetReporter:
 
-    def __init__(self, base_dir):
+    def __init__(self, base_dir: Union[str, Path]) -> None:
         """
         Initialize the reporter at the project workspace level.
 
@@ -273,21 +295,18 @@ class VisualAssetReporter:
         self.base_dir = Path(base_dir)
         self.qa_folders = self._detect_qa_folders()
 
-    def _detect_qa_folders(self):
+    def _detect_qa_folders(self) -> list[str]:
         """Automatically scan for QA directories and sort them."""
         if not self.base_dir.exists():
             return []
-        folders = [
-            d for d in self.base_dir.iterdir() 
-            if d.is_dir() and "QA" in d.name
-        ]
+        folders = [d for d in self.base_dir.iterdir() if d.is_dir() and "QA" in d.name]
         return sorted([d.name for d in folders])
 
     def compile_assessor_report(
-        self, 
-        is_multi_batch: bool = True, 
-        report_folder: str = "13_Report_Markdown", 
-        cols: Union[int, str] = "auto"
+        self,
+        is_multi_batch: bool = True,
+        report_folder: str = "13_Report_Markdown",
+        cols: Union[int, str] = "auto",
     ) -> None:
         """Compile QA SVG plots into grids and deploy to report assets."""
         if not self.qa_folders:
@@ -296,7 +315,7 @@ class VisualAssetReporter:
 
         report_path = self.base_dir / report_folder
         assets_path = report_path / "assets"
-        
+
         report_path.mkdir(parents=True, exist_ok=True)
         assets_path.mkdir(parents=True, exist_ok=True)
 
@@ -314,7 +333,7 @@ class VisualAssetReporter:
             "01_QC_Sample_RSD_Dashboard": "RSD_Barplot.svg",
             "02_PCA_Scatter_Dashboard": "PCA_Scatter_QC_Sample.svg",
             corr_prefix: corr_file,
-            "04_Outlier_Diagnosis_Dashboard": "Outlier_Scatter.svg"
+            "04_Outlier_Diagnosis_Dashboard": "Outlier_Scatter.svg",
         }
 
         for prefix, target_file in target_map.items():
@@ -323,15 +342,15 @@ class VisualAssetReporter:
             input_svgs = []
             for folder in self.qa_folders:
                 folder_path = self.base_dir / folder
-                
+
                 direct_file = folder_path / target_file
                 if direct_file.exists():
                     input_svgs.append(direct_file)
                 else:
                     subdirs = [d for d in folder_path.iterdir() if d.is_dir()]
-                    
+
                     subdirs.sort(key=lambda d: d.stat().st_mtime)
-                    
+
                     for sub in subdirs:
                         sub_file = sub / target_file
                         if sub_file.exists():
@@ -342,16 +361,21 @@ class VisualAssetReporter:
                 continue
             # Execute SVG stitching
             stitch_svg_grids(
-                svg_paths=input_svgs, file_path=svg_out, cols=cols,
-                save_format="svg", display_format="png",
+                svg_paths=input_svgs,
+                file_path=svg_out,
+                cols=cols,
+                save_format="svg",
+                display_format="png",
             )
         logger.success(f"Report SVG assets compiled at: {assets_path}")
+
 
 # =========================================================================
 # Class 2: NarrativeStatsReporter (Handles attrs & Markdown Text)
 # =========================================================================
 class NarrativeStatsReporter:
     """Extracts metadata from MetaboInt objects to generate a single report."""
+
     # --- Define CSS as a class constant for cleaner maintenance ---
     REPORT_CSS = """
     /* ====================================================================
@@ -490,15 +514,15 @@ class NarrativeStatsReporter:
     _QA_STAGES = [
         ("raw_dataset", "Raw data"),
         ("high_mv_feature_filtering", "High-missing value features filtering"),
-        ("intra_batch_correction", "Intra-batch correction"), 
+        ("intra_batch_correction", "Intra-batch correction"),
         ("inter_batch_correction", "Inter-batch correction"),
         ("global_correction", "Global SERRF correction"),
         ("low_quality_feature_filtering", "Low-quality features filtering"),
         ("missing_value_imputation", "Imputation"),
-        ("normalization", "Normalization")
+        ("normalization", "Normalization"),
     ]
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str) -> None:
         """Initialize the reporter with base directory and Jinja2 env."""
         self.base_dir = Path(base_dir)
         template_path = Path(__file__).parent / "templates"
@@ -511,38 +535,41 @@ class NarrativeStatsReporter:
         sum_qc = 0
         sum_blank = 0
         sum_sample = 0
-        
+
         if isinstance(batch_dist, dict):
             for b_id, b_info in batch_dist.items():
                 total = b_info.get("Total", 0)
                 qc = b_info.get("QC", 0)
                 blank = b_info.get("Blank", 0)
                 sample = b_info.get("Sample", 0)
-                
+
                 sum_total += total
                 sum_qc += qc
                 sum_blank += blank
                 sum_sample += sample
-                
-                rows.append([
-                    b_id, total, qc, blank, sample,
-                    b_info.get("Inject Order", "N/A")
-                ])
-                
+
+                rows.append(
+                    [b_id, total, qc, blank, sample, b_info.get("Inject Order", "N/A")]
+                )
+
         if rows:
             rows.append(["All", sum_total, sum_qc, sum_blank, sum_sample, "/"])
 
         headers = ["Batch", "Total", "QC", "Blank", "Sample", "Inject Order"]
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github", stralign="center",
-            numalign="center")
+            rows,
+            headers=headers,
+            tablefmt="github",
+            stralign="center",
+            numalign="center",
+        )
         return f"\n\n{table_str}\n\n"
 
     def _create_rsd_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
         """Generates a table detailing QC and Sample RSD distribution.
 
         Args:
-            qa_metrics (Disct[str, Any]): Dictionary of quality assessment 
+            qa_metrics (Disct[str, Any]): Dictionary of quality assessment
                 outputs for all pipeline stages.
 
         Returns:
@@ -564,29 +591,41 @@ class NarrativeStatsReporter:
 
             # Build matrix rows with nested group logic for scannability
             if qc_rsd or sample_rsd:
-                rows.append([
-                    stage_name,
-                    # QC Data
-                    qc_rsd.get("0-10%", 0),
-                    qc_rsd.get("10-20%", 0),
-                    qc_rsd.get("20-30%", 0),
-                    qc_rsd.get(">30%", 0),
-                    # Sample Data
-                    sample_rsd.get("0-10%", 0),
-                    sample_rsd.get("10-20%", 0),
-                    sample_rsd.get("20-30%", 0),
-                    sample_rsd.get(">30%", 0)
-                ])
+                rows.append(
+                    [
+                        stage_name,
+                        # QC Data
+                        qc_rsd.get("0-10%", 0),
+                        qc_rsd.get("10-20%", 0),
+                        qc_rsd.get("20-30%", 0),
+                        qc_rsd.get(">30%", 0),
+                        # Sample Data
+                        sample_rsd.get("0-10%", 0),
+                        sample_rsd.get("10-20%", 0),
+                        sample_rsd.get("20-30%", 0),
+                        sample_rsd.get(">30%", 0),
+                    ]
+                )
 
         headers = [
-            "Pipeline Stage", 
-            "QC 0-10%", "QC 10-20%", "QC 20-30%", "QC >30%",
-            "Sample 0-10%", "Sample 10-20%", "Sample 20-30%", "Sample >30%"
+            "Pipeline Stage",
+            "QC 0-10%",
+            "QC 10-20%",
+            "QC 20-30%",
+            "QC >30%",
+            "Sample 0-10%",
+            "Sample 10-20%",
+            "Sample 20-30%",
+            "Sample >30%",
         ]
-        
+
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github", stralign="center",
-            numalign="center")
+            rows,
+            headers=headers,
+            tablefmt="github",
+            stralign="center",
+            numalign="center",
+        )
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def _create_pca_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
@@ -600,94 +639,114 @@ class NarrativeStatsReporter:
             if pca:
                 pc1 = pca.get("pc1_variance")
                 pc1_str = f"{pc1*100:.2f}%" if pc1 else "N/A"
-                
+
                 pc2 = pca.get("pc2_variance")
                 pc2_str = f"{pc2*100:.2f}%" if pc2 else "N/A"
-                
+
                 disp = pca.get("relative_dispersion")
                 disp_str = f"{disp:.4f}" if disp is not None else "N/A"
-                
+
                 silh = pca.get("batch_silhouette")
                 silh_str = f"{silh:.4f}" if silh is not None else "N/A"
-                
+
                 shift = pca.get("centrality_shift")
                 shift_str = f"{shift:.4f}" if shift is not None else "N/A"
-                
-                rows.append([
-                    stage_name, pc1_str, pc2_str, disp_str, silh_str, shift_str
-                ])
-                
+
+                rows.append(
+                    [stage_name, pc1_str, pc2_str, disp_str, silh_str, shift_str]
+                )
+
         headers = [
-            "Pipeline Stage", "PC1 Var", "PC2 Var", 
-            "Rel. Dispersion", "Batch Silh.", "Cent. Shift"
+            "Pipeline Stage",
+            "PC1 Var",
+            "PC2 Var",
+            "Rel. Dispersion",
+            "Batch Silh.",
+            "Cent. Shift",
         ]
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github", disable_numparse=True,)
+            rows,
+            headers=headers,
+            tablefmt="github",
+            disable_numparse=True,
+        )
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def _create_corr_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
         """Generates a table summarizing pooled QC correlations.
-        Dynamically adapts columns based on whether the dataset is single 
+        Dynamically adapts columns based on whether the dataset is single
         or multi-batch.
         """
         # 1. Determine if the dataset is multi-batch by scanning QA metrics
         is_multi_batch = False
         for stage_key, _ in self._QA_STAGES:
             qa_data = qa_metrics.get(stage_key, {})
-            if qa_data.get("correlation", {}).get("batch_level", {}).get(
-                "is_multi_batch", False):
+            if (
+                qa_data.get("correlation", {})
+                .get("batch_level", {})
+                .get("is_multi_batch", False)
+            ):
                 is_multi_batch = True
                 break
-        
+
         rows = []
         for stage_key, stage_name in self._QA_STAGES:
             qa_data = qa_metrics.get(stage_key, {})
             if not qa_data:
                 continue
-            
+
             corr_data = qa_data.get("correlation", {})
             sample_level = corr_data.get("sample_level", {})
             batch_level = corr_data.get("batch_level", {})
-            
+
             # Extract inner-batch median (with fallback to legacy "median" key)
             inner = sample_level.get("inner_batch_median", "N/A")
             if inner == "N/A":
                 inner = corr_data.get("median", "N/A")
-                
+
             # Strictly format to 4 decimal places to ensure alignment
-            inner_str = f"{inner:.4f}" if isinstance(
-                inner, float) else str(inner)
-            
+            inner_str = f"{inner:.4f}" if isinstance(inner, float) else str(inner)
+
             row = [stage_name, inner_str]
-            
+
             # Append multi-batch specific metrics only if applicable
             if is_multi_batch:
                 cross = sample_level.get("cross_batch_median", "N/A")
                 worst_pair = batch_level.get("worst_batch_pair", "N/A")
                 worst_corr = batch_level.get("worst_correlation", "N/A")
-                
-                cross_str = f"{cross:.4f}" if isinstance(
-                    cross, float) else str(cross)
-                worst_corr_str = f"{worst_corr:.4f}" if isinstance(
-                    worst_corr, float) else str(worst_corr)
-                
+
+                cross_str = f"{cross:.4f}" if isinstance(cross, float) else str(cross)
+                worst_corr_str = (
+                    f"{worst_corr:.4f}"
+                    if isinstance(worst_corr, float)
+                    else str(worst_corr)
+                )
+
                 row.extend([cross_str, worst_pair, worst_corr_str])
-                
+
             rows.append(row)
-            
+
         # 2. Dynamically set headers based on batch design
         if is_multi_batch:
             headers = [
-                "Pipeline Stage", "Inner-Batch Median", "Cross-Batch Median", 
-                "Worst Batch Pair", "Worst Batch Corr."
+                "Pipeline Stage",
+                "Inner-Batch Median",
+                "Cross-Batch Median",
+                "Worst Batch Pair",
+                "Worst Batch Corr.",
             ]
         else:
             headers = ["Pipeline Stage", "Median Correlation"]
-        
+
         # 3. Render table with disable_numparse=True to preserve trailing zeros
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github", disable_numparse=True,
-            stralign="center", numalign="center")
+            rows,
+            headers=headers,
+            tablefmt="github",
+            disable_numparse=True,
+            stralign="center",
+            numalign="center",
+        )
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def _create_outlier_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
@@ -699,46 +758,50 @@ class NarrativeStatsReporter:
             q_data = qa_metrics.get(stage_key, {})
             if not q_data:
                 continue
-                
+
             # 1. SD-OD Extreme Outliers
             outliers = q_data.get("outliers", {})
             ext_samples = outliers.get("extreme_samples", [])
-            ext_str = ", ".join(
-                map(str, ext_samples)
-            ) if ext_samples else "None"
-            
+            ext_str = ", ".join(map(str, ext_samples)) if ext_samples else "None"
+
             # 2. IS Outliers
             is_qc = q_data.get("internal_standard_qc", {})
             is_samples = is_qc.get("is_outlier_samples", [])
             is_rate = is_qc.get("is_outlier_standard", "N/A")
             is_str = ", ".join(map(str, is_samples)) if is_samples else "None"
-            
+
             # 3. ORF Outliers
             orf_qc = q_data.get("orf_qc", {})
             orf_samples = orf_qc.get("orf_outlier_samples", [])
             orf_rate = orf_qc.get("orf_outlier_standard", "N/A")
             orf_str = ", ".join(map(str, orf_samples)) if orf_samples else "None"
-            
-            rows.append([
-                stage_name, ext_str, is_rate, is_str, orf_rate, orf_str
-            ])
-            
+
+            rows.append([stage_name, ext_str, is_rate, is_str, orf_rate, orf_str])
+
         headers = [
-            "Pipeline Stage", "SD-OD Extreme Outlier Samples", 
-            "IS Outliers (N/Total)", "IS Outlier Samples", 
-            "ORF Outliers (N/Total)", "ORF Outlier Samples"
+            "Pipeline Stage",
+            "SD-OD Extreme Outlier Samples",
+            "IS Outliers (N/Total)",
+            "IS Outlier Samples",
+            "ORF Outliers (N/Total)",
+            "ORF Outlier Samples",
         ]
-        
+
         table_str = tabulate(
-            rows, headers=headers, tablefmt="github",stralign="center",
-            numalign="center")
+            rows,
+            headers=headers,
+            tablefmt="github",
+            stralign="center",
+            numalign="center",
+        )
         return f"\n\n{table_str}\n\n" if rows else ""
 
     def consolidate_metrics(
         self, pipeline_metrics: Dict[str, Any], qa_metrics: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Consolidates pipeline and QA metrics into a unified context."""
-        def get_val(d: Dict, *keys, default: Any = "N/A") -> Any:
+
+        def get_val(d: Dict[str, Any], *keys: str, default: object = "N/A") -> object:
             """Safely traverse nested dictionaries to retrieve values."""
             for k in keys:
                 if isinstance(d, dict) and k in d:
@@ -754,10 +817,8 @@ class NarrativeStatsReporter:
         stats = {
             "metadata": {
                 "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "mode": get_val(
-                    pipeline_metrics, "raw_dataset", "mode", default="N/A"
-                ),
-                "is_multi_batch": batch_count > 1
+                "mode": get_val(pipeline_metrics, "raw_dataset", "mode", default="N/A"),
+                "is_multi_batch": batch_count > 1,
             }
         }
 
@@ -765,30 +826,31 @@ class NarrativeStatsReporter:
         for stage_key, _ in self._QA_STAGES:
             pipe_data = pipeline_metrics.get(stage_key, {})
             qa_data = qa_metrics.get(stage_key, {})
-            stats[stage_key] = {
-                "pipeline_params": pipe_data,
-                "qa_assessments": qa_data
-            }
+            stats[stage_key] = {"pipeline_params": pipe_data, "qa_assessments": qa_data}
         if "signal_correction" in pipeline_metrics:
             stats["signal_correction"] = pipeline_metrics["signal_correction"]
-            
+
         batch_dist = get_val(
-            pipeline_metrics, "raw_dataset", "batches",
-            "batch_distribution", default={}
+            pipeline_metrics, "raw_dataset", "batches", "batch_distribution", default={}
         )
 
-        stats["raw_dataset"]["batch_table"] = self._create_batch_table(
-            batch_dist
-        )
+        stats["raw_dataset"]["batch_table"] = self._create_batch_table(batch_dist)
 
         mar_sel = get_val(
-            pipeline_metrics, "missing_value_imputation", "strategies",
-            "mar_method_selected", default=""
+            pipeline_metrics,
+            "missing_value_imputation",
+            "strategies",
+            "mar_method_selected",
+            default="",
         )
         if mar_sel and mar_sel != "N/A":
             nrmse = get_val(
-                pipeline_metrics, "missing_value_imputation",
-                "performance", mar_sel, "nrmse_low", default="N/A"
+                pipeline_metrics,
+                "missing_value_imputation",
+                "performance",
+                mar_sel,
+                "nrmse_low",
+                default="N/A",
             )
             stats["missing_value_imputation"]["best_nrmse_low"] = nrmse
 
@@ -796,14 +858,12 @@ class NarrativeStatsReporter:
             "rsd": self._create_rsd_summary_table(qa_metrics),
             "pca": self._create_pca_summary_table(qa_metrics),
             "correlation": self._create_corr_summary_table(qa_metrics),
-            "outliers": self._create_outlier_summary_table(qa_metrics)
+            "outliers": self._create_outlier_summary_table(qa_metrics),
         }
 
         return stats
-    
-    def _debug_template_errors(
-        self, template_name: str, context: dict
-    ) -> None:
+
+    def _debug_template_errors(self, template_name: str, context: dict) -> None:
         """
         Advanced debugger to identify template rendering issues without
         triggering false positives from Jinja2's static AST parser.
@@ -816,9 +876,7 @@ class NarrativeStatsReporter:
 
         # 1. Static Analysis (Informational only, downgraded to DEBUG level)
         try:
-            template_src = self.env.loader.get_source(
-                self.env, template_name
-            )[0]
+            template_src = self.env.loader.get_source(self.env, template_name)[0]
             parsed_content = self.env.parse(template_src)
             ref_vars = meta.find_undeclared_variables(parsed_content)
 
@@ -832,21 +890,19 @@ class NarrativeStatsReporter:
                     f"(often false positives): {missing_top}"
                 )
         except Exception as e:
-            logger.debug(
-                f"Static analysis skipped due to parser limitation: {e}"
-            )
+            logger.debug(f"Static analysis skipped due to parser limitation: {e}")
 
         # 2. Runtime Analysis (The Ultimate Source of Truth)
         # Create an isolated, strict environment. Any truly undefined variable
         # evaluated at runtime will instantly trigger an exception.
         strict_env = jinja2.Environment(
             loader=self.env.loader,
-            undefined=jinja2.StrictUndefined  # Enforce strict evaluation
+            undefined=jinja2.StrictUndefined,  # Enforce strict evaluation
         )
-        
+
         try:
             debug_template = strict_env.get_template(template_name)
-            
+
             # Attempt a full render. Success here guarantees the template
             # logic is perfectly sound given the current context.
             debug_template.render(context)
@@ -854,33 +910,32 @@ class NarrativeStatsReporter:
                 f"Template '{template_name}' successfully passed strict "
                 "runtime rendering."
             )
-            
+
         except jinja2.exceptions.UndefinedError as e:
             # Catch actual runtime undefined variables (e.g., typos in keys)
             logger.error(f"RUNTIME UNDEFINED ERROR in '{template_name}': {e}")
-            
+
         except jinja2.exceptions.TemplateSyntaxError as e:
             # Catch syntax errors (e.g., missing {% endif %})
             logger.error(
-                f"SYNTAX ERROR in '{template_name}' at line {e.lineno}: "
-                f"{e.message}"
+                f"SYNTAX ERROR in '{template_name}' at line {e.lineno}: " f"{e.message}"
             )
-            
+
         except Exception as e:
             # Catch other runtime execution errors (e.g., type mismatches)
             logger.error(f"EXECUTION ERROR in '{template_name}': {e}")
             logger.debug(traceback.format_exc())
-            
+
         logger.info("--- Template Debugger Finished ---")
 
     def _is_weasyprint_operational(self) -> bool:
         """Performs a hard check to verify if WeasyPrint C-libraries exist."""
         if sys.platform == "win32":
             gtk_bin = os.path.join(sys.prefix, "Library", "bin")
-            if os.path.exists(gtk_bin) and (
-                gtk_bin not in os.environ.get("PATH", "")):
+            if os.path.exists(gtk_bin) and (gtk_bin not in os.environ.get("PATH", "")):
                 os.environ["PATH"] = (
-                    f"{gtk_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+                    f"{gtk_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+                )
 
         try:
             result = subprocess.run(
@@ -888,11 +943,12 @@ class NarrativeStatsReporter:
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
             )
             if result.returncode != 0:
                 logger.debug(
-                    f"WeasyPrint probe failed. Stderr: {result.stderr.strip()}")
+                    f"WeasyPrint probe failed. Stderr: {result.stderr.strip()}"
+                )
             return result.returncode == 0
         except FileNotFoundError:
             return False
@@ -910,16 +966,22 @@ class NarrativeStatsReporter:
 
         logger.info("Conda detected. Auto-installing GTK3/Pango C-libraries...")
         conda_exe = os.environ.get("CONDA_EXE", "conda")
-        
+
         try:
             subprocess.run(
                 [
-                    conda_exe, "install", "-c", "conda-forge", 
-                    "weasyprint", "pango", "tinycss2", "-y"
+                    conda_exe,
+                    "install",
+                    "-c",
+                    "conda-forge",
+                    "weasyprint",
+                    "pango",
+                    "tinycss2",
+                    "-y",
                 ],
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
             )
         except Exception as e:
             logger.error(f"Conda execution failed: {e}")
@@ -948,7 +1010,7 @@ class NarrativeStatsReporter:
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
             )
             # Only return True if the process exits without error
             return result.returncode == 0
@@ -971,7 +1033,9 @@ class NarrativeStatsReporter:
             try:
                 subprocess.run(
                     ["pytinytex", "download"],
-                    check=True, capture_output=True, text=True
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 )
                 return True
             except Exception as e:
@@ -989,14 +1053,11 @@ class NarrativeStatsReporter:
         try:
             # check=False bypasses false negative exit code 1
             subprocess.run(
-                [
-                    "powershell", "-ExecutionPolicy", "Bypass",
-                    "-Command", ps_cmd
-                ],
+                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
                 check=False,
                 capture_output=True,
                 text=True,
-                creationflags=0x08000000
+                creationflags=0x08000000,
             )
         except Exception as e:
             logger.error(f"PowerShell execution explicitly failed: {e}")
@@ -1019,7 +1080,7 @@ class NarrativeStatsReporter:
             appdata / "TinyTeX" / "bin" / "windows",
             appdata / "TinyTeX" / "bin" / "win32",
             progdata / "TinyTeX" / "bin" / "windows",
-            progdata / "TinyTeX" / "bin" / "win32"
+            progdata / "TinyTeX" / "bin" / "win32",
         ]
 
         tt_bin = next((p for p in target_paths if p.is_dir()), None)
@@ -1041,8 +1102,13 @@ class NarrativeStatsReporter:
             result = ctypes.c_long()
 
             ctypes.windll.user32.SendMessageTimeoutW(
-                hwnd_broadcast, wm_settingchange, 0, "Environment",
-                smto_abortifhung, 5000, ctypes.byref(result)
+                hwnd_broadcast,
+                wm_settingchange,
+                0,
+                "Environment",
+                smto_abortifhung,
+                5000,
+                ctypes.byref(result),
             )
         except Exception as e:
             logger.debug(f"OS env broadcast failed (non-fatal): {e}")
@@ -1070,7 +1136,7 @@ class NarrativeStatsReporter:
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
             )
             return result.returncode == 0
         except (FileNotFoundError, OSError):
@@ -1088,16 +1154,13 @@ class NarrativeStatsReporter:
 
         logger.info("Auto-installing rsvg-convert (librsvg) via Conda...")
         conda_exe = os.environ.get("CONDA_EXE", "conda")
-        
+
         try:
             subprocess.run(
-                [
-                    conda_exe, "install", "-c", "conda-forge", 
-                    "librsvg", "-y"
-                ],
+                [conda_exe, "install", "-c", "conda-forge", "librsvg", "-y"],
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
             )
         except Exception as e:
             logger.error(f"Conda execution failed for librsvg: {e}")
@@ -1111,60 +1174,56 @@ class NarrativeStatsReporter:
             return False
 
     def generate_markdown(
-        self, 
-        pipeline_metrics: dict, 
-        qa_metrics: dict, 
-        report_folder: str = "08_Report_Summary"
+        self,
+        pipeline_metrics: dict,
+        qa_metrics: dict,
+        report_folder: str = "08_Report_Summary",
     ) -> None:
         """
         Renders both comprehensive and brief Markdown QC reports.
-        
+
         Iterates through defined template versions and generates distinct
         markdown documents based on the unified metrics context.
         """
         # Step 1: Consolidate double-source data
         context = self.consolidate_metrics(pipeline_metrics, qa_metrics)
         out_dir = self.base_dir / report_folder
-        
+
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except IOError as e:
             logger.error(f"Failed to create report directory: {e}")
             return
-            
+
         # Initialize a list to track all generated markdown paths
         self._generated_md_paths = []
-        
+
         # Define the template mapping for dual output
         versions = {
             "Comprehensive": "report_comprehensive.md.j2",
-            "Brief": "report_brief.md.j2"
+            "Brief": "report_brief.md.j2",
         }
-        
+
         # Step 2: Loop through versions and render
         for label, template_name in versions.items():
             logger.info(f"Generating {label.upper()} narrative report...")
             try:
                 template = self.env.get_template(template_name)
                 content = template.render(context)
-                
+
                 md_path = out_dir / f"Report_{label}.md"
                 with open(md_path, "w", encoding="utf-8") as f:
                     f.write(content)
-                    
+
                 self._generated_md_paths.append(md_path)
-                logger.success(
-                    f"{label.capitalize()} report generated: {md_path}"
-                )
+                logger.success(f"{label.capitalize()} report generated: {md_path}")
             except Exception as e:
                 logger.error(f"Jinja2 rendering failed for {label}: {e}")
                 self._debug_template_errors(template_name, context)
 
-    def export_report(
-        self, pdf_engine: Optional[str] = "weasyprint"
-    ) -> bool:
+    def export_report(self, pdf_engine: Optional[str] = "weasyprint") -> bool:
         """Exports all generated markdown reports to PDF/HTML sequentially.
-        
+
         Orchestrates the conversion from Markdown to PDF/HTML using Pandoc.
         Loops through all tracked markdown files and handles fallbacks.
         """
@@ -1176,6 +1235,7 @@ class NarrativeStatsReporter:
         # --- Phase 0: Pandoc Environment Check ---
         try:
             import pypandoc
+
             try:
                 pypandoc.get_pandoc_version()
             except OSError:
@@ -1191,16 +1251,16 @@ class NarrativeStatsReporter:
         assets_path = Path(md_dir) / "assets"
         assets_path.mkdir(parents=True, exist_ok=True)
         css_path = assets_path / "report_style.css"
-        
+
         with open(css_path, "w", encoding="utf-8") as f:
             f.write(self.REPORT_CSS)
 
         base_args = [
-            "--standalone", 
-            "--embed-resources", 
+            "--standalone",
+            "--embed-resources",
             "--quiet",
             f"--resource-path={md_dir}",
-            f"--css={str(css_path)}"
+            f"--css={str(css_path)}",
         ]
 
         # =====================================================================
@@ -1212,8 +1272,11 @@ class NarrativeStatsReporter:
             """Internal helper for standard HTML rendering."""
             try:
                 pypandoc.convert_file(
-                    source_file=src_md, to="html", format="markdown",
-                    outputfile=out_html, extra_args=base_args
+                    source_file=src_md,
+                    to="html",
+                    format="markdown",
+                    outputfile=out_html,
+                    extra_args=base_args,
                 )
                 status = "saved" if is_fallback else "generated"
                 logger.success(f"HTML report {status}: {out_html}")
@@ -1226,7 +1289,7 @@ class NarrativeStatsReporter:
             """Internal helper for WeasyPrint PDF rendering via Pandoc."""
             try:
                 logger.info("Attempting PDF export via WeasyPrint...")
-                
+
                 if sys.platform == "win32":
                     f_conf = os.path.join(
                         sys.prefix, "Library", "etc", "fonts", "fonts.conf"
@@ -1234,18 +1297,19 @@ class NarrativeStatsReporter:
                     if os.path.exists(f_conf):
                         os.environ["FONTCONFIG_FILE"] = f_conf
                         os.environ["FONTCONFIG_PATH"] = os.path.dirname(f_conf)
-                        
+
                 if not self._is_weasyprint_operational():
                     if not self._force_install_weasyprint_conda():
                         return None
-                
-                wp_args = base_args + [
-                    "--pdf-engine=weasyprint", "--pdf-engine-opt=-q"
-                ]
-                
+
+                wp_args = base_args + ["--pdf-engine=weasyprint", "--pdf-engine-opt=-q"]
+
                 pypandoc.convert_file(
-                    source_file=src_md, to="pdf", format="markdown",
-                    outputfile=out_pdf, extra_args=wp_args
+                    source_file=src_md,
+                    to="pdf",
+                    format="markdown",
+                    outputfile=out_pdf,
+                    extra_args=wp_args,
                 )
                 logger.success(f"PDF generated: {out_pdf}")
                 return "WeasyPrint"
@@ -1263,22 +1327,27 @@ class NarrativeStatsReporter:
             try:
                 mode = "fallback" if is_fallback else "primary"
                 logger.info(f"Attempting PDF export via LaTeX ({mode})...")
-                
+
                 if not self._is_pdflatex_available():
                     if not self._force_install_tinytex():
                         return None
-                        
+
                 if not self._is_rsvg_operational():
                     self._force_install_rsvg_conda()
-                    
+
                 lx_args = base_args + [
                     "--pdf-engine=xelatex",
-                    "-V", "geometry:margin=25mm", 
-                    "-V", "tables=true"
+                    "-V",
+                    "geometry:margin=25mm",
+                    "-V",
+                    "tables=true",
                 ]
                 pypandoc.convert_file(
-                    source_file=src_md, to="pdf", format="markdown",
-                    outputfile=out_pdf, extra_args=lx_args
+                    source_file=src_md,
+                    to="pdf",
+                    format="markdown",
+                    outputfile=out_pdf,
+                    extra_args=lx_args,
                 )
                 logger.success(f"PDF generated: {out_pdf}")
                 return "XeLaTeX"
@@ -1293,49 +1362,46 @@ class NarrativeStatsReporter:
         # MAIN ROUTING LOGIC WITH GUARANTEED CLEANUP
         # =====================================================================
         overall_success = True
-        
+
         try:
             for md_path in md_paths:
                 md_str = str(md_path)
                 file_label = os.path.basename(md_str)
                 logger.info(f"--- Exporting PDF for: {file_label} ---")
-                
+
                 base_name = os.path.splitext(md_str)[0]
                 pdf_path = base_name + ".pdf"
                 html_path = base_name + ".html"
-                
+
                 target = pdf_engine.lower()
                 final_engine = None
-                
+
                 # Execute conversion based on target and handle fallbacks
                 if target == "html":
                     final_engine = _render_html(md_str, html_path, False)
                 elif target == "xelatex":
-                    final_engine = (
-                        _render_latex(md_str, pdf_path) or 
-                        _render_html(md_str, html_path, True)
+                    final_engine = _render_latex(md_str, pdf_path) or _render_html(
+                        md_str, html_path, True
                     )
                 elif target == "weasyprint":
                     final_engine = (
-                        _render_weasyprint(md_str, pdf_path) or 
-                        _render_latex(md_str, pdf_path, True) or 
-                        _render_html(md_str, html_path, True)
+                        _render_weasyprint(md_str, pdf_path)
+                        or _render_latex(md_str, pdf_path, True)
+                        or _render_html(md_str, html_path, True)
                     )
                 else:
                     logger.error(f"Unsupported engine: {pdf_engine}")
                     overall_success = False
                     continue
-                    
+
                 if final_engine:
-                    logger.success(
-                        f"[{file_label}] completed using {final_engine}."
-                    )
+                    logger.success(f"[{file_label}] completed using {final_engine}.")
                 else:
                     logger.error(f"Failed to export [{file_label}].")
                     overall_success = False
-                    
+
             return overall_success
-            
+
         finally:
             # Phase 2: Guaranteed Cleanup of the Temporary CSS File
             if css_path.exists():
