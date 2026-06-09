@@ -12,7 +12,8 @@ build-backend = "setuptools.build_meta"
 # ==============================================================================
 [project]
 name = "pi-metaboqc"
-dynamic = ["version", "readme"]  # Metadata extracted from source and files
+version = "1.1.3"
+dynamic = ["readme"]  # Metadata extracted from source and files
 authors = [
     {name="KaikunXu", email="xukaikun.bio@qq.com"},
 ]
@@ -105,15 +106,13 @@ include = ["pimqc*"]            # Include only packages starting with pimqc
 
 [tool.setuptools.package-data]
 "pimqc" = [
-    "VERSION",                  # Version of the moudle
     "data/*.csv",               # Demo meta and intensity data files
     "data/*.toml",              # Demo config file (default format)
     "data/*.json",              # Demo config file (optional for webserver)
     "templates/*.j2",           # Template files for report
-]   
+]
 
 [tool.setuptools.dynamic]
-version = {file = "src/pimqc/VERSION"} # Extract version from VERSION
 readme = {file = "README.md", content-type = "text/markdown"}
 
 # ==============================================================================

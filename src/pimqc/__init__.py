@@ -14,7 +14,7 @@ import sys
 import shlex
 import subprocess
 import multiprocessing
-from importlib.resources import files
+from importlib.metadata import PackageNotFoundError, version
 from loguru import logger
 
 # Initialize Logger and Environment Check
@@ -35,7 +35,10 @@ from .normalization import MetaboIntNormalizer
 from .filtering import MetaboIntFilter
 
 # Package Version
-__version__ = (files("pimqc") / "VERSION").read_text(encoding="utf-8").strip()
+try:
+    __version__ = version("pi-metaboqc")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 # Define public API
 __all__ = [
