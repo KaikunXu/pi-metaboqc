@@ -11,33 +11,46 @@ build-backend = "setuptools.build_meta"
 # Core package information for PyPI distribution and discovery.
 # ==============================================================================
 [project]
-name = "pi-metaboqc"
-version = "1.1.3"
-dynamic = ["readme"]  # Metadata extracted from source and files
+name = "pi-metaboqc"           # Distribution name used by PyPI and pip
+version = "1.1.4"              # Static release version following PEP 440
+dynamic = ["readme"]           # README content is loaded from README.md
+
+# Maintainer information displayed in package metadata.
 authors = [
     {name="KaikunXu", email="xukaikun.bio@qq.com"},
 ]
+
+# Search terms that help users discover the package on PyPI.
 keywords = [
-    "chemistry",
-    "metabolomics",
-    "bioinformatics",
-    "chemometrics",
-    "lc-ms",
-    "mass-spectrometry",
-    "data analysis",
-    "quality control",
-    "quality assurance"
+    "chemistry",               # Analytical chemistry domain
+    "metabolomics",            # Primary omics application area
+    "bioinformatics",          # Computational biology context
+    "chemometrics",            # Statistical analysis of chemical data
+    "lc-ms",                   # Liquid chromatography-mass spectrometry
+    "mass-spectrometry",       # Instrument platform and data source
+    "data analysis",           # General data-processing discoverability
+    "quality control",         # Core package purpose
+    "quality assurance"        # QC/QA workflow discoverability
 ]
-description = "A comprehensive LC-MS metabolomics data quality control module."
+
+# Short package summary shown on PyPI search and project pages.
+description = """\
+A comprehensive LC-MS metabolomics quality-control and preprocessing package \
+that provides an object-oriented pipeline for dataset construction, sample and \
+feature filtering, signal drift and batch-effect correction, missing-value \
+imputation, normalization, quality assessment, and report generation.\
+"""
 
 requires-python = ">=3.10"      # Supports modern Python features and type hints
-license = "MIT"                 # Lisence 
+license = "MIT"                 # SPDX license expression for project metadata
 license-files = ["LICENSE"]     # Path to the license file
+
+# Trove classifiers used by PyPI for package maturity and topic indexing.
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-    "Intended Audience :: Science/Research",
+    "Development Status :: 3 - Alpha",        # Current project maturity level
+    "Programming Language :: Python :: 3",    # Python 3 compatible package
+    "Operating System :: OS Independent",     # Platform-independent source
+    "Intended Audience :: Science/Research",  # Target research users
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Scientific/Engineering :: Visualization",
@@ -67,12 +80,12 @@ dependencies = [
     
     # --- System & Hardware Diagnostics ---
     "psutil>=5.8.0",         # Cross-platform system memory and power monitoring
-    "py-cpuinfo>=9.0.0",     # Accurate CPU model and architecture identification
+    "py-cpuinfo>=9.0.0",     # Accurate CPU model and architecture ID
 
     # --- Data Visualization ---
     "matplotlib>=3.3.0",     # Fundamental 2D plotting engine
     "seaborn>=0.11.0",       # Statistical data visualization based on mpl
-    "plotnine>=0.10.1",      # Grammar of Graphics implementation 
+    "plotnine>=0.10.1",      # Grammar of Graphics implementation
     
     # --- Report Assembly & Image Handling ---
     "patchworklib>=0.6.2",   # Composition tool for matplotlib subplots
@@ -91,29 +104,30 @@ dependencies = [
 # ==============================================================================
 # PROJECT URLS
 # External links for source code, documentation, and issue tracking.
-# ============================================================================== 
+# ==============================================================================
 [project.urls]
-"Homepage" = "https://github.com/KaikunXu/pi-metaboqc"
-"Bug Tracker" = "https://github.com/KaikunXu/pi-metaboqc/issues"
+"Homepage" = "https://github.com/KaikunXu/pi-metaboqc"  # Source repository
+"Bug Tracker" = "https://github.com/KaikunXu/pi-metaboqc/issues"  # Issues
 
 # ==============================================================================
 # SETTOOLS SPECIFIC CONFIGURATION
 # Internal settings for package discovery and non-code asset management.
 # ==============================================================================
 [tool.setuptools.packages.find]
-where = ["src"]                 # Locate source code under the src directory
+where = ["src"]                 # Locate import packages under src directory
 include = ["pimqc*"]            # Include only packages starting with pimqc
 
 [tool.setuptools.package-data]
+# Non-Python resources bundled into the installed pimqc package.
 "pimqc" = [
     "data/*.csv",               # Demo meta and intensity data files
-    "data/*.toml",              # Demo config file (default format)
-    "data/*.json",              # Demo config file (optional for webserver)
+    "data/*.toml",              # Demo conf file (default format)
+    "data/*.json",              # Demo conf file (optional format for webserver)
     "templates/*.j2",           # Template files for report
 ]
 
 [tool.setuptools.dynamic]
-readme = {file = "README.md", content-type = "text/markdown"}
+readme = {file = "README.md", content-type = "text/markdown"}  # PyPI README
 
 # ==============================================================================
 # OPTIONAL DEPENDENCIES

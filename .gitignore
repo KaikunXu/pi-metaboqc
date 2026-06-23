@@ -70,14 +70,41 @@ venv.bak/
 # Testing: Pytest and coverage
 # ==========================================
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.pyre/
+.pytype/
 .tox/
 .nox/
 .coverage
+.coverage.*
+htmlcov/
 .cache
 nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+
+# ==========================================
+# R / rpy2: Session state and temporary files
+# ==========================================
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.RDataTmp
+.Rproj.user/
+Rplots.pdf
+*.Rout
+*.Rout.save
+*.Rout.fail
+*-Ex.Rout
+*.Rcheck/
+Rtmp*/
+**/Rtmp*/
+00LOCK*/
+**/00LOCK*/
 
 # ==========================================
 # System: OS generated files
@@ -96,6 +123,9 @@ desktop.ini
 # Deprecated scripts and WIP functions
 .deprecated/
 
+# Codex-generated local artifacts, scratch scripts, and downloaded caches
+.codex_artifacts/
+.codex_tmp_*
+
 # Local data files that should not be public
 examples/tutorial_output/
-

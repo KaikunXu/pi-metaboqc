@@ -5,8 +5,8 @@ Script purpose: Execute mechanism-aware missing-value imputation.
 execute_imputation() reads MAR/MNAR feature labels from MetaboInt attributes,
 log-transforms the working matrix, imputes MNAR features with QRILC or
 LOD-style constants, and handles MAR features with Median, MinProb, KNN, LLS,
-or AUTO selection. AUTO mode masks observed values, benchmarks candidates with
-stratified NRMSE, and applies the selected algorithm feature-wise.
+BPCA, or AUTO selection. AUTO mode masks observed values, benchmarks candidates
+with stratified NRMSE, and applies the selected algorithm feature-wise.
 The method reconstructs the original intensity scale, preserves metadata,
 stores candidate and QA metrics, writes the imputed matrix, and renders KDE
 and NRMSE diagnostics.
@@ -14,6 +14,7 @@ and NRMSE diagnostics.
 
 import os
 import copy
+import math
 import numpy as np
 import pandas as pd
 from functools import cached_property
@@ -32,6 +33,220 @@ from . import core_classes
 from . import visualizer_classes
 
 
+class BayesianPCAImputer:
+    """Bayesian PCA missing-value estimator adapted from pcaMethods BPCA.
+
+    The implementation follows the structure of the pcaMethods R port of
+    Oba's BPCA algorithm: initialize principal axes with SVD, then iteratively
+    update scores, loadings, residual precision (tau), and loading precision
+    terms (alpha). Input rows are observations and columns are variables.
+    """
+
+    def __init__(
+        self,
+        n_components: int = 2,
+        max_iter: int = 100,
+        threshold: float = 1e-4,
+    ) -> None:
+        """Initialize BPCA model settings."""
+        self.n_components = max(1, int(n_components))
+        self.max_iter = max(1, int(max_iter))
+        self.threshold = float(threshold)
+
+    @staticmethod
+    def _safe_inverse(mat: np.ndarray) -> np.ndarray:
+        """Invert a small matrix with pseudo-inverse fallback."""
+        try:
+            return np.linalg.inv(mat)
+        except np.linalg.LinAlgError:
+            return np.linalg.pinv(mat)
+
+    def _initialize_model(self, y: np.ndarray) -> dict[str, Any]:
+        """Initialize the BPCA working state from an incomplete matrix."""
+        rows, cols = y.shape
+        nans = np.isnan(y)
+        yest = np.where(nans, 0.0, y)
+
+        max_components = max(1, min(self.n_components, rows, cols))
+        if rows > 1 and cols > 1:
+            cov_y = np.cov(yest, rowvar=False)
+            cov_y = np.atleast_2d(cov_y)
+        else:
+            cov_y = np.eye(cols) * np.nanvar(yest)
+
+        cov_y = np.nan_to_num(cov_y, nan=0.0, posinf=0.0, neginf=0.0)
+        u, s, _ = np.linalg.svd(cov_y, full_matrices=False)
+        s = np.clip(s[:max_components], a_min=0.0, a_max=None)
+
+        mean = np.nanmean(y, axis=0)
+        if np.isnan(mean).any():
+            global_mean = np.nanmean(y)
+            if np.isnan(global_mean):
+                global_mean = 0.0
+            mean = np.where(np.isnan(mean), global_mean, mean)
+
+        pa = u[:, :max_components] @ np.diag(np.sqrt(s))
+        residual_var = float(np.trace(cov_y) - np.sum(s))
+        tau = 1.0 / residual_var if residual_var > 1e-10 else 1e10
+        tau = float(np.clip(tau, 1e-10, 1e10))
+
+        galpha0 = 1e-10
+        balpha0 = 1.0
+        alpha_denom = tau * np.diag(pa.T @ pa) + 2 * galpha0 / balpha0
+        alpha = (2 * galpha0 + cols) / np.maximum(alpha_denom, 1e-12)
+
+        return {
+            "rows": rows,
+            "cols": cols,
+            "comps": max_components,
+            "yest": yest.copy(),
+            "row_miss": np.where(nans.sum(axis=1) != 0)[0],
+            "row_nomiss": np.where(nans.sum(axis=1) == 0)[0],
+            "nans": nans,
+            "mean": mean,
+            "pa": pa,
+            "tau": tau,
+            "scores": np.zeros((rows, max_components), dtype=float),
+            "galpha0": galpha0,
+            "balpha0": balpha0,
+            "alpha": alpha,
+            "gmu0": 0.001,
+            "btau0": 1.0,
+            "gtau0": 1e-10,
+            "sigw": np.eye(max_components),
+        }
+
+    def _do_step(self, model: dict[str, Any], y: np.ndarray) -> dict[str, Any]:
+        """Perform one BPCA EM/Bayesian update step."""
+        rows = model["rows"]
+        cols = model["cols"]
+        comps = model["comps"]
+        pa = model["pa"]
+        tau = model["tau"]
+        sigw = model["sigw"]
+        mean = model["mean"]
+        nans = model["nans"]
+
+        scores = np.zeros((rows, comps), dtype=float)
+        t_mat = np.zeros((cols, comps), dtype=float)
+        tr_s = 0.0
+
+        rx = np.eye(comps) + tau * (pa.T @ pa) + sigw
+        rx_inv = self._safe_inverse(rx)
+
+        idx_nomiss = model["row_nomiss"]
+        if len(idx_nomiss) > 0:
+            dy = y[idx_nomiss, :] - mean
+            x = tau * rx_inv @ pa.T @ dy.T
+            t_mat += dy.T @ x.T
+            tr_s += float(np.sum(dy * dy))
+            scores[idx_nomiss, :] = x.T
+
+        for i in model["row_miss"]:
+            missing = nans[i, :]
+            observed = ~missing
+
+            dyo = y[i, observed] - mean[observed]
+            wm = pa[missing, :]
+            wo = pa[observed, :]
+
+            rx_obs = rx - tau * (wm.T @ wm)
+            rx_obs_inv = self._safe_inverse(rx_obs)
+
+            ex = tau * wo.T @ dyo.reshape(-1, 1)
+            x = rx_obs_inv @ ex
+            dym = (wm @ x).ravel()
+
+            dy_full = np.zeros(cols, dtype=float)
+            dy_full[observed] = dyo
+            dy_full[missing] = dym
+
+            model["yest"][i, :] = dy_full + mean
+            t_mat += dy_full.reshape(-1, 1) @ x.reshape(1, -1)
+
+            if missing.any():
+                t_mat[missing, :] += wm @ rx_obs_inv
+                tr_s += float(
+                    dy_full @ dy_full
+                    + np.sum(missing) / tau
+                    + np.trace(wm @ rx_obs_inv @ wm.T)
+                )
+            else:
+                tr_s += float(dy_full @ dy_full)
+
+            scores[i, :] = x.ravel()
+
+        t_mat /= rows
+        tr_s /= rows
+
+        dw = (
+            rx_inv
+            + tau * t_mat.T @ pa @ rx_inv
+            + np.diag(model["alpha"]) / rows
+        )
+        dw_inv = self._safe_inverse(dw)
+
+        pa_new = t_mat @ dw_inv
+        tau_num = cols + 2 * model["gtau0"] / rows
+        tau_den = (
+            tr_s
+            - np.trace(t_mat.T @ pa_new)
+            + (
+                float(np.dot(mean, mean)) * model["gmu0"]
+                + 2 * model["gtau0"] / model["btau0"]
+            )
+            / rows
+        )
+        tau_new = float(tau_num / max(float(tau_den), 1e-12))
+        tau_new = float(np.clip(tau_new, 1e-10, 1e10))
+
+        sigw_new = dw_inv * (cols / rows)
+        alpha_denom = (
+            tau_new * np.diag(pa_new.T @ pa_new)
+            + np.diag(sigw_new)
+            + 2 * model["galpha0"] / model["balpha0"]
+        )
+        alpha_new = (2 * model["galpha0"] + cols) / np.maximum(alpha_denom, 1e-12)
+
+        model["scores"] = scores
+        model["pa"] = pa_new
+        model["tau"] = tau_new
+        model["sigw"] = sigw_new
+        model["alpha"] = alpha_new
+        return model
+
+    def fit_transform(self, y: np.ndarray) -> np.ndarray:
+        """Estimate missing values in an observation-by-variable matrix."""
+        y = np.asarray(y, dtype=float)
+        if y.ndim != 2:
+            raise ValueError("BPCA input must be a 2D matrix.")
+
+        if not np.isnan(y).any():
+            return y.copy()
+
+        if y.shape[0] < 2 or y.shape[1] < 2:
+            means = np.nanmean(y, axis=0)
+            global_mean = np.nanmean(y)
+            if np.isnan(global_mean):
+                global_mean = 0.0
+            means = np.where(np.isnan(means), global_mean, means)
+            return np.where(np.isnan(y), means, y)
+
+        model = self._initialize_model(y)
+        tau_old = 1000.0
+
+        for step in range(1, self.max_iter + 1):
+            model = self._do_step(model, y)
+            if step % 10 == 0:
+                dtau = abs(np.log10(model["tau"]) - np.log10(tau_old))
+                if dtau < self.threshold:
+                    break
+                tau_old = model["tau"]
+
+        result = np.where(np.isnan(y), model["yest"], y)
+        return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 class MetaboIntImputer(core_classes.MetaboInt):
     """Missing value imputation engine with hybrid stratified evaluation."""
 
@@ -46,6 +261,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
         mnar_fraction: Optional[float] = None,
         knn_neighbors: Optional[int] = None,
         lls_neighbors: Optional[int] = None,
+        bpca_components: Optional[int] = None,
+        bpca_max_iter: Optional[int] = None,
+        bpca_tol: Optional[float] = None,
         sim_mask_ratio: Optional[float] = None,
         **kwargs: object,
     ) -> None:
@@ -59,6 +277,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
             mnar_fraction: Multiplier for LOD-based MNAR imputation.
             knn_neighbors: Number of neighbors for the KNN algorithm.
             lls_neighbors: Number of neighbors for the LLS algorithm.
+            bpca_components: Number of principal components for BPCA.
+            bpca_max_iter: Maximum BPCA EM/Bayesian update steps.
+            bpca_tol: BPCA precision-change convergence threshold.
             sim_mask_ratio: Ratio for simulated masking during evaluation.
             **kwargs: Keyword arguments for the DataFrame constructor.
         """
@@ -71,6 +292,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
             "mnar_fraction": 0.5,
             "knn_neighbors": 5,
             "lls_neighbors": 15,
+            "bpca_components": 2,
+            "bpca_max_iter": 100,
+            "bpca_tol": 1e-4,
             "sim_mask_ratio": 0.05,
         }
 
@@ -86,6 +310,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
             "mnar_fraction",
             "knn_neighbors",
             "lls_neighbors",
+            "bpca_components",
+            "bpca_max_iter",
+            "bpca_tol",
             "sim_mask_ratio",
         ]
         for param in explicit_params:
@@ -258,63 +485,67 @@ class MetaboIntImputer(core_classes.MetaboInt):
     ) -> pd.DataFrame:
         """Impute missing values using QRILC logic for left-censored data.
 
-        Approximates Quantile Regression Imputation of Left-Censored data by
-        estimating the feature-wise underlying normal distribution using robust
-        estimators (Median/MAD), then drawing randomly from the truncated left
-        tail (below the observed minimum) to preserve low-abundance variance.
+        This follows the imputeLCMD::impute.QRILC orientation: for each sample
+        column, fit observed sample quantiles against theoretical normal
+        quantiles, then draw missing values from the left tail of the estimated
+        censored distribution. The project matrix stores features in rows and
+        samples in columns, matching imputeLCMD's input orientation.
 
         Ref:
             Missing value imputation approach for mass spectrometry-based
             metabolomics data (Scientific reports, 2018)
         """
 
-        # Initialize numpy random generator for deterministic results
         rng = np.random.default_rng(global_seed)
-        res_df = df_log.copy()
+        arr = df_log.to_numpy(dtype=float)
+        res_arr = arr.copy()
+        n_features = arr.shape[0]
+        upper_q = 0.99
+        probs = np.arange(0.001, upper_q + 0.001 + 1e-12, 0.01)
 
-        def _qrilc_row(row: pd.Series) -> pd.Series:
-            n_missing = row.isna().sum()
+        for col_idx in range(arr.shape[1]):
+            sample_vec = arr[:, col_idx]
+            missing_mask = np.isnan(sample_vec)
+            n_missing = int(np.sum(missing_mask))
             if n_missing == 0:
-                return row
+                continue
 
-            valid = row.dropna()
-            # Fallback for features with extremely few observed values
-            if len(valid) < 3:
-                fallback_val = valid.min() if len(valid) > 0 else 0.0
-                return row.fillna(fallback_val)
+            observed = sample_vec[~missing_mask]
+            if observed.size < 3:
+                fallback = float(np.nanmin(observed)) if observed.size else 0.0
+                res_arr[missing_mask, col_idx] = fallback
+                continue
 
-            # 1. Estimate LOD (Truncation point) for this specific feature
-            lod = valid.min()
-
-            # 2. Estimate robust parameters for the underlying distribution.
-            # Using Median and MAD prevents the bias that would occur if we
-            # used mean/std on left-censored data.
-            mu = np.median(valid)
-            mad = np.median(np.abs(valid - mu))
-            sigma = (mad * 1.4826) * tune_sigma
-
-            # Prevent zero variance which crashes truncnorm
-            if sigma < 1e-6:
-                sigma = 0.01
-
-            # 3. Define standard normal quantiles for the truncation limits
-            a, b = -np.inf, (lod - mu) / sigma
-
-            # 4. Draw random samples strictly from the truncated left tail
-            drawn = stats.truncnorm.rvs(
-                a=a, b=b, loc=mu, scale=sigma, size=n_missing, random_state=rng
+            p_missing = n_missing / float(n_features)
+            q_normal = stats.norm.ppf(
+                np.linspace(p_missing + 0.001, upper_q + 0.001, len(probs))
             )
+            q_sample = np.quantile(observed, probs, method="linear")
+            slope, intercept = np.polyfit(q_normal, q_sample, deg=1)
 
-            # Prevent negative intensities in linear space (exp2(x) - 1 >= 0)
-            drawn = np.clip(drawn, a_min=0.0, a_max=None)
+            center = float(intercept)
+            slope_abs = max(abs(float(slope)), 1e-12)
+            # imputeLCMD passes the fitted scale-like coefficient to rtmvnorm's
+            # covariance argument. In one dimension this corresponds to a
+            # standard deviation of sqrt(scale * tune_sigma).
+            scale = math.sqrt(max(slope_abs * float(tune_sigma), 1e-12))
+            upper = stats.norm.ppf(
+                p_missing + 0.001,
+                loc=center,
+                scale=slope_abs,
+            )
+            upper_std = (upper - center) / scale
+            drawn = stats.truncnorm.rvs(
+                a=-np.inf,
+                b=upper_std,
+                loc=center,
+                scale=scale,
+                size=n_missing,
+                random_state=rng,
+            )
+            res_arr[missing_mask, col_idx] = np.clip(drawn, a_min=0.0, a_max=None)
 
-            # Fill the missing values
-            row_copy = row.copy()
-            row_copy[row.isna()] = drawn
-            return row_copy
-
-        # Apply the QRILC logic feature-wise (row-wise)
-        return res_df.apply(_qrilc_row, axis=1)
+        return pd.DataFrame(res_arr, index=df_log.index, columns=df_log.columns)
 
     @staticmethod
     def impute_by_knn(df_log: pd.DataFrame, n_neighbors: int = 5) -> pd.DataFrame:
@@ -419,6 +650,41 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 res_arr[i, missing_mask] = np.nanmedian(row)
 
         return pd.DataFrame(res_arr, index=df_log.index, columns=df_log.columns)
+
+    @staticmethod
+    def impute_by_bpca(
+        df_log: pd.DataFrame,
+        n_components: int = 2,
+        max_iter: int = 100,
+        threshold: float = 1e-4,
+    ) -> pd.DataFrame:
+        """Impute missing values using Bayesian PCA in log2 space.
+
+        pcaMethods treats rows as observations and columns as variables. The
+        project matrix stores features in rows and samples in columns, so this
+        wrapper transposes the matrix before fitting BPCA and restores the
+        original orientation afterward.
+        """
+        if df_log.empty or not df_log.isna().any().any():
+            return df_log.copy()
+
+        arr = df_log.to_numpy(dtype=float)
+        if arr.shape[0] < 2 or arr.shape[1] < 2:
+            return df_log.apply(lambda x: x.fillna(x.median()), axis=1).fillna(0.0)
+
+        safe_components = max(1, min(int(n_components), arr.shape[0], arr.shape[1]))
+        imputer = BayesianPCAImputer(
+            n_components=safe_components,
+            max_iter=max_iter,
+            threshold=threshold,
+        )
+
+        # BPCA returns an imputed observation-by-variable matrix.
+        arr_imp = imputer.fit_transform(arr.T).T
+        arr_imp = np.where(np.isnan(arr), arr_imp, arr)
+        arr_imp = np.clip(arr_imp, a_min=0.0, a_max=None)
+
+        return pd.DataFrame(arr_imp, index=df_log.index, columns=df_log.columns)
 
     @staticmethod
     def impute_by_minprob(df_log: pd.DataFrame, global_seed: int = 123) -> pd.DataFrame:
@@ -699,6 +965,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
             imp_res = self._apply_isolated(
                 masked_df, self.impute_by_lls, n_neighbors=k_val
             )
+        elif method in ("bpca", "BPCA"):
+            imp_res = self._apply_isolated(
+                masked_df,
+                self.impute_by_bpca,
+                n_components=self.attrs.get("bpca_components", 2),
+                max_iter=self.attrs.get("bpca_max_iter", 100),
+                threshold=self.attrs.get("bpca_tol", 1e-4),
+            )
         else:
             imp_res = self._apply_isolated(
                 masked_df, lambda df: df.apply(lambda x: x.fillna(x.median()), axis=1)
@@ -723,7 +997,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         batch_array: Optional[np.ndarray] = None,
     ) -> tuple:
         """Autonomously selects the best algorithm using MAR-only subset."""
-        candidates = ["KNN", "MinProb", "Median", "LLS"]
+        candidates = ["KNN", "MinProb", "Median", "LLS", "BPCA"]
         best_method = "KNN"
         best_nrmse = float("inf")
         cache = {}
@@ -761,10 +1035,15 @@ class MetaboIntImputer(core_classes.MetaboInt):
         mnar_meth = self.attrs.get("mnar_method", "row")
         mnar_frac = self.attrs.get("mnar_fraction", 0.5)
 
-        reported_mnar_frac = (
-            None if str(mnar_meth).upper() == "QRILC" else (float(mnar_frac))
-        )
         status = self.attrs.get("imputation_status", "Pending")
+        if (
+            status == "Skipped"
+            or mnar_frac is None
+            or str(mnar_meth).upper() in {"QRILC", "NOT REQUIRED"}
+        ):
+            reported_mnar_frac = None
+        else:
+            reported_mnar_frac = float(mnar_frac)
 
         def _safe_round(val: object) -> float:
             if pd.isna(val):
@@ -780,10 +1059,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 "nrmse_total": _safe_round(mets.get("nrmse_total")),
             }
 
-        raw_mar = pd.Index(self.attrs.get("idx_mar", []))
-        raw_mnar = pd.Index(self.attrs.get("idx_mnar", []))
-        idx_mar = raw_mar.intersection(self.index)
-        idx_mnar = raw_mnar.intersection(self.index)
+        if status == "Skipped":
+            idx_mar = pd.Index([])
+            idx_mnar = pd.Index([])
+        else:
+            raw_mar = pd.Index(self.attrs.get("idx_mar", []))
+            raw_mnar = pd.Index(self.attrs.get("idx_mnar", []))
+            idx_mar = raw_mar.intersection(self.index)
+            idx_mnar = raw_mnar.intersection(self.index)
 
         # Retrieve the unified QA metrics (JSD) from the data passport
         qa_metrics = self.attrs.get("imputation_qa_metrics", {})
@@ -802,6 +1085,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 "mnar_count": len(idx_mnar),
             },
             "qa_metrics": qa_metrics,
+            "skip_reason": self.attrs.get("imputation_skip_reason"),
         }
 
         return metrics
@@ -839,6 +1123,9 @@ class MetaboIntImputer(core_classes.MetaboInt):
             if lls_neighbors is not None
             else self.attrs.get("lls_neighbors", 15)
         )
+        _bpca_k = self.attrs.get("bpca_components", 2)
+        _bpca_max_iter = self.attrs.get("bpca_max_iter", 100)
+        _bpca_tol = self.attrs.get("bpca_tol", 1e-4)
         _ratio = (
             sim_ratio
             if sim_ratio is not None
@@ -847,6 +1134,36 @@ class MetaboIntImputer(core_classes.MetaboInt):
 
         _seed = self.attrs.get("global_seed", 123)
         target_cols = self.columns.difference(self._blank.columns)
+        target_matrix = self.loc[:, target_cols]
+
+        if not target_matrix.isna().any().any():
+            logger.info(
+                "No missing values detected in target samples. "
+                "Bypassing imputation and propagating the matrix unchanged."
+            )
+            imputed_obj = self.copy().__finalize__(self)
+            imputed_obj.attrs["pipeline_stage"] = "Imputation"
+            imputed_obj.attrs["imputation_status"] = "Skipped"
+            imputed_obj.attrs["imputation_skip_reason"] = (
+                "No missing values detected in target samples."
+            )
+            imputed_obj.attrs["selected_mar_method"] = "Not required"
+            imputed_obj.attrs["mar_requested"] = mar_method or self.attrs.get(
+                "mar_method", "auto"
+            )
+            imputed_obj.attrs["mnar_method"] = "Not required"
+            imputed_obj.attrs["mnar_fraction"] = None
+            imputed_obj.attrs["candidate_metrics"] = {}
+            imputed_obj.attrs["imputation_qa_metrics"] = {}
+
+            if output_dir:
+                iu._check_dir_exists(output_dir, handle="makedirs")
+                imputed_obj.to_csv(
+                    os.path.join(output_dir, "Imputed_Data_NotRequired.csv")
+                )
+
+            logger.success("Missing value imputation skipped: no missing values found.")
+            return imputed_obj
 
         batch_col = self.attrs.get("batch", "Batch")
         batch_array = target_cols.get_level_values(batch_col).values
@@ -860,12 +1177,15 @@ class MetaboIntImputer(core_classes.MetaboInt):
         _mar_clean = str(_mar).upper()
         if _mar_clean in ("AUTO", "BEST"):
             mar_info = (
-                f"Auto (Evaluating KNN={_knn_k}, LLS (K={_lls_k}), MinProb, Median)"
+                f"Auto (Evaluating KNN={_knn_k}, LLS (K={_lls_k}), "
+                f"BPCA (PCs={_bpca_k}), MinProb, Median)"
             )
         elif _mar_clean == "KNN":
             mar_info = f"KNN (K={_knn_k})"
         elif _mar_clean == "LLS":
             mar_info = f"LLS (K={_lls_k})"
+        elif _mar_clean == "BPCA":
+            mar_info = f"BPCA (PCs={_bpca_k}, MaxIter={_bpca_max_iter})"
         else:
             mar_info = f"{_mar}"
 
@@ -932,6 +1252,14 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 mar_imp = self._apply_isolated(
                     mar_slice, self.impute_by_lls, n_neighbors=_lls_k
                 )
+            elif _mar in ("bpca", "BPCA"):
+                mar_imp = self._apply_isolated(
+                    mar_slice,
+                    self.impute_by_bpca,
+                    n_components=_bpca_k,
+                    max_iter=_bpca_max_iter,
+                    threshold=_bpca_tol,
+                )
             else:
                 mar_imp = self._apply_isolated(
                     mar_slice,
@@ -992,7 +1320,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
                     vis.save_and_show_pw(
                         pw_obj=fig_cands,
                         file_path=os.path.join(output_dir, "Imputer_Candidates"),
-                        width="80%",
+                        width="60%",
                     )
 
                 fig_grid = vis.plot_imputation_summary_grid(
@@ -1191,7 +1519,10 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
 
             if grp == "Sample":
                 self._format_single_legend(
-                    ax=ax, title="Data Type", bbox_to_anchor=(1.05, 1), loc="upper left"
+                    ax=ax,
+                    group_title="Data Type",
+                    bbox_to_anchor=(1.05, 1),
+                    loc="upper left",
                 )
 
         if return_fig:
@@ -1282,7 +1613,7 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
         title_str = "MAR Masked Simulation"
         if method_name:
             clean_name = method_name.replace("*", "")
-            if clean_name.upper() in ("KNN", "LLS"):
+            if clean_name.upper() in ("KNN", "LLS", "BPCA"):
                 display = method_name.upper()
             elif clean_name in ("MinProb", "minprob", "Prob", "prob"):
                 display = method_name

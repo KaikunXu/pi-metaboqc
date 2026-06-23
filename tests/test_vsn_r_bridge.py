@@ -1,4 +1,4 @@
-# tests/test_vsn_bridge.py
+# tests/test_vsn_r_bridge.py
 """
 Script purpose: Compare Python VSN normalization with the R Bioconductor path.
 

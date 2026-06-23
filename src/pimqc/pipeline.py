@@ -141,18 +141,19 @@ def run_pipeline(
     # signal drift and systematic inter-batch variations caused by
     # instrument fluctuations and column aging.
     # **Method Deconstruction (`correction.py`)**:
-    # Supports two advanced paradigms, both embedding strict
-    # anti-overfitting mechanisms (K-Fold Out-of-Fold Cross-Validation):
+    # Supports two complementary paradigms:
     # 1. Classical Multi-Stage Fitting (QC-RLSC / SVR / RFSC):
     # 1.1 Intra-batch: Uses QC samples as anchor points to fit a
     # non-linear drift baseline via LOESS, or SVR/Random Forest.
     # 1.2 Inter-batch: Executes global QC median alignment based on
     # the intra-batch corrected matrix.
-    # 2. **Unified Machine Learning Network (Global SERRF)**:
-    # Employs Hybrid Temporal-Correlation Random Forest Regression
-    # (SERRF). Computes a Spearman rank correlation network across
-    # features in parallel, combined with injection order, to model
-    # and suppress technical noise in a single step.
+    # 1.3 Internal OOF evaluation supports method selection while the
+    # global refit is used for final corrected output.
+    # 2. Global Model Correction (SERRF / RUV-III / WaveICA 2.0):
+    # 2.1 SERRF models cross-feature and injection-order effects with
+    # random forests; RUV-III removes unwanted factors estimated from
+    # QC/control features; WaveICA 2.0 removes injection-order-associated
+    # independent components from multiscale signal structure.
     # ========================================================================
     logger.info("Step 03: Signal Drift & Batch Effect Correction...")
     step3_dir = os.path.join(output_dir, "03_Corrected_Data")
@@ -168,7 +169,7 @@ def run_pipeline(
     # is driven by intrinsic biological traits rather than analytical
     # artifacts.
     # ========================================================================
-    qa_step3_dir = os.path.join(output_dir, "QA_03_Signal_Corrected_Data")
+    qa_step3_dir = os.path.join(output_dir, "QA_03_Corrected_Data")
     qa_engines_dict = {}
     for stage_name, stage_data in corrected_stages.items():
         logger.info(f"Executing Quality Assessment (QA) for: {stage_name}")
@@ -319,7 +320,9 @@ def run_pipeline(
     stage_key_map = {
         "Intra-batch corrected": "intra_batch_correction",
         "Inter-batch corrected": "inter_batch_correction",
-        "Global SERRF": "global_correction",
+        "SERRF": "global_correction",
+        "RUV-III": "global_correction",
+        "WaveICA 2.0": "global_correction",
     }
 
     for stage_name, engine in qa_engines_dict.items():

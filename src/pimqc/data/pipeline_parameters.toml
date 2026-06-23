@@ -91,7 +91,7 @@ scaling_method = "Auto-scaling"
 # - If Float (0.0 to 1.0): Treated as a RATIO. (e.g., 0.75 means >= 75% of IS/ORF must fail).
 # - If Integer (>= 1): Treated as an ABSOLUTE COUNT. (e.g., 2 means >= 2 IS/ORF must fail).
 # Default is 0.75 (IS) / 0.5 (ORF).
-is_outlier_threshold = 0.75
+is_outlier_threshold = 0.5
 orf_outlier_threshold = 0.5
 # ------------------------------------------------------------------------------
 # Filtering Thresholds (Missing Values & RSD)
@@ -135,7 +135,11 @@ qc_rsd_tol = 0.3
 # ------------------------------------------------------------------------------
 [MetaboIntCorrector]
 # [String] Primary algorithm for intra/inter-batch signal drift correction.
-# Options: "QC-SVR", "QC-RFSC", "QC-RLSC", "SERRF", "RUV", "Auto".
+# Options: "QC-SVR", "QC-RFSC", "QC-RLSC", "SERRF", "RUV-III", "WaveICA 2.0", "Auto".
+# "RUV", "WaveICA2", "WaveICA2.0", and "WaveICA-2.0" are accepted aliases.
+# Note: Auto evaluates SERRF, RUV-III, WaveICA 2.0, QC-RLSC, QC-RFSC, and QC-SVR.
+# WaveICA 2.0 is a full-data global correction method, so its Auto score uses
+# full-data QC RSD rather than out-of-fold QC RSD.
 base_est = "Auto"
 
 # [Float] Smoothing frac parameter, used strictly if base_est is "QC-RLSC".
@@ -153,6 +157,14 @@ serrf_n_tree = 100
 # Set to 0 to degrade to pure temporal/batch regression. Recommended range: 5 to 50.
 serrf_corr_features = 5
 
+# [String] Joblib backend for feature-wise SERRF correction.
+# Options: "loky" (recommended default) or "threading".
+serrf_backend = "loky"
+
+# [String or Integer] Joblib task batch size for SERRF feature workers.
+# Use "auto" unless manually profiling large datasets.
+serrf_batch_size = "auto"
+
 # [String] Kernel function, used strictly if base_est is "QC-SVR". Options: "rbf", "linear", "poly".
 svr_kernel = "rbf"
 
@@ -164,6 +176,30 @@ svr_gamma = 1.0
 
 # [Integer] Number of latent factors of unwanted variation to estimate and remove.
 ruv_k = 5
+
+# [Integer] Number of independent components for WaveICA 2.0.
+waveica_components = 10
+
+# [Float] R2 cutoff for selecting injection-order-associated WaveICA 2.0 components.
+waveica_cutoff = 0.1
+
+# [Optional Integer] Number of periodic Haar MODWT levels for WaveICA 2.0.
+# Leave unset to use floor(log2(number of samples)).
+# waveica_levels = 3
+
+# [Integer] Number of spline knots for WaveICA 2.0 injection-order association.
+waveica_spline_knots = 5
+
+# [Integer] Maximum Jacobi joint-diagonalization sweeps for WaveICA 2.0 stICA.
+waveica_max_iter = 1000
+
+# [String] Joblib backend for feature-wise QC-RFSC/QC-SVR regression.
+# Options: "loky" (recommended default) or "threading".
+regression_backend = "loky"
+
+# [String or Integer] Joblib task batch size for feature-wise regression workers.
+# Use "auto" unless manually profiling large datasets.
+regression_batch_size = "auto"
 
 # [Integer] Cross-Validation folds for Out-Of-Fold (OOF) prediction to prevent overfitting.
 cv_folds = 3
@@ -178,7 +214,7 @@ mnar_method = "QRILC"
 # [Float] Fraction of the minimum value to be used for mnar_method constant imputation (e.g., 0.5 = 50% of min).
 mnar_fraction = 0.5
 
-# [String] Algorithm for MAR (random) missing values. Options: "Auto", "MinProb", "KNN", "LLS", "Median".
+# [String] Algorithm for MAR (random) missing values. Options: "Auto", "MinProb", "KNN", "LLS", "BPCA", "Median".
 mar_method = "Auto"
 
 # [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "KNN".
@@ -186,6 +222,15 @@ knn_neighbors = 5
 
 # [Integer] Number of neighboring samples to evaluate. Active strictly if mar_method is "LLS".
 lls_neighbors = 15  
+
+# [Integer] Number of principal components for Bayesian PCA. Active strictly if mar_method is "BPCA" or Auto evaluates BPCA.
+bpca_components = 2
+
+# [Integer] Maximum BPCA EM/Bayesian update steps.
+bpca_max_iter = 100
+
+# [Float] BPCA convergence threshold based on residual precision change.
+bpca_tol = 0.0001
 
 # [Float] Ratio of known data to artificially mask for internal simulation and auto-evaluating the best MAR method via NRMSE metric.
 sim_mask_ratio = 0.05
@@ -195,20 +240,13 @@ sim_mask_ratio = 0.05
 # ------------------------------------------------------------------------------
 [MetaboIntNormalizer]
 
-# Recommended normalization strategies:
-# + [Combo A] Classic MetaboAnalyst Pipeline (Standard Choice)
-# Best for standard PCA, PLS-DA, and Fold-Change analysis.
-# norm_method = "PQN"/"MDFC"/"TIC"/"Median"/"Quantile"
-# log_transform = true    # Essential: Prevents negative values
-#
-# + [Combo B] Variance Stabilizing Normalization (VSN)
-# Best for strict heteroscedasticity elimination (e.g., Limma analysis).
-# norm_method = "VSN"     # Essential: VSN subsumes sample calibration
-# log_transform = false   # Essential: VSN uses glog; prevents double-log transform
-
-# [String] Sample-wise Normalization. Options: "PQN", "MDFC", "TIC", "Median", "VSN", "Quantile"
-norm_method = "VSN"
-
-# [Bool] Logarithmic Transformation
-# Set to true to apply roubst Log2 transform with LOD offset handling.
-robust_log = false
+# [String] Normalization strategy.
+# Options: "Auto", "ROBUST_LOG_ONLY", "PQN", "MDFC", "TIC", "Median", "VSN", "Quantile".
+# Auto evaluates fixed log-like method strategies with a QC-centered lightweight score:
+# + ROBUST_LOG_ONLY: robust Log2 without sample-wise normalization.
+# + TIC/Median/PQN/MDFC: normalization followed by robust Log2.
+# + Quantile: robust Log2 followed by quantile alignment.
+# + VSN: intrinsic generalized-log transform without external robust Log2.
+# Auto also includes Sample-structure guardrails to penalize over-normalization
+# without using biological group labels or differential-abundance outcomes.
+norm_method = "Auto"

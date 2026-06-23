@@ -13,10 +13,11 @@
 
 {%- set imp_params = missing_value_imputation.get('pipeline_params', {}) -%}
 {%- set imp_strat = imp_params.get('strategies', {}) -%}
+{%- set imp_status = imp_params.get('imputation_status', 'Pending') -%}
 
 {%- set norm_params = normalization.get('pipeline_params', {}) -%}
 {%- set norm_strat = norm_params.get('strategies', {}) -%}
-{%- set norm_method = norm_strat.get('normalization_method', 'NONE') | upper -%}
+{%- set norm_method = norm_strat.get('normalization_method', 'ROBUST_LOG_ONLY') | upper -%}
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
 
 > **Date Generated:** {{ meta.get('date', 'Unknown') }}<br>
@@ -49,14 +50,17 @@ The correction architecture successfully suppressed the median QC RSD from an in
 {%- else %}.
 {%- endif %}
 
+{%- if imp_status == 'Skipped' %}
+Subsequently, missing-value imputation was bypassed because no missing values were detected in the target analytical matrix; the matrix was propagated unchanged.
+{%- else %}
 Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed employing the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** algorithm to preserve global structural fidelity.
+{%- endif %}
 
 Finally, global quantitative refinement was performed
-{%- if norm_method == 'VSN' %} utilizing **VSN** to shift the data into a variance-stabilized generalized logarithmic space (glog), ensuring homoscedasticity for downstream multivariate modeling.
+{%- if norm_method == 'ROBUST_LOG_ONLY' %} using a robust Log2 transformation without sample-wise normalization.
+{%- elif norm_method == 'VSN' %} utilizing **VSN** to shift the data into a variance-stabilized generalized logarithmic space (glog), ensuring homoscedasticity for downstream multivariate modeling.
 {%- elif norm_method == 'QUANTILE' %} utilizing {% if is_log %}a robust Log2 transformation followed by {% endif %}**QUANTILE** normalization, ensuring homoscedasticity for downstream multivariate modeling.
-{%- elif norm_method != 'NONE' %} utilizing **{{ norm_method }}** normalization{% if is_log %} followed by a robust Log2 transformation{% endif %}, ensuring homoscedasticity for downstream multivariate modeling.
-{%- elif is_log %} utilizing a robust Log2 transformation, ensuring homoscedasticity for downstream multivariate modeling.
-{%- else %} without additional intensity scaling.
+{%- else %} utilizing **{{ norm_method }}** normalization{% if is_log %} followed by a robust Log2 transformation{% endif %}, ensuring homoscedasticity for downstream multivariate modeling.
 {%- endif %}
 
 ## 3. Global Data Quality Validation

@@ -284,7 +284,6 @@ def stitch_svg_grids(
 # Class 1: VisualAssetReporter (Handles QA Grids & Images)
 # =========================================================================
 class VisualAssetReporter:
-
     def __init__(self, base_dir: Union[str, Path]) -> None:
         """
         Initialize the reporter at the project workspace level.
@@ -516,7 +515,7 @@ class NarrativeStatsReporter:
         ("high_mv_feature_filtering", "High-missing value features filtering"),
         ("intra_batch_correction", "Intra-batch correction"),
         ("inter_batch_correction", "Inter-batch correction"),
-        ("global_correction", "Global SERRF correction"),
+        ("global_correction", "Global model correction"),
         ("low_quality_feature_filtering", "Low-quality features filtering"),
         ("missing_value_imputation", "Imputation"),
         ("normalization", "Normalization"),
@@ -638,10 +637,10 @@ class NarrativeStatsReporter:
             pca = qa_data.get("pca", {})
             if pca:
                 pc1 = pca.get("pc1_variance")
-                pc1_str = f"{pc1*100:.2f}%" if pc1 else "N/A"
+                pc1_str = f"{pc1 * 100:.2f}%" if pc1 else "N/A"
 
                 pc2 = pca.get("pc2_variance")
-                pc2_str = f"{pc2*100:.2f}%" if pc2 else "N/A"
+                pc2_str = f"{pc2 * 100:.2f}%" if pc2 else "N/A"
 
                 disp = pca.get("relative_dispersion")
                 disp_str = f"{disp:.4f}" if disp is not None else "N/A"
@@ -918,7 +917,7 @@ class NarrativeStatsReporter:
         except jinja2.exceptions.TemplateSyntaxError as e:
             # Catch syntax errors (e.g., missing {% endif %})
             logger.error(
-                f"SYNTAX ERROR in '{template_name}' at line {e.lineno}: " f"{e.message}"
+                f"SYNTAX ERROR in '{template_name}' at line {e.lineno}: {e.message}"
             )
 
         except Exception as e:

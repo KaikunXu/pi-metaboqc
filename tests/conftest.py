@@ -18,8 +18,13 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# Dynamic R Environment Configuration, ready for rpy2
-if sys.platform == "win32":
+# Dynamic R Environment Configuration, ready for rpy2.
+#
+# Respect an explicitly provided R_HOME first, then fall back to the standalone
+# system R installation. Bridge tests should not depend on conda R modules.
+if "R_HOME" in os.environ:
+    os.environ["R_HOME"] = str(Path(os.environ["R_HOME"]))
+elif sys.platform == "win32":
     import winreg
 
     try:
@@ -32,9 +37,14 @@ else:
     r_home_out = subprocess.check_output(["R", "RHOME"], text=True)
     os.environ["R_HOME"] = r_home_out.strip()
 
-# Inject R binary path into the system PATH
-r_bin_path = os.path.join(os.environ["R_HOME"], "bin", "x64")
-os.environ["PATH"] = r_bin_path + os.pathsep + os.environ.get("PATH", "")
+# Inject R binary paths into the system PATH.
+r_bin_candidates = [
+    Path(os.environ["R_HOME"]) / "bin" / "x64",
+    Path(os.environ["R_HOME"]) / "bin",
+]
+for r_bin_path in r_bin_candidates:
+    if r_bin_path.exists():
+        os.environ["PATH"] = str(r_bin_path) + os.pathsep + os.environ.get("PATH", "")
 
 os.environ["LANGUAGE"] = "en"
 os.environ["LC_ALL"] = "C"

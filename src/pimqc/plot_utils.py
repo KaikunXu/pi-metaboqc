@@ -14,8 +14,22 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import matplotlib.colors as mcolors
+from matplotlib.text import Text
+import pandas as pd
+import re
 from typing import List, Optional, Union
 import warnings
+
+DEFAULT_AXIS_FORMAT = "normal"
+DEFAULT_FORMAT_AXIS = "xy"
+DEFAULT_AXIS_TICK_FONTSIZE = 14
+DEFAULT_AXIS_LABEL_FONTSIZE = 14
+DEFAULT_TITLE_FONTSIZE = 16
+DEFAULT_AXIS_TICK_WEIGHT = "normal"
+DEFAULT_AXIS_LABEL_WEIGHT = "normal"
+DEFAULT_TITLE_WEIGHT = "bold"
+DEFAULT_TICK_ROTATION = 45
+DEFAULT_ROTATION_AXIS = "x"
 
 
 def get_equivalent_hex(
@@ -143,7 +157,9 @@ def extract_linear_cmap(
 
 
 def change_axis_format(
-    ax: plt.Axes, axis_format: str = "normal", axis: str = "xy"
+    ax: plt.Axes,
+    axis_format: str = DEFAULT_AXIS_FORMAT,
+    axis: str = DEFAULT_FORMAT_AXIS,
 ) -> None:
     """Change the tick format of specified axes (percentage, scientific notation, etc.)."""
     if axis in ("x", "xy"):
@@ -162,10 +178,10 @@ def change_axis_format(
 
 def change_fontsize(
     ax: plt.Axes,
-    axis_ticks_fontsize: int = 14,
-    axis_label_fontsize: int = 14,
-    title_fontsize: int = 16,
-    axis: str = "xy",
+    axis_ticks_fontsize: float = DEFAULT_AXIS_TICK_FONTSIZE,
+    axis_label_fontsize: float = DEFAULT_AXIS_LABEL_FONTSIZE,
+    title_fontsize: float = DEFAULT_TITLE_FONTSIZE,
+    axis: str = DEFAULT_FORMAT_AXIS,
 ) -> None:
     """Change the fontsize of axis ticks, labels, and title."""
     if axis in ("x", "xy"):
@@ -181,10 +197,10 @@ def change_fontsize(
 
 def change_weight(
     ax: plt.Axes,
-    axis_ticks_weight: str = "normal",
-    axis_label_weight: str = "normal",
-    title_weight: str = "bold",
-    axis: str = "xy",
+    axis_ticks_weight: str = DEFAULT_AXIS_TICK_WEIGHT,
+    axis_label_weight: str = DEFAULT_AXIS_LABEL_WEIGHT,
+    title_weight: str = DEFAULT_TITLE_WEIGHT,
+    axis: str = DEFAULT_FORMAT_AXIS,
 ) -> None:
     """Change the font weight of axis ticks, labels, and title."""
     if axis in ("x", "xy"):
@@ -198,7 +214,11 @@ def change_weight(
     ax.title.set_weight(title_weight)
 
 
-def change_axis_rotation(ax: plt.Axes, rotation: float = 45, axis: str = "x") -> None:
+def change_axis_rotation(
+    ax: plt.Axes,
+    rotation: float = DEFAULT_TICK_ROTATION,
+    axis: str = DEFAULT_ROTATION_AXIS,
+) -> None:
     """Rotate the major tick labels of the specified axes."""
     if axis in ("x", "xy"):
         plt.setp(
@@ -214,6 +234,93 @@ def change_axis_rotation(ax: plt.Axes, rotation: float = 45, axis: str = "x") ->
             ha={0: "right", 90: "center"}.get(rotation, "right"),
             va={0: "center", 90: "center"}.get(rotation, "top"),
         )
+
+
+def axis_size_inches(ax: plt.Axes) -> tuple[float, float]:
+    """Return the rendered Axes size in inches."""
+    fig_w, fig_h = ax.figure.get_size_inches()
+    bbox = ax.get_position()
+    return max(bbox.width * fig_w, 1e-6), max(bbox.height * fig_h, 1e-6)
+
+
+def index_to_tick_labels(index: pd.Index) -> list[str]:
+    """Convert regular or MultiIndex labels into display strings."""
+    if isinstance(index, pd.MultiIndex):
+        return ["-".join(map(str, item)) for item in index.to_list()]
+    return [str(item) for item in index]
+
+
+def compact_tick_label(label_text: str, max_chars: int | None = None) -> str:
+    """Shorten dense tick labels while preserving batch/sample cues."""
+    parts = re.split("-", str(label_text))
+    if len(parts) > 4:
+        label_text = "-".join([parts[0]] + parts[4:])
+    else:
+        label_text = str(label_text)
+
+    if max_chars is None or len(label_text) <= max_chars:
+        return label_text
+
+    max_chars = max(6, int(max_chars))
+    head_chars = max(3, int(max_chars * 0.55))
+    tail_chars = max(2, max_chars - head_chars - 3)
+    return f"{label_text[:head_chars]}...{label_text[-tail_chars:]}"
+
+
+def tick_labels_need_compaction(
+    labels: list[str],
+    n_items: int,
+    axis_inches: float,
+    default_size: float = DEFAULT_AXIS_TICK_FONTSIZE,
+    chars_per_inch: float = 13.0,
+) -> bool:
+    """Return whether dense labels require size reduction or compaction."""
+    if n_items <= 0:
+        return False
+    cell_inches = axis_inches / max(1, n_items)
+    max_label_len = max([len(str(label)) for label in labels] or [1])
+    label_inches = max_label_len / chars_per_inch
+    default_cell_points = axis_inches * 72.0 / max(1, n_items)
+    return label_inches > cell_inches * 1.25 or default_cell_points < default_size
+
+
+def dense_tick_fontsize(
+    n_items: int,
+    axis_inches: float,
+    default_size: float = DEFAULT_AXIS_TICK_FONTSIZE,
+    max_size: float = DEFAULT_AXIS_TICK_FONTSIZE,
+    min_size: float = 1.4,
+    fill_ratio: float = 0.70,
+    force_dense: bool = False,
+) -> float:
+    """Estimate a readable font size for one label per plotted item."""
+    cell_points = axis_inches * 72.0 / max(1, n_items)
+    if not force_dense:
+        return min(max_size, default_size)
+    return max(min_size, min(max_size, cell_points * fill_ratio))
+
+
+def dense_label_char_limit(n_items: int) -> int:
+    """Resolve a conservative character cap for very dense tick labels."""
+    if n_items <= 20:
+        return 28
+    if n_items <= 40:
+        return 22
+    if n_items <= 70:
+        return 16
+    return 12
+
+
+def apply_batch_tick_colors(
+    labels: list[Text], tick_color_dict: dict[object, str]
+) -> None:
+    """Color dense tick labels by batch prefix when possible."""
+    for label in labels:
+        text = label.get_text()
+        for batch, color in tick_color_dict.items():
+            if text.startswith(str(batch)):
+                label.set_color(color)
+                break
 
 
 def show_values_on_bars(

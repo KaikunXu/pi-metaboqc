@@ -321,7 +321,7 @@ class MetaboInt(pd.DataFrame):
         try:
             from . import __version__ as pkg_version
         except ImportError:
-            pkg_version = "v1.0.0"
+            pkg_version = "0+unknown"
 
         mode = self.attrs.get("mode", "ESI+")
         sample_dict = self.attrs.get("sample_dict", {})

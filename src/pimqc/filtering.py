@@ -33,6 +33,16 @@ from . import core_classes
 from . import visualizer_classes
 
 
+def _format_percentile_label(percentile: float) -> str:
+    """Format a 0-1 percentile fraction as a compact percentile label."""
+    pct_value = float(percentile) * 100
+    if np.isclose(pct_value, round(pct_value)):
+        pct_text = f"{pct_value:.0f}"
+    else:
+        pct_text = f"{pct_value:.1f}".rstrip("0").rstrip(".")
+    return f"P{pct_text}"
+
+
 class MetaboIntFilter(core_classes.MetaboInt):
     """Filtering engine for metabolomics datasets with QC enforcement."""
 
@@ -519,6 +529,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             mnar_group_mv_tol=self.attrs.get("mnar_group_mv_tol", 0.8),
             mnar_qc_mv_tol=self.attrs.get("mnar_qc_mv_tol", 0.2),
             mnar_int_threshold=mnar_int_threshold,
+            mnar_intensity_pct=self.attrs.get("mnar_intensity_pct", 0.1),
         )
         if fig_grid:
             grid_path = os.path.join(output_dir, "MV_Classification_Dashboard.svg")
@@ -987,7 +998,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         )
 
         self._format_single_legend(
-            ax=current_ax, loc="upper right", bbox_to_anchor=None
+            ax=current_ax,
+            group_title="Sample Type",
+            loc="upper right",
+            bbox_to_anchor=None,
         )
 
         # Adjust Y-limit slightly to prevent top annotations from clipping
@@ -1100,6 +1114,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             group_titles=["Status", "Thresholds"],
             loc="upper left",
             start_bbox=(0.05, 1.0),
+            layout_cols=1,
+            sublegend_cols=1,
         )
         self._apply_standard_format(
             ax=ax,
@@ -1117,6 +1133,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         mnar_int_threshold: float | None,
         ax: plt.Axes,
         title: str,
+        mnar_intensity_pct: float = 0.1,
     ) -> None:
         """
         Diagnostic scatter for Step 2 with dual-threshold L-shape.
@@ -1132,6 +1149,9 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
         color_blocked = "tab:gray"
         color_pending = "tab:gray"
+        intensity_label = (
+            f"QC intensity ≤ {_format_percentile_label(mnar_intensity_pct)}"
+        )
 
         df_plot = df.copy()
 
@@ -1182,7 +1202,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
 
         if mnar_int_threshold is not None:
             ax.axvline(
-                mnar_int_threshold, color="k", linestyle="--", label="Int Cutoff"
+                mnar_int_threshold, color="k", linestyle="--", label=intensity_label
             )
             ax.fill_between(
                 [ax.get_xlim()[0], mnar_int_threshold],
@@ -1228,9 +1248,9 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 [],
                 color="k",
                 linestyle=":",
-                label=f"MV > {mnar_qc_mv_tol*100:.0f}%",
+                label=f"MV > {mnar_qc_mv_tol * 100:.0f}%",
             ),
-            mlines.Line2D([], [], color="k", linestyle="--", label="Low Int"),
+            mlines.Line2D([], [], color="k", linestyle="--", label=intensity_label),
         ]
 
         group_titles = ["Status", "Thresholds"]
@@ -1255,7 +1275,12 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
 
         ax.legend(handles=handles)
         self._format_multi_legends(
-            ax=ax, group_titles=group_titles, loc="upper left", start_bbox=(0.50, 1.0)
+            ax=ax,
+            group_titles=group_titles,
+            loc="upper left",
+            start_bbox=(0.50, 1.0),
+            layout_cols=1,
+            sublegend_cols=1,
         )
 
         self._apply_standard_format(
@@ -1311,7 +1336,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         handles.append(mlines.Line2D([], [], color="none", label="Thresholds"))
         handles.append(
             mlines.Line2D(
-                [], [], color="k", linestyle=":", label=f"Cutoff ({tol*100:.0f}%)"
+                [], [], color="k", linestyle=":", label=f"Cutoff ({tol * 100:.0f}%)"
             )
         )
 
@@ -1321,6 +1346,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             group_titles=["Status", "Thresholds"],
             loc="upper left",
             start_bbox=(0.5, 1.0),
+            layout_cols=1,
+            sublegend_cols=1,
         )
 
         self._apply_standard_format(
@@ -1340,6 +1367,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         mnar_qc_mv_tol: float,
         active_base_tol: float,
         has_group_info: bool,
+        mnar_intensity_pct: float = 0.1,
         margin_left: float = 0.0,
         margin_right: float = 0.0,
         margin_top: float = 0.0,
@@ -1367,51 +1395,129 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
         color_inv = "tab:gray"
         color_pass = "white"
-        box_style = "round,pad=0.9"
+        box_style = "round,pad=0.12,rounding_size=0.18"
+        node_fontsize = 12 if has_group_info else 14
+        intensity_label = (
+            f"QC intensity ≤ {_format_percentile_label(mnar_intensity_pct)}"
+        )
 
-        def _node(x: float, y: float, text: str, bg: str) -> tuple[float, float]:
+        def _node(
+            x: float,
+            y: float,
+            text: str,
+            bg: str,
+            width: float = 5.2,
+            height: float = 1.5,
+            fontsize: float | None = None,
+            body_fontsize: float | None = None,
+            line_step: float | None = None,
+        ) -> dict[str, float]:
+            """Draw a fixed-size flowchart node and return its data bounds."""
             text_color = pu.get_contrast_color(bg)
-            bbox = dict(boxstyle=box_style, facecolor=bg, ec="k", lw=1.2)
-            ax.text(
-                x,
-                y,
-                text,
-                ha="center",
-                va="center",
-                fontsize=11,
-                fontweight="bold",
-                color=text_color,
-                bbox=bbox,
-                zorder=3,
+            text_fontsize = node_fontsize if fontsize is None else fontsize
+            text_body_fontsize = (
+                max(text_fontsize - 0.7, 7.8)
+                if body_fontsize is None
+                else body_fontsize
             )
+            text_line_step = (
+                (0.49 if has_group_info else 0.55) if line_step is None else line_step
+            )
+            patch = mpatches.FancyBboxPatch(
+                (x - width / 2, y - height / 2),
+                width,
+                height,
+                boxstyle=box_style,
+                facecolor=bg,
+                edgecolor="k",
+                linewidth=1.2,
+                zorder=3,
+                clip_on=False,
+            )
+            ax.add_patch(patch)
+            text_lines = text.splitlines()
+            if len(text_lines) == 1:
+                ax.text(
+                    x,
+                    y,
+                    text,
+                    ha="center",
+                    va="center",
+                    multialignment="center",
+                    fontsize=text_fontsize,
+                    fontweight="semibold",
+                    color=text_color,
+                    zorder=4,
+                )
+            else:
+                total_text_height = (len(text_lines) - 1) * text_line_step
+                start_y = y + total_text_height / 2
+                for line_idx, line_text in enumerate(text_lines):
+                    is_title_line = line_idx == 0
+                    ax.text(
+                        x,
+                        start_y - line_idx * text_line_step,
+                        line_text,
+                        ha="center",
+                        va="center",
+                        multialignment="center",
+                        fontsize=text_fontsize if is_title_line else text_body_fontsize,
+                        fontweight="semibold" if is_title_line else "normal",
+                        color=text_color,
+                        zorder=4,
+                    )
+            return {"x": x, "y": y, "width": width, "height": height}
+
+        def _anchor(node: dict[str, float], side: str) -> tuple[float, float]:
+            """Return one boundary midpoint for a node."""
+            x = float(node["x"])
+            y = float(node["y"])
+            half_w = float(node["width"]) / 2
+            half_h = float(node["height"]) / 2
+            if side == "left":
+                return (x - half_w, y)
+            if side == "right":
+                return (x + half_w, y)
+            if side == "top":
+                return (x, y + half_h)
+            if side == "bottom":
+                return (x, y - half_h)
             return (x, y)
 
         def _arrow(
-            posA: tuple[float, float],
-            posB: tuple[float, float],
+            node_a: dict[str, float],
+            node_b: dict[str, float],
             style: str = "horizontal",
         ) -> None:
-            x_a, y_a = posA
-            x_b, y_b = posB
-
             kwargs = dict(
                 arrowstyle="-|>",
                 color="gray",
                 lw=2,
                 mutation_scale=15,
                 zorder=2,
-                shrinkA=38,
-                shrinkB=38,
+                shrinkA=0,
+                shrinkB=0,
+                clip_on=False,
             )
 
-            if style in ["horizontal", "vertical"]:
-                arrow = mpatches.FancyArrowPatch(
-                    posA=(x_a, y_a), posB=(x_b, y_b), **kwargs
-                )
+            if style == "horizontal":
+                start = _anchor(node_a, "right")
+                end = _anchor(node_b, "left")
+                arrow = mpatches.FancyArrowPatch(posA=start, posB=end, **kwargs)
+            elif style == "vertical":
+                if float(node_b["y"]) >= float(node_a["y"]):
+                    start = _anchor(node_a, "top")
+                    end = _anchor(node_b, "bottom")
+                else:
+                    start = _anchor(node_a, "bottom")
+                    end = _anchor(node_b, "top")
+                arrow = mpatches.FancyArrowPatch(posA=start, posB=end, **kwargs)
             elif style == "step_h":
-                mid_x = (x_a + x_b) / 2
+                start = _anchor(node_a, "right")
+                end = _anchor(node_b, "left")
+                mid_x = (start[0] + end[0]) / 2
                 path = mpath.Path(
-                    [(x_a, y_a), (mid_x, y_a), (mid_x, y_b), (x_b, y_b)],
+                    [start, (mid_x, start[1]), (mid_x, end[1]), end],
                     [
                         mpath.Path.MOVETO,
                         mpath.Path.LINETO,
@@ -1420,6 +1526,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                     ],
                 )
                 arrow = mpatches.FancyArrowPatch(path=path, **kwargs)
+            else:
+                start = _anchor(node_a, "right")
+                end = _anchor(node_b, "left")
+                arrow = mpatches.FancyArrowPatch(posA=start, posB=end, **kwargs)
             ax.add_patch(arrow)
 
         # =====================================================================
@@ -1428,27 +1538,76 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         # =====================================================================
         if has_group_info:
             str_group = (
-                f"Max MV ≥ {mnar_group_mv_tol*100:.0f}%\n"
-                f"& Min MV ≤ {active_base_tol*100:.0f}%"
+                f"Max MV ≥ {mnar_group_mv_tol * 100:.0f}%\n"
+                f"Min MV ≤ {active_base_tol * 100:.0f}%"
             )
             qc_cond = (
-                f"QC MV > {mnar_qc_mv_tol*100:.0f}%\n& Low Int\n"
-                f"& Min Group\nMV ≤ {active_base_tol*100:.0f}%"
+                f"QC MV > {mnar_qc_mv_tol * 100:.0f}%\n"
+                f"{intensity_label}\n"
+                f"Min group MV ≤ {active_base_tol * 100:.0f}%"
             )
 
-            node_root = _node(2.0, 5, f"Raw Features\n(n={total})", color_pass)
-            node_c1 = _node(9.5, 5, f"Group Rescue\n({str_group})", color_pass)
-            node_g = _node(9.5, 8.5, f"MNAR Group\n(n={count_group})", color_mnar)
-            node_c2 = _node(17.0, 5, f"QC Rescue\n({qc_cond})", color_pass)
-            node_q = _node(17.0, 8.5, f"MNAR QC\n(n={count_qc})", color_mnar)
-            node_c3 = _node(
-                24.5,
+            node_root = _node(3.0, 5, f"Raw Features\n(n={total})", color_pass)
+            node_c1 = _node(
+                9.8,
                 5,
-                f"Min Group\nMV Check\n(≤ {active_base_tol*100:.0f}%)",
+                f"Group Rescue\n{str_group}",
                 color_pass,
+                width=5.7,
+                height=1.95,
             )
-            node_mar = _node(31.0, 7.5, f"MAR\n(n={count_mar})", color_mar)
-            node_inv = _node(31.0, 2.5, f"INVALID\n(n={count_inv})", color_inv)
+            node_g = _node(
+                9.8,
+                8.5,
+                f"MNAR Group\n(n={count_group})",
+                color_mnar,
+                width=5.1,
+                height=1.35,
+            )
+            node_c2 = _node(
+                16.6,
+                5,
+                f"QC Rescue\n{qc_cond}",
+                color_pass,
+                width=5.9,
+                height=2.45,
+                body_fontsize=10.0,
+                line_step=0.41,
+            )
+            node_q = _node(
+                16.6,
+                8.5,
+                f"MNAR QC\n(n={count_qc})",
+                color_mnar,
+                width=5.1,
+                height=1.35,
+            )
+            node_c3 = _node(
+                23.4,
+                5,
+                f"MAR Eligibility\nMin group MV ≤ {active_base_tol * 100:.0f}%",
+                color_pass,
+                width=5.6,
+                height=1.75,
+                body_fontsize=10.0,
+                line_step=0.42,
+            )
+            node_mar = _node(
+                30.5,
+                7.5,
+                f"MAR\n(n={count_mar})",
+                color_mar,
+                width=4.4,
+                height=1.25,
+            )
+            node_inv = _node(
+                30.5,
+                2.5,
+                f"INVALID\n(n={count_inv})",
+                color_inv,
+                width=4.4,
+                height=1.25,
+            )
 
             _arrow(node_root, node_c1, "horizontal")
             _arrow(node_c1, node_c2, "horizontal")
@@ -1463,16 +1622,49 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         # 3 Logical Columns distributed dynamically across X=[3.0, 12.0, 21.0, 30.0]
         # =====================================================================
         else:
-            qc_cond = f"QC MV > {mnar_qc_mv_tol*100:.0f}%\n& Low Int"
+            qc_cond = f"QC MV > {mnar_qc_mv_tol * 100:.0f}%\n{intensity_label}"
 
-            node_root = _node(3.0, 5, f"Raw Features\n(n={total})", color_pass)
-            node_c2 = _node(12.0, 5, f"QC Rescue\n({qc_cond})", color_pass)
-            node_q = _node(12.0, 8.5, f"MNAR QC\n(n={count_qc})", color_mnar)
-            node_c3 = _node(
-                21.0, 5, f"QC MV Check\n(≤ {active_base_tol*100:.0f}%)", color_pass
+            node_root = _node(3.2, 5, f"Raw Features\n(n={total})", color_pass)
+            node_c2 = _node(
+                12.0,
+                5,
+                f"QC Rescue\n{qc_cond}",
+                color_pass,
+                width=5.3,
+                height=1.75,
             )
-            node_mar = _node(30.0, 7.5, f"MAR\n(n={count_mar})", color_mar)
-            node_inv = _node(30.0, 2.5, f"INVALID\n(n={count_inv})", color_inv)
+            node_q = _node(
+                12.0,
+                8.5,
+                f"MNAR QC\n(n={count_qc})",
+                color_mnar,
+                width=4.6,
+                height=1.35,
+            )
+            node_c3 = _node(
+                21.0,
+                5,
+                f"QC MV Check\nQC MV ≤ {active_base_tol * 100:.0f}%",
+                color_pass,
+                width=5.0,
+                height=1.45,
+            )
+            node_mar = _node(
+                30.0,
+                7.5,
+                f"MAR\n(n={count_mar})",
+                color_mar,
+                width=4.4,
+                height=1.25,
+            )
+            node_inv = _node(
+                30.0,
+                2.5,
+                f"INVALID\n(n={count_inv})",
+                color_inv,
+                width=4.4,
+                height=1.25,
+            )
 
             _arrow(node_root, node_c2, "horizontal")
             _arrow(node_c2, node_c3, "horizontal")
@@ -1487,6 +1679,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         mnar_group_mv_tol: float | None = None,
         mnar_qc_mv_tol: float = 0.2,
         mnar_int_threshold: float | None = None,
+        mnar_intensity_pct: float = 0.1,
     ) -> object | None:
         """
         Orchestrates a unified diagnostic dashboard for Stage-1 filtering.
@@ -1525,6 +1718,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 mnar_qc_mv_tol=mnar_qc_mv_tol,
                 active_base_tol=active_base_tol,
                 has_group_info=True,
+                mnar_intensity_pct=mnar_intensity_pct,
                 margin_right=0.0,
             )
 
@@ -1551,6 +1745,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 mnar_int_threshold,
                 ax_qc_rescue,
                 "QC-level MNAR Rescue",
+                mnar_intensity_pct=mnar_intensity_pct,
             )
             # Cascade remaining features downward
             mask_qc = df_curr["Stage1_Status"].str.contains("QC")
@@ -1566,7 +1761,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 {"MAR": "tab:red", "INVALID": "tab:gray"},
                 ["MAR", "INVALID"],
                 ax_base_check,
-                "Min Group-level MV Check",
+                (f"MAR Eligibility Check\nMin group MV ≤ {active_base_tol * 100:.0f}%"),
                 "Min Group-level MV (%)",
             )
 
@@ -1588,6 +1783,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 mnar_qc_mv_tol=mnar_qc_mv_tol,
                 active_base_tol=active_base_tol,
                 has_group_info=False,
+                mnar_intensity_pct=mnar_intensity_pct,
             )
 
             # Subplot S2: QC Rescue Scatter (Acts as Step 1 here)
@@ -1598,6 +1794,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 mnar_int_threshold,
                 ax_qc_rescue,
                 "QC-level MNAR Rescue",
+                mnar_intensity_pct=mnar_intensity_pct,
             )
             mask_qc = df_curr["Stage1_Status"].str.contains("QC")
             df_curr = df_curr[~mask_qc]
@@ -1769,7 +1966,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         )
 
         self._format_single_legend(
-            ax=current_ax, title="Feature Type", loc="upper right", bbox_to_anchor=None
+            ax=current_ax,
+            group_title="Feature Type",
+            loc="upper right",
+            bbox_to_anchor=None,
         )
 
         max_height = totals.max() if len(totals) > 0 else 1
@@ -1882,6 +2082,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             group_titles=["Status", "Feature Type"],
             loc="upper left",
             start_bbox=(1.05, 1.0),
+            layout_cols=1,
+            sublegend_cols=1,
         )
 
         if ax is None:

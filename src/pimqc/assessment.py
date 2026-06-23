@@ -586,7 +586,7 @@ class MetaboIntAssessor(core_classes.MetaboInt):
 
             min_idx = np.unravel_index(np.argmin(masked_mat), batch_qc_corr_mat.shape)
             batch_names = batch_qc_corr_mat.columns
-            worst_pair = f"{batch_names[min_idx[0]]} vs " f"{batch_names[min_idx[1]]}"
+            worst_pair = f"{batch_names[min_idx[0]]} vs {batch_names[min_idx[1]]}"
 
             metrics["batch_level"]["worst_batch_pair"] = worst_pair
             metrics["batch_level"]["worst_correlation"] = float(
@@ -985,11 +985,8 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
 
         annot_fmt = ".3f" if n_samples <= 15 else ".2f"
         show_annot = n_samples <= 15
-        annot_size = max(4.0, min(8.0, 60.0 / max(1, n_samples)))
+        annot_size = max(4.0, min(10.0, 60.0 / max(1, n_samples)))
         grid_lw = 0.5 if n_samples <= 20 else 0.05
-
-        # CRITICAL FIX 1: Dynamic tick font sizing. Calculate maximum pt size based on physical inch per cell.
-        tick_size = max(2.0, min(10.0, (hm_size * 72) / max(1, n_samples) * 0.6))
 
         if ax is None:
             fig = plt.figure(
@@ -1008,6 +1005,52 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             if cluster_mode in ["total", "within-group"]:
                 ax_dendro_left = ax_heatmap.inset_axes([-0.15, 0, 0.12, 1.0])
                 ax_dendro_bottom = ax_heatmap.inset_axes([0, -0.15, 1.0, 0.12])
+
+        heatmap_w, heatmap_h = pu.axis_size_inches(ax_heatmap)
+        raw_x_labels = pu.index_to_tick_labels(corr_matrix.columns)
+        raw_y_labels = pu.index_to_tick_labels(corr_matrix.index)
+        needs_dense_ticks = pu.tick_labels_need_compaction(
+            labels=raw_x_labels + raw_y_labels,
+            n_items=n_samples,
+            axis_inches=min(heatmap_w, heatmap_h),
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+        )
+        max_tick_chars = pu.dense_label_char_limit(n_samples)
+        x_tick_labels = (
+            [pu.compact_tick_label(label, max_tick_chars) for label in raw_x_labels]
+            if needs_dense_ticks
+            else raw_x_labels
+        )
+        y_tick_labels = (
+            [pu.compact_tick_label(label, max_tick_chars) for label in raw_y_labels]
+            if needs_dense_ticks
+            else raw_y_labels
+        )
+        max_tick_len = max(
+            [len(label) for label in x_tick_labels + y_tick_labels] or [1]
+        )
+        x_rot = (
+            90 if needs_dense_ticks and (n_samples > 12 or max_tick_len > 14) else 45
+        )
+        x_tick_size = pu.dense_tick_fontsize(
+            n_items=n_samples,
+            axis_inches=heatmap_w,
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            max_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            min_size=1.2,
+            fill_ratio=0.62 if x_rot == 90 else 0.48,
+            force_dense=needs_dense_ticks,
+        )
+        y_tick_size = pu.dense_tick_fontsize(
+            n_items=n_samples,
+            axis_inches=heatmap_h,
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            max_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            min_size=1.2,
+            fill_ratio=0.62,
+            force_dense=needs_dense_ticks,
+        )
+        tick_size = min(x_tick_size, y_tick_size)
 
         # ---------------------------------------------------------------------
         # Dendrogram Renderer Engine
@@ -1134,25 +1177,6 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         ax_heatmap.tick_params(axis="x", pad=pad_amount)
         ax_heatmap.tick_params(axis="y", pad=pad_amount)
 
-        def _rename_tick(label_text: str) -> str:
-            parts = re.split("-", label_text)
-            if len(parts) > 4:
-                return "-".join([parts[0]] + parts[4:])
-            return label_text
-
-        ax_heatmap.set_yticklabels(
-            [_rename_tick(e.get_text()) for e in ax_heatmap.get_yticklabels()],
-            rotation=0,
-        )
-        x_rot = 45 if n_samples <= 15 else 90
-        ax_heatmap.set_xticklabels(
-            [_rename_tick(e.get_text()) for e in ax_heatmap.get_xticklabels()],
-            rotation=x_rot,
-            ha="right",
-            va="center",
-            rotation_mode="anchor",
-        )
-
         # CRITICAL FIX 3: Violently destroy Seaborn's auto-injected DataFrame axis names.
         # This prevents 'inject_order' from being squeezed between ticks and dendrograms.
         ax_heatmap.set_xlabel("")
@@ -1167,11 +1191,34 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             title=f"Pooled QCs Correlation\n[{self.attrs.get('pipeline_stage', '')}]",
             xlabel="",
             ylabel="",
-            title_fontsize=14,
-            label_fontsize=12,
+            title_fontsize=pu.DEFAULT_TITLE_FONTSIZE,
+            label_fontsize=pu.DEFAULT_AXIS_LABEL_FONTSIZE,
             tick_fontsize=tick_size,
             append_stage=False,  # Stage is already integrated into the title
         )
+
+        tick_positions = np.arange(n_samples) + 0.5
+        ax_heatmap.set_xticks(tick_positions)
+        ax_heatmap.set_yticks(tick_positions)
+        ax_heatmap.set_yticklabels(
+            y_tick_labels,
+            rotation=0,
+            ha="right",
+            va="center",
+            fontsize=y_tick_size,
+        )
+        ax_heatmap.set_xticklabels(
+            x_tick_labels,
+            rotation=x_rot,
+            ha="right",
+            va="center",
+            fontsize=x_tick_size,
+            rotation_mode="anchor",
+        )
+        ax_heatmap.tick_params(axis="x", pad=pad_amount, length=2)
+        ax_heatmap.tick_params(axis="y", pad=pad_amount, length=2)
+        pu.apply_batch_tick_colors(ax_heatmap.get_xticklabels(), tick_color_dict)
+        pu.apply_batch_tick_colors(ax_heatmap.get_yticklabels(), tick_color_dict)
 
         legend_handles = [
             mpatches.Patch(facecolor=c, edgecolor="k", linewidth=0.5, label=str(b))
@@ -1187,13 +1234,12 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             edgecolor="k",
         )
 
-        try:
-            visualizer_classes.format_single_legend(ax_heatmap)
-        except Exception:
-            try:
-                self._format_single_legend(ax_heatmap)
-            except Exception:
-                pass
+        self._format_single_legend(
+            ax=ax_heatmap,
+            group_title="Batch",
+            loc="upper right",
+            bbox_to_anchor=(0.95, 0.82),
+        )
 
         # Defensive property re-assignment post-standardization
         if ax_heatmap.get_legend() is not None:
@@ -1254,6 +1300,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
 
         # Dynamically adjust decimal format to save space for medium cohorts
         annot_fmt = ".3f" if n_batches <= 10 else ".2f"
+        annot_size = max(3.0, min(10.0, 80.0 / max(1, n_batches)))
         # Dynamic line width to prevent grid lines from overwhelming small cells
         grid_lw = 0.5 if n_batches <= 12 else 0.1
 
@@ -1271,26 +1318,58 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 square=True,
                 ax=current_ax,
                 cbar_ax=cbar_ax,
+                annot_kws={"size": annot_size},
                 cbar_kws={"label": f"{method.title()} Correlation", "format": "%.2f"},
             )
 
         # =====================================================================
-        # 3. Force Explicit Tick Rotations (Override Seaborn Defaults)
+        # 3. Dense Tick Layout
         # =====================================================================
-        # Y-axis: Strictly horizontal (0 deg) for immediate readability
-        current_ax.set_yticklabels(current_ax.get_yticklabels(), rotation=0)
-
-        # X-axis: 45-degree angle for small/medium, 90-degree for massive cohorts
-        x_rot = 45 if n_batches <= 10 else 90
-
-        # Always anchor to the right edge and center vertically to prevent axis crossing
-        current_ax.set_xticklabels(
-            current_ax.get_xticklabels(),
-            rotation=x_rot,
-            ha="right",
-            va="center",
-            rotation_mode="anchor",
+        ax_w, ax_h = pu.axis_size_inches(current_ax)
+        raw_x_labels = pu.index_to_tick_labels(batch_corr_matrix.columns)
+        raw_y_labels = pu.index_to_tick_labels(batch_corr_matrix.index)
+        needs_dense_ticks = pu.tick_labels_need_compaction(
+            labels=raw_x_labels + raw_y_labels,
+            n_items=n_batches,
+            axis_inches=min(ax_w, ax_h),
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
         )
+        max_tick_chars = pu.dense_label_char_limit(n_batches)
+        x_tick_labels = (
+            [pu.compact_tick_label(label, max_tick_chars) for label in raw_x_labels]
+            if needs_dense_ticks
+            else raw_x_labels
+        )
+        y_tick_labels = (
+            [pu.compact_tick_label(label, max_tick_chars) for label in raw_y_labels]
+            if needs_dense_ticks
+            else raw_y_labels
+        )
+        max_tick_len = max(
+            [len(label) for label in x_tick_labels + y_tick_labels] or [1]
+        )
+        x_rot = (
+            90 if needs_dense_ticks and (n_batches > 10 or max_tick_len > 14) else 45
+        )
+        x_tick_size = pu.dense_tick_fontsize(
+            n_items=n_batches,
+            axis_inches=ax_w,
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            max_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            min_size=1.6,
+            fill_ratio=0.70 if x_rot == 90 else 0.50,
+            force_dense=needs_dense_ticks,
+        )
+        y_tick_size = pu.dense_tick_fontsize(
+            n_items=n_batches,
+            axis_inches=ax_h,
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            max_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            min_size=1.6,
+            fill_ratio=0.70,
+            force_dense=needs_dense_ticks,
+        )
+        tick_size = min(x_tick_size, y_tick_size)
 
         # =====================================================================
         # 4. Standard Formatting
@@ -1301,10 +1380,30 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             xlabel="Batch ID",
             ylabel="Batch ID",
             append_stage=True,
-            title_fontsize=14,
-            label_fontsize=12,
-            tick_fontsize=10,
+            title_fontsize=pu.DEFAULT_TITLE_FONTSIZE,
+            label_fontsize=pu.DEFAULT_AXIS_LABEL_FONTSIZE,
+            tick_fontsize=tick_size,
         )
+        tick_positions = np.arange(n_batches) + 0.5
+        current_ax.set_xticks(tick_positions)
+        current_ax.set_yticks(tick_positions)
+        current_ax.set_yticklabels(
+            y_tick_labels,
+            rotation=0,
+            ha="right",
+            va="center",
+            fontsize=y_tick_size,
+        )
+        current_ax.set_xticklabels(
+            x_tick_labels,
+            rotation=x_rot,
+            ha="right",
+            va="center",
+            fontsize=x_tick_size,
+            rotation_mode="anchor",
+        )
+        current_ax.tick_params(axis="x", pad=2, length=2)
+        current_ax.tick_params(axis="y", pad=2, length=2)
 
         return fig
 
@@ -1414,8 +1513,9 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             group_titles=[sample_type, batch],
             loc="upper left",
             start_bbox=(1.05, 1.0),
-            group_pad=0.04,
-            ncols=1,
+            row_gap=0.04,
+            layout_cols=1,
+            sublegend_cols=1,
         )
 
         current_ax.autoscale()
@@ -1678,8 +1778,9 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 group_titles=["Category", "Thresholds"],
                 loc="upper left",
                 start_bbox=(1.05, 1.0),
-                group_pad=0.04,
-                ncols=1,
+                row_gap=0.04,
+                layout_cols=1,
+                sublegend_cols=1,
             )
         elif current_ax.get_legend():
             current_ax.get_legend().remove()
@@ -1823,14 +1924,33 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         palettes = [palette_spe, palette_ht2]
 
         n_samples = out_df.shape[0]
-        # Optimized: allowed minimum size down to 2.0 to prevent overlap
-        dynamic_tick_size = max(2.0, min(9.0, 300.0 / max(1, n_samples)))
-
-        # FIX: Use integer ceil division to strictly limit max ticks to 30.
-        # Legacy floor division '//' caused step=1 for 41-79 samples,
-        # showing all labels and causing massive text overlap.
-        max_ticks = 55
-        step = max(1, (n_samples + max_ticks - 1) // max_ticks)
+        ax_w, _ = pu.axis_size_inches(current_ax2)
+        raw_tick_labels = new_idx.tolist()
+        needs_dense_ticks = pu.tick_labels_need_compaction(
+            labels=raw_tick_labels,
+            n_items=n_samples,
+            axis_inches=ax_w,
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+        )
+        max_tick_chars = pu.dense_label_char_limit(n_samples)
+        display_idx = (
+            [pu.compact_tick_label(label, max_tick_chars) for label in raw_tick_labels]
+            if needs_dense_ticks
+            else raw_tick_labels
+        )
+        dynamic_tick_size = pu.dense_tick_fontsize(
+            n_items=n_samples,
+            axis_inches=ax_w,
+            default_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            max_size=pu.DEFAULT_AXIS_TICK_FONTSIZE,
+            min_size=1.4,
+            fill_ratio=0.78,
+            force_dense=needs_dense_ticks,
+        )
+        max_full_ticks = max(40, int(ax_w * 14))
+        show_all_ticks = (not needs_dense_ticks) or n_samples <= max_full_ticks
+        max_sparse_ticks = max(45, int(ax_w * 10))
+        step = max(1, int(np.ceil(n_samples / max_sparse_ticks)))
 
         for i, (ax, metric, col, pal) in enumerate(
             zip(axes_list, metrics, cols, palettes)
@@ -1881,9 +2001,8 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 self._apply_standard_format(
                     ax=ax,
                     title="Integrated Outlier Barplot",
-                    title_fontsize=12,
-                    label_fontsize=12,
-                    tick_fontsize=dynamic_tick_size,
+                    title_fontsize=pu.DEFAULT_TITLE_FONTSIZE,
+                    label_fontsize=pu.DEFAULT_AXIS_LABEL_FONTSIZE,
                     append_stage=True,
                     ylabel="Orthogonal Distance\n(SPE / DModX)",
                 )
@@ -1892,9 +2011,8 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                     ax=ax,
                     title="",
                     xlabel="Sample ID",
-                    title_fontsize=12,
-                    label_fontsize=12,
-                    tick_fontsize=dynamic_tick_size,
+                    title_fontsize=pu.DEFAULT_TITLE_FONTSIZE,
+                    label_fontsize=pu.DEFAULT_AXIS_LABEL_FONTSIZE,
                     append_stage=False,
                     ylabel="Score Distance\n(Hotelling's T2)",
                 )
@@ -1905,29 +2023,36 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         current_ax1.set_xlabel("")
         current_ax1.tick_params(axis="x", bottom=False, labelbottom=False)
         current_ax2.tick_params(axis="x", bottom=True, labelbottom=True)
-        current_ax2.set_xlabel("Sample ID", fontweight="bold")
+        current_ax2.set_xlabel("Sample ID")
+        current_ax2.xaxis.label.set_fontsize(pu.DEFAULT_AXIS_LABEL_FONTSIZE)
+        current_ax2.xaxis.label.set_fontweight(pu.DEFAULT_AXIS_LABEL_WEIGHT)
 
-        pu.change_axis_rotation(ax=current_ax2, rotation=90, axis="x")
+        current_ax2.set_xticks(np.arange(n_samples))
+        current_ax2.set_xticklabels(
+            display_idx,
+            rotation=90,
+            ha="right",
+            va="center",
+            fontsize=dynamic_tick_size,
+            rotation_mode="anchor",
+        )
+        current_ax2.tick_params(axis="x", pad=1, length=2)
 
-        for xlabel in current_ax2.get_xticklabels():
-            text = xlabel.get_text()
-            is_extreme = (cats == "Extreme Outlier").get(text, False)
-            if "*" in text or "#" in text or is_extreme:
-                xlabel.set_color("tab:red")
-
-        # Optimized: apply skipping logic with a dynamic safety buffer
-        visible_indices = {0, n_samples - 1}
-        for i in range(step, n_samples - 1, step):
-            # If the current step multiple is too close to the final index
-            # (e.g., distance <= 70% of a step), skip it to prevent overlap.
-            if (n_samples - 1 - i) > (step * 0.7):
-                visible_indices.add(i)
-
+        cat_values = cats.values
         for idx, label in enumerate(current_ax2.xaxis.get_ticklabels()):
-            if idx in visible_indices:
-                label.set_visible(True)
-            else:
-                label.set_visible(False)
+            full_text = str(new_idx[idx]) if idx < len(new_idx) else label.get_text()
+            is_extreme = idx < len(cat_values) and cat_values[idx] == "Extreme Outlier"
+            if "*" in full_text or "#" in full_text or is_extreme:
+                label.set_color("tab:red")
+
+        if not show_all_ticks:
+            visible_indices = {0, n_samples - 1}
+            for i in range(step, n_samples - 1, step):
+                if (n_samples - 1 - i) > (step * 0.7):
+                    visible_indices.add(i)
+
+            for idx, label in enumerate(current_ax2.xaxis.get_ticklabels()):
+                label.set_visible(idx in visible_indices)
 
         return fig
 
@@ -2101,8 +2226,9 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             group_titles=group_titles,
             loc="upper left",
             start_bbox=(0.0, 1.0),
-            group_pad=0.04,
-            ncols=1,
+            row_gap=0.04,
+            layout_cols=1,
+            sublegend_cols=1,
         )
         current_ax.axis("off")
 
@@ -2120,28 +2246,36 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         bound_type: str,
         ref_type: str = "IS",
     ) -> object | None:
-        """Plot Shewhart control charts using patchworklib mosaic layout."""
+        """Plot Shewhart control charts with adaptive PW panels and one legend."""
         try:
             import patchworklib as pw
         except ImportError:
             return None
 
+        if not valid_feats:
+            return None
+
         pw.clear()
         ref_type_upper = ref_type.upper()
         plot_df = ref_data.reset_index().copy()
-        plot_df[sample_type] = plot_df[sample_type].astype("category")
+        plot_df[sample_type] = pd.Categorical(
+            plot_df[sample_type], categories=[actual_label, qc_label], ordered=True
+        )
         plot_df[batch] = plot_df[batch].astype("category")
-        plot_df = plot_df.sort_values(by=sample_type, ascending=False)
+        plot_df = plot_df.sort_values(by=sample_type, ascending=True)
 
         # Symmetrical visual markers mapping from previous specification
         v_color = "tab:red" if ref_type_upper == "IS" else "tab:orange"
         v_ls = "--" if ref_type_upper == "IS" else "-."
 
         # Step 1: Generate analytical control chart bricks sequentially
-        bricks = []
-        for feat in valid_feats:
-            # Enforce 6.5x3 aspect ratio for clean time-series visualization
-            brick = pw.Brick(figsize=(6.5, 3.0))
+        plot_bricks = []
+        panel_cols = 1 if len(valid_feats) == 1 else 2
+        panel_size = (6.5, 2.0)
+        for feat_idx, feat in enumerate(valid_feats):
+            brick = pw.Brick(
+                figsize=panel_size, label=f"{ref_type_upper}_shewhart_{feat_idx}"
+            )
 
             sns.scatterplot(
                 ax=brick,
@@ -2188,14 +2322,42 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 append_stage=True,
             )
             pu.change_axis_format(ax=brick, axis_format="sci", axis="y")
+            pu.change_fontsize(ax=brick, axis="y")
+            pu.change_weight(ax=brick, axis="y")
+            offset_text = brick.yaxis.get_offset_text()
+            offset_text.set_fontsize(pu.DEFAULT_AXIS_TICK_FONTSIZE)
+            offset_text.set_weight(pu.DEFAULT_AXIS_TICK_WEIGHT)
 
             if brick.get_legend():
                 brick.get_legend().remove()
 
-            bricks.append(brick)
+            plot_bricks.append(brick)
 
         # Step 2: Construct the standalone comprehensive master legend brick
-        leg_brick = pw.Brick(figsize=(6.5, 3.0))
+        row_bricks = []
+        for row_start in range(0, len(plot_bricks), panel_cols):
+            row_items = plot_bricks[row_start : row_start + panel_cols]
+            if panel_cols == 2 and len(row_items) == 1:
+                spacer = pw.Brick(
+                    figsize=panel_size,
+                    label=f"{ref_type_upper}_shewhart_spacer_{row_start}",
+                )
+                spacer.axis("off")
+                row_items.append(spacer)
+
+            row = row_items[0]
+            for item in row_items[1:]:
+                row = row | item
+            row_bricks.append(row)
+
+        plot_grid = row_bricks[0]
+        for row in row_bricks[1:]:
+            plot_grid = plot_grid / row
+
+        legend_height = max(panel_size[1], len(row_bricks) * panel_size[1])
+        leg_brick = pw.Brick(
+            figsize=(2.5, legend_height), label=f"{ref_type_upper}_shewhart_legend"
+        )
         leg_brick.axis("off")
 
         legend_handles = []
@@ -2308,9 +2470,10 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             group_titles=group_titles,
             loc="upper left",
             start_bbox=(0.05, 0.95),
-            group_pad=0.04,
-            ncols=1,
-            col_pad=0.1,
+            row_gap=0.04,
+            layout_cols=1,
+            column_gap=0.1,
+            sublegend_cols=1,
         )
 
         if hasattr(leg_brick.figure, "legends"):
@@ -2318,24 +2481,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 leg_brick.add_artist(leg)
             leg_brick.figure.legends.clear()
 
-        bricks.append(leg_brick)
-
-        # Step 3: Compile bricks into standard double-column rows
-        rows = []
-        for i in range(0, len(bricks), 2):
-            row_bricks = bricks[i : i + 2]
-            if len(row_bricks) == 2:
-                rows.append(row_bricks[0] | row_bricks[1])
-            else:
-                spacer = pw.Brick(figsize=(6.5, 3.0))
-                spacer.axis("off")
-                rows.append(row_bricks[0] | spacer)
-
-        master_grid = rows[0]
-        for row in rows[1:]:
-            master_grid = master_grid / row
-
-        return master_grid
+        return plot_grid | leg_brick
 
     def plot_assessor_summary_grid(
         self,
@@ -2381,6 +2527,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 corr_mask=qc_mask,
                 batches=batches,
                 method=method,
+                cluster="none",
                 ax=ax_corr,
             )
         else:

@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import matplotlib.lines as mlines
 from loguru import logger
 from typing import Optional, Dict, Any
 
@@ -727,8 +726,8 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
 
         Extracts the active analytical batches and sample types present in the
         current dataset, maps them to their respective color palettes, and
-        formats them into structured logical columns using the native
-        `_format_multi_legends` layout engine.
+        formats the batch legend with an adaptive internal column count while
+        keeping a single group title for publication-friendly output.
 
         Args:
             ax (matplotlib.axes.Axes, optional): The target axis brick.
@@ -751,19 +750,14 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
 
         df_plot = self._get_barcode_df()
 
-        legend_handles = []
-        legend_labels = []
-        group_titles = [batch_col, sample_type_col]
-
         # =====================================================================
         # Group 1: Batch Legend Configuration (First Column Group)
         # =====================================================================
-        # Insert a transparent line as a group header placeholder
-        legend_handles.append(mlines.Line2D([], [], color="none", label=batch_col))
-        legend_labels.append(batch_col)
-
         batch_color_map = self._get_batch_color_map()
         unique_batches = sorted(df_plot[batch_col].dropna().unique())
+        max_item_rows = 6
+        legend_handles = [mpatches.Patch(color="none", label=batch_col)]
+        legend_labels = [batch_col]
 
         for b_val in unique_batches:
             color = batch_color_map.get(b_val, "tab:gray")
@@ -777,12 +771,6 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
         # =====================================================================
         # Group 2: Sample Type Legend Configuration (Second Column Group)
         # =====================================================================
-        # Insert a transparent line as a group header placeholder
-        legend_handles.append(
-            mlines.Line2D([], [], color="none", label=sample_type_col)
-        )
-        legend_labels.append(sample_type_col)
-
         type_color_mapping = {
             act_lbl: "tab:gray",
             blk_lbl: "tab:blue",
@@ -796,6 +784,9 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
             if t in df_plot[sample_type_col].values
         ]
 
+        legend_handles.append(mpatches.Patch(color="none", label=sample_type_col))
+        legend_labels.append(sample_type_col)
+
         for t_val in present_types:
             color = type_color_mapping[t_val]
             legend_handles.append(
@@ -806,22 +797,41 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
             legend_labels.append(t_val)
 
         # =====================================================================
-        # Render and Format via the Native Multi-Legend Layout Engine
+        # Render and format via the shared multi-legend layout engine.
         # =====================================================================
-        # First, initialize the standard matplotlib legend
         ax.legend(legend_handles, legend_labels)
-
-        # Execute the layout splitter to organize multiple groups vertically
         self._format_multi_legends(
             ax=ax,
-            group_titles=group_titles,
+            group_titles=[batch_col, sample_type_col],
             loc="upper left",
             start_bbox=(0.0, 1.0),
-            group_pad=0.05,
-            ncols=2,
+            row_gap=0.06,
+            layout_cols=1,
+            column_gap=0.22,
+            max_item_rows=max_item_rows,
+            handlelength=1.0,
+            handletextpad=0.45,
+            columnspacing=0.85,
+            borderaxespad=0.0,
         )
 
         return fig if ax is None else ax
+
+    def _get_acquisition_legend_size(self) -> tuple[float, float]:
+        """Return a legend brick size that can display all batch labels."""
+        plot_metadata = self._get_plot_metadata()
+        batch_col = plot_metadata["batch_column"]
+
+        df_plot = self._get_barcode_df()
+        n_batches = df_plot[batch_col].dropna().nunique()
+        max_item_rows = 6
+        n_batch_columns = max(1, int(np.ceil(n_batches / max_item_rows)))
+        n_stacked_groups = 2
+
+        width = 1.2 + max(0, n_batch_columns - 1) * 0.85
+        visible_rows = min(n_batches, max_item_rows) + n_stacked_groups + 2
+        height = max(1.5, min(3.5, 0.45 + visible_rows * 0.22))
+        return width, height
 
     def plot_builder_summary_grid(self) -> object | None:
         """
@@ -869,7 +879,8 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
             ax_type.yaxis.labelpad = dynamic_pad
             ax_bar.yaxis.labelpad = dynamic_pad
 
-            ax_right = pw.Brick(figsize=(1.2, 3.5))
+            legend_width, _ = self._get_acquisition_legend_size()
+            ax_right = pw.Brick(figsize=(legend_width, 3.5))
             self._plot_standalone_legend(ax=ax_right)
 
             return ax_left | ax_right
@@ -892,7 +903,8 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
             ax_batch.yaxis.labelpad = 15
             ax_type.yaxis.labelpad = 15
 
-            ax_right = pw.Brick(figsize=(1.2, 1.5))
+            legend_width, legend_height = self._get_acquisition_legend_size()
+            ax_right = pw.Brick(figsize=(legend_width, legend_height))
             self._plot_standalone_legend(ax=ax_right)
 
             return ax_left | ax_right

@@ -1,4 +1,4 @@
-# tests/test_quantile_bridge.py
+# tests/test_quantile_r_bridge.py
 """
 Script purpose: Compare Python quantile normalization with the R reference.
 

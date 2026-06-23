@@ -5,15 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
-## [1.1.3] - 2026-06-08
+## [1.1.4] - 2026-06-17
 
 ### Added
 
-- Added comprehensive type hints (`typing`) to all functions to improve code readability, IDE intellisense, and static analysis support.
+- **[Correction]** Added **WaveICA2** as a configurable correction method and included it in `AUTO` correction evaluation, with R-reference comparison support for WaveICA2, RUV-III, and SERRF.
+- **[Imputation]** Added **BPCA** as a MAR imputation candidate in the mask-based NRMSE selection workflow, with configurable convergence settings and R-reference comparison support for BPCA and QRILC.
+- **[Normalization]** Added `AUTO` normalization evaluation based on before-to-after QC precision, QC RLE alignment, MA intensity-bias change, and sample-structure preservation, together with deterministic shared MA evaluation positions across candidate methods.
 
 ### Changed
 
-- Refactored and standardized code formatting across the entire codebase using `black` and `ruff`.
+- **[Filtering]** Refined the missing-value classification dashboard and flowchart, including boundary-anchored arrows, clearer MAR eligibility labeling, dynamic QC intensity percentile labels, and consistent node typography for BioGroup and non-BioGroup layouts.
+- **[Correction]** Updated correction dashboards, `AUTO` scorecards, method labels, and internal-standard visualizations to accommodate WaveICA2 while retaining the existing QC-RLSC, QC-RFSC, QC-SVR, SERRF, and RUV-III workflows.
+- **[Imputation]** Updated MAR candidate reporting and dashboard logic to include BPCA and to bypass imputation cleanly when no missing values require filling.
+- **[Normalization]** Refactored the normalization dashboard around the final `AUTO` score components, including the integrated score-contribution panel, pooled-QC precision plot, QC RLE alignment plot, MA before/after plots, and sample-structure preservation plot.
+- **[Visualizer]** Consolidated legend layout, dense tick-label handling, and shared formatting utilities across dataset-building, filtering, assessment, correction, imputation, and normalization figures.
+- **[Reports]** Updated brief and comprehensive report templates to reflect skipped imputation states and auto-normalization score visualizations without showing irrelevant candidate plots.
+- **[Tests]** Split R bridge validation into method-specific scripts for QRILC, BPCA, VSN, quantile normalization, WaveICA2, RUV-III, and SERRF, with R-related temporary files excluded from version control.
+- **[Code Quality]** Continued type-hint, formatting, and configuration cleanup across source and test modules using `ruff`, `black`, and `pyproject.toml` metadata updates.
+
+### Fixed
+
+- **[Dataset Builder]** Fixed acquisition-overview legend clipping and sublegend overlap for datasets with many batches or sample types.
+- **[Assessment]** Fixed dense tick-label overlap and cell-annotation scaling in QC correlation heatmaps, batch-correlation heatmaps, and integrated outlier bar plots.
+- **[Filtering]** Fixed flowchart arrow rendering so connectors attach to node borders rather than relying on fragile shrink offsets.
+- **[Imputation]** Fixed no-missing-value datasets so imputation is reported as not required and unnecessary imputation dashboards are omitted.
+- **[Normalization]** Fixed MA trend-bias jitter by decoupling deterministic score calculation from rendering-time MA plot downsampling.
+
 
 ## [1.1.2a1] - 2026-06-01
 

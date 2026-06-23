@@ -38,7 +38,7 @@ class BaseMetaboVisualizer:
     targeting Adobe Illustrator compatibility and background consistency.
     """
 
-    FIG_SAVE_FORMAT = "svg"  # or ["svg", "pdf"]
+    FIG_SAVE_FORMAT = ["svg", "pdf"] # or "svg"
     FIG_DISPLAY_FORMAT = "png"
 
     def __init__(
@@ -254,13 +254,26 @@ class BaseMetaboVisualizer:
             ax.set_ylabel(ylabel)
 
         pu.change_weight(ax=ax, axis="xy")
-        pu.change_fontsize(ax=ax, axis="xy")
+        pu.change_fontsize(
+            ax=ax,
+            axis_ticks_fontsize=kwargs.get(
+                "tick_fontsize", pu.DEFAULT_AXIS_TICK_FONTSIZE
+            ),
+            axis_label_fontsize=kwargs.get(
+                "label_fontsize", pu.DEFAULT_AXIS_LABEL_FONTSIZE
+            ),
+            title_fontsize=kwargs.get("title_fontsize", pu.DEFAULT_TITLE_FONTSIZE),
+            axis="xy",
+        )
 
     def _format_single_legend(
         self,
         ax: plt.Axes,
         loc: str = "upper right",
-        bbox_to_anchor: tuple[float, float] = (1.05, 1.0),
+        bbox_to_anchor: tuple[float, float] | None = (1.05, 1.0),
+        group_title: str | None = None,
+        legend_cols: int | None = None,
+        max_item_rows: int | None = None,
         **kwargs: object,
     ) -> None:
         """
@@ -299,96 +312,29 @@ class BaseMetaboVisualizer:
         legend_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
         legend_kwargs.update(kwargs)
 
+        unsupported_kwargs = {"title", "ncol"}
+        found_unsupported = sorted(unsupported_kwargs.intersection(legend_kwargs))
+        if found_unsupported:
+            raise TypeError(
+                "Unsupported legend helper parameter(s): "
+                f"{', '.join(found_unsupported)}. Use group_title=..., "
+                "legend_cols=..., and max_item_rows=... instead."
+            )
+
+        if legend_cols is None and max_item_rows:
+            import math
+
+            legend_cols = math.ceil(len(handles) / max_item_rows)
+
+        if legend_cols is not None:
+            legend_kwargs["ncol"] = max(1, int(legend_cols))
+        if group_title is not None:
+            legend_kwargs["title"] = group_title
+
         # 5. Generate the new stylized legend and bind it to the Axes
         ax.legend(
             handles, labels, loc=loc, bbox_to_anchor=bbox_to_anchor, **legend_kwargs
         )
-
-    # def _format_multi_legends(
-    #     self, ax, group_titles: list, loc: str = "upper left",
-    #     start_bbox: tuple = (1.05, 1.0), group_pad: float = 0.04, **kwargs
-    # ) -> list:
-    #     """
-    #     Splits handles into separate boxes using the add_artist trick.
-    #     Calculates dynamic offsets based on font size to prevent overlap,
-    #     while ensuring the final legend dictates the patchworklib bbox.
-    #     """
-    #     leg = ax.get_legend()
-    #     if leg:
-    #         labels = [t.get_text() for t in leg.get_texts()]
-    #         handles = getattr(
-    #             leg, "legend_handles", getattr(leg, "legendHandles", [])
-    #         )
-    #         if not handles:
-    #             handles, _ = ax.get_legend_handles_labels()
-    #         leg.remove()
-    #     else:
-    #         handles, labels = ax.get_legend_handles_labels()
-
-    #     if not handles or not group_titles:
-    #         return []
-
-    #     title_idx = [i for i, l in enumerate(labels) if l in group_titles]
-    #     if not title_idx:
-    #         return []
-    #     title_idx.append(len(labels))
-
-    #     leg_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
-    #     leg_kwargs.update(kwargs)
-
-    #     # Dynamic coordinate offset calculation based on absolute font size
-    #     f_size = leg_kwargs.get("fontsize", 10)
-    #     t_size = leg_kwargs.get("title_fontsize", 11)
-
-    #     fig_h = ax.figure.get_size_inches()[1]
-    #     ax_h = ax.get_position().height * fig_h
-
-    #     dy_row = (f_size / 72.0 * 1.6) / ax_h
-    #     dy_title = (t_size / 72.0 * 1.8) / ax_h
-
-    #     created = []
-    #     x_pos, y_pos = start_bbox
-
-    #     for i in range(len(title_idx) - 1):
-    #         s_idx, e_idx = title_idx[i], title_idx[i + 1]
-    #         sub_h = handles[s_idx + 1:e_idx]
-    #         sub_l = labels[s_idx + 1:e_idx]
-
-    #         if not sub_h:
-    #             continue
-
-    #         new_leg = ax.legend(
-    #             sub_h, sub_l, title=labels[s_idx], loc=loc,
-    #             bbox_to_anchor=(x_pos, y_pos), **leg_kwargs
-    #         )
-
-    #         # [CRITICAL]: add_artist trick.
-    #         # Leave the final legend as ax.legend_ to force PW bbox expansion.
-    #         if i < len(title_idx) - 2:
-    #             ax.add_artist(new_leg)
-
-    #         created.append(new_leg)
-
-    #         # Calculate precise step drop for the next box
-    #         drop = dy_title + (len(sub_h) * dy_row) + group_pad
-    #         if "upper" in loc:
-    #             y_pos -= drop
-    #         elif "lower" in loc:
-    #             y_pos += drop
-
-    #     is_pw = (
-    #         type(ax).__module__.startswith("patchworklib") or
-    #         type(getattr(ax, "figure", None)).__module__.startswith(
-    #             "patchworklib"
-    #         )
-    #     )
-
-    #     if getattr(ax, "figure", None) is not None and not is_pw:
-    #         for obj in created:
-    #             if obj not in ax.figure.legends:
-    #                 ax.figure.legends.append(obj)
-
-    #     return created
 
     def _format_multi_legends(
         self,
@@ -396,15 +342,18 @@ class BaseMetaboVisualizer:
         group_titles: list[str],
         loc: str = "upper left",
         start_bbox: tuple[float, float] = (1.05, 1.0),
-        group_pad: float = 0.04,
-        ncols: int = 1,
-        col_pad: float = 0.15,
+        row_gap: float = 0.04,
+        layout_cols: int = 1,
+        column_gap: float = 0.15,
+        sublegend_cols: Optional[Union[int, dict[str, int]]] = None,
+        max_item_rows: Optional[int] = None,
         **kwargs: object,
     ) -> list[object]:
         """
         Splits handles into separate boxes using the add_artist trick.
-        Calculates dynamic offsets based on font size to prevent overlap,
-        supports dynamic multi-column grids (ncols), and ensures the final
+        Calculates offsets from each rendered legend's bounding box to prevent
+        overlap, supports both multi-column group grids (layout_cols) and adaptive
+        internal columns within individual sublegends, and ensures the final
         legend dictates the patchworklib bbox.
         """
         import math
@@ -430,35 +379,81 @@ class BaseMetaboVisualizer:
         leg_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
         leg_kwargs.update(kwargs)
 
+        unsupported_kwargs = {
+            "title",
+            "group_gap",
+            "group_pad",
+            "ncols",
+            "col_pad",
+            "group_ncols",
+            "max_rows_per_sublegend",
+            "ncol",
+        }
+        found_unsupported = sorted(unsupported_kwargs.intersection(leg_kwargs))
+        if found_unsupported:
+            raise TypeError(
+                "Unsupported legend helper parameter(s): "
+                f"{', '.join(found_unsupported)}. Use group_titles=..., row_gap=..., "
+                "layout_cols=..., column_gap=..., sublegend_cols=..., "
+                "and max_item_rows=... instead."
+            )
+
+        layout_cols = max(1, int(layout_cols))
+
         # Dynamic coordinate offset calculation based on absolute font size
         f_size = leg_kwargs.get("fontsize", 10)
         t_size = leg_kwargs.get("title_fontsize", 11)
 
+        fig_w = ax.figure.get_size_inches()[0]
         fig_h = ax.figure.get_size_inches()[1]
-        ax_h = ax.get_position().height * fig_h
+        ax_w = max(ax.get_position().width * fig_w, 1e-6)
+        ax_h = max(ax.get_position().height * fig_h, 1e-6)
 
         dy_row = (f_size / 72.0 * 1.6) / ax_h
         dy_title = (t_size / 72.0 * 1.8) / ax_h
+        min_row_gap = (f_size / 72.0 * 0.35) / ax_h
+        min_column_gap = (f_size / 72.0 * 0.90) / ax_w
+        row_gap = max(row_gap, min_row_gap)
+        column_gap = max(column_gap, min_column_gap)
 
         created = []
         n_groups = len(title_idx) - 1
-        grps_per_col = math.ceil(n_groups / max(1, ncols))
+        groups_per_col = math.ceil(n_groups / layout_cols)
 
         curr_x = start_bbox[0]
 
-        # Safely acquire renderer for dynamic width reading
-        try:
-            renderer = ax.figure.canvas.get_renderer()
-        except Exception:
-            renderer = None
+        def _group_item_ncols(title: str, item_count: int) -> int:
+            """Resolve the number of internal legend columns for one group."""
+            if isinstance(sublegend_cols, dict):
+                value = sublegend_cols.get(title, 1)
+            elif isinstance(sublegend_cols, int):
+                value = sublegend_cols
+            elif max_item_rows:
+                value = math.ceil(item_count / max_item_rows)
+            else:
+                value = 1
+
+            return max(1, int(value))
+
+        def _legend_axes_bbox(legend: object) -> object | None:
+            """Return the legend extent in Axes coordinates after a canvas draw."""
+            try:
+                ax.figure.canvas.draw()
+                renderer = ax.figure.canvas.get_renderer()
+                return legend.get_window_extent(renderer).transformed(
+                    ax.transAxes.inverted()
+                )
+            except Exception:
+                return None
 
         global_grp_idx = 0
 
-        for col_idx in range(ncols):
+        for col_idx in range(layout_cols):
             curr_y = start_bbox[1]
             col_legends = []
+            col_right = None
 
-            for _ in range(grps_per_col):
+            for _ in range(groups_per_col):
                 if global_grp_idx >= n_groups:
                     break
 
@@ -472,12 +467,15 @@ class BaseMetaboVisualizer:
                 if not sub_h:
                     continue
 
+                group_title = labels[s_idx]
+                sub_ncol = _group_item_ncols(group_title, len(sub_h))
                 new_leg = ax.legend(
                     sub_h,
                     sub_l,
-                    title=labels[s_idx],
+                    title=group_title,
                     loc=loc,
                     bbox_to_anchor=(curr_x, curr_y),
+                    ncol=sub_ncol,
                     **leg_kwargs,
                 )
 
@@ -489,25 +487,31 @@ class BaseMetaboVisualizer:
                 created.append(new_leg)
                 col_legends.append(new_leg)
 
-                # Calculate precise step drop for the next box
-                drop = dy_title + (len(sub_h) * dy_row) + group_pad
-                if "upper" in loc:
-                    curr_y -= drop
-                elif "lower" in loc:
-                    curr_y += drop
+                legend_bbox = _legend_axes_bbox(new_leg)
+                if legend_bbox is not None:
+                    col_right = (
+                        legend_bbox.x1
+                        if col_right is None
+                        else max(col_right, legend_bbox.x1)
+                    )
+                    if "upper" in loc:
+                        curr_y = legend_bbox.y0 - row_gap
+                    elif "lower" in loc:
+                        curr_y = legend_bbox.y1 + row_gap
+                else:
+                    sub_rows = math.ceil(len(sub_h) / sub_ncol)
+                    drop = dy_title + (sub_rows * dy_row) + row_gap
+                    if "upper" in loc:
+                        curr_y -= drop
+                    elif "lower" in loc:
+                        curr_y += drop
 
             # Calculate the maximum width of the current column to shift X
-            if col_idx < ncols - 1 and col_legends:
-                col_max_w = 0.0
-                if renderer:
-                    for l_obj in col_legends:
-                        bbox = l_obj.get_window_extent(renderer)
-                        ax_bbox = bbox.transformed(ax.transAxes.inverted())
-                        col_max_w = max(col_max_w, ax_bbox.width)
-
-                # Fallback horizontal shift if renderer fails
-                shift_w = col_max_w if col_max_w > 0 else 0.35
-                curr_x += shift_w + col_pad
+            if col_idx < layout_cols - 1 and col_legends:
+                if col_right is not None:
+                    curr_x = col_right + column_gap
+                else:
+                    curr_x += 0.35 + column_gap
 
         # Propagate to overall figure legends if not using patchworklib
         is_pw = type(ax).__module__.startswith("patchworklib") or type(
@@ -527,12 +531,16 @@ class BaseMetaboVisualizer:
         group_titles: list[str],
         loc: str = "upper left",
         start_bbox: tuple[float, float] = (1.05, 1.0),
+        group_title: str | None = None,
+        legend_cols: int | None = None,
+        max_item_rows: int | None = None,
         **kwargs: object,
     ) -> list[object]:
         """
         Merges handles into a single box but simulates a split visual style
         using invisible dummy handles for group headers.
         """
+        import math
         import matplotlib.patches as mpatches
 
         leg = ax.get_legend()
@@ -555,6 +563,15 @@ class BaseMetaboVisualizer:
 
         leg_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
         leg_kwargs.update(kwargs)
+
+        unsupported_kwargs = {"title", "ncols", "ncol"}
+        found_unsupported = sorted(unsupported_kwargs.intersection(leg_kwargs))
+        if found_unsupported:
+            raise TypeError(
+                "Unsupported legend helper parameter(s): "
+                f"{', '.join(found_unsupported)}. Use group_title=..., "
+                "legend_cols=..., and max_item_rows=... instead."
+            )
 
         combined_h, combined_l = [], []
         dummy = mpatches.Rectangle(
@@ -582,6 +599,12 @@ class BaseMetaboVisualizer:
                 combined_l.append("")
 
         leg_kwargs.update({"labelspacing": 0.4, "borderpad": 0.6, "handletextpad": 0.5})
+        if legend_cols is None and max_item_rows:
+            legend_cols = math.ceil(len(combined_h) / max_item_rows)
+        if legend_cols is not None:
+            leg_kwargs["ncol"] = max(1, int(legend_cols))
+        if group_title is not None:
+            leg_kwargs["title"] = group_title
 
         final_leg = ax.legend(
             combined_h, combined_l, loc=loc, bbox_to_anchor=start_bbox, **leg_kwargs

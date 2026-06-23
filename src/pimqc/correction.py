@@ -4,9 +4,11 @@ Script purpose: Execute technical signal correction and method selection.
 
 execute_signal_correction() casts the matrix to float, builds QC, batch, and
 injection-order arrays, then evaluates the configured correction method or an
-AUTO panel of QC-RLSC, QC-RFSC, QC-SVR, SERRF, and RUV. It compares candidate
-outputs with QC RSD metrics, selects the best method when needed, and records
-the selected stage data in the MetaboInt attributes.
+AUTO panel of QC-RLSC, QC-RFSC, QC-SVR, SERRF, RUV-III, and WaveICA 2.0. It compares
+candidate outputs with QC RSD metrics, selects the best method when needed, and
+records the selected stage data in the MetaboInt attributes.
+WaveICA 2.0 removes injection-order-associated independent components from
+multiscale signals and is evaluated with full-data QC RSD in AUTO mode.
 The workflow exports corrected matrices, QC fitted baselines, RSD evaluation
 figures, optional AUTO comparison grids, and internal-standard diagnostic
 scatter plots for the chosen correction strategy.
@@ -21,11 +23,13 @@ import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import seaborn as sns
 
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVR
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, SplineTransformer
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.model_selection import KFold
 from sklearn.base import clone
@@ -44,6 +48,39 @@ FitPredictCallable = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 CorrectionModel = (
     RandomForestRegressor | TransformedTargetRegressor | Pipeline | FitPredictCallable
 )
+
+
+def _format_correction_method_label(method: str) -> str:
+    """Return the display label for correction method identifiers."""
+    return _normalize_correction_method(method)
+
+
+def _normalize_correction_method(method: str) -> str:
+    """Normalize correction method aliases to canonical public names."""
+    method_text = str(method).strip()
+    method_upper = method_text.upper()
+    method_compact = re.sub(r"[\s_.-]+", "", method_upper)
+
+    if method_upper == "AUTO":
+        return "AUTO"
+    if method_compact in ("QCRLSC", "RLSC", "LOESS"):
+        return "QC-RLSC"
+    if method_compact in ("QCRFSC", "RFSC", "RF"):
+        return "QC-RFSC"
+    if method_compact in ("QCSVR", "QCSVRC", "SVR"):
+        return "QC-SVR"
+    if method_compact == "SERRF":
+        return "SERRF"
+    if method_compact in ("RUV", "RUVIII", "RUV3"):
+        return "RUV-III"
+    if method_compact in ("WAVEICA2", "WAVEICA20"):
+        return "WaveICA 2.0"
+    return method_text
+
+
+def _format_correction_method_file_label(method: str) -> str:
+    """Return a filesystem-friendly label for correction method identifiers."""
+    return re.sub(r'[<>:"/\\|?*]', "-", _format_correction_method_label(method))
 
 
 # ==============================================================================
@@ -251,6 +288,7 @@ class RegressionCorrector:
             return RandomForestRegressor(
                 n_estimators=self.params.get("rf_n_tree", 200),
                 random_state=self.params.get("global_seed", 123),
+                n_jobs=1,
             )
         elif self.method in ("SVR", "QC-SVR", "QC-SVRC"):
             # SVR is inherently single-threaded in scikit-learn
@@ -278,7 +316,7 @@ class RegressionCorrector:
         """Execute core mathematical fitting using pure arrays and masks."""
         stages_output = {}
         logger.info(
-            "Phase 1: Executing Intra-batch drift correction with " f"{self.method}..."
+            f"Phase 1: Executing Intra-batch drift correction with {self.method}..."
         )
 
         # Force initialization to float64 to accept fractional predictions
@@ -331,22 +369,46 @@ class RegressionCorrector:
                 oof_pred_df.loc[:, b_mask] = oof_matrix
             else:
                 feat_idx = b_data.index
-                mat_vals = b_data.values
+                mat_vals = b_data.to_numpy(dtype=float, copy=False)
+                joblib_backend = str(
+                    self.params.get("regression_backend", "loky")
+                ).lower()
+                if joblib_backend not in {"threading", "loky"}:
+                    logger.warning(
+                        f"Unsupported regression_backend='{joblib_backend}'. "
+                        "Falling back to 'loky'."
+                    )
+                    joblib_backend = "loky"
+                joblib_batch_size = self.params.get("regression_batch_size", "auto")
+                if isinstance(joblib_batch_size, str):
+                    if joblib_batch_size.lower() == "auto":
+                        joblib_batch_size = "auto"
+                    else:
+                        joblib_batch_size = int(joblib_batch_size)
+                batch_col_pos = np.where(b_mask)[0]
 
-                tasks = [
+                tasks = (
                     delayed(self._fit_predict_feature)(
                         feat_idx[i], mat_vals[i, :], b_qc_mask, b_orders
                     )
                     for i in range(len(feat_idx))
-                ]
+                )
 
                 # [FIX]: Use patched joblib context manager
-                with iu.tqdm_joblib_env(total=len(tasks), desc=f"SC [{batch_id}]"):
-                    results = Parallel(n_jobs=n_jobs_conf, backend="loky")(tasks)
+                with iu.tqdm_joblib_env(total=len(feat_idx), desc=f"SC [{batch_id}]"):
+                    results = Parallel(
+                        n_jobs=n_jobs_conf,
+                        backend=joblib_backend,
+                        batch_size=joblib_batch_size,
+                    )(tasks)
 
-                for f_idx, p_full, p_oof in results:
-                    pred_df.loc[f_idx, b_mask] = p_full
-                    oof_pred_df.loc[f_idx, b_mask] = p_oof
+                if results:
+                    pred_df.iloc[:, batch_col_pos] = np.vstack(
+                        [p_full for _, p_full, _ in results]
+                    )
+                    oof_pred_df.iloc[:, batch_col_pos] = np.vstack(
+                        [p_oof for _, _, p_oof in results]
+                    )
 
         # Mathematical division with broadcasted QC means
         pred_df[pred_df <= 0] = np.nan
@@ -449,12 +511,16 @@ class SERRFCorrector:
         n_corr_features: int = 10,
         random_state: int = 123,
         n_jobs: int = -1,
+        joblib_backend: str = "loky",
+        joblib_batch_size: Union[str, int] = "auto",
     ) -> None:
         self.n_estimators = n_estimators
         self.cv_folds = cv_folds
         self.n_corr_features = n_corr_features
         self.random_state = random_state
         self.n_jobs = n_jobs
+        self.joblib_backend = str(joblib_backend).lower()
+        self.joblib_batch_size = joblib_batch_size
 
     def _prepare_base_features(
         self, batch_array: np.ndarray, order_array: np.ndarray
@@ -536,7 +602,7 @@ class SERRFCorrector:
     ) -> Dict[str, Tuple[pd.DataFrame, pd.DataFrame]]:
 
         logger.info("Initializing High-Performance Hybrid SERRF Corrector...")
-        y_mat = intensity_df.T.values
+        y_mat = intensity_df.T.to_numpy(dtype=float, copy=False)
         x_base = self._prepare_base_features(batch_array, order_array)
         n_features = y_mat.shape[1]
 
@@ -555,10 +621,26 @@ class SERRFCorrector:
 
         actual_cores = (os.cpu_count() or 1) if self.n_jobs == -1 else self.n_jobs
         safe_n_jobs = max(1, int(actual_cores / 2))
+        joblib_backend = self.joblib_backend
+        if joblib_backend not in {"threading", "loky"}:
+            logger.warning(
+                f"Unsupported serrf_backend='{joblib_backend}'. Falling back to 'loky'."
+            )
+            joblib_backend = "loky"
+        joblib_batch_size = self.joblib_batch_size
+        if isinstance(joblib_batch_size, str):
+            if joblib_batch_size.lower() == "auto":
+                joblib_batch_size = "auto"
+            else:
+                joblib_batch_size = int(joblib_batch_size)
 
         # [FIX]: Use patched joblib context manager for SERRF
         with iu.tqdm_joblib_env(total=n_features, desc="SERRF"):
-            results = Parallel(n_jobs=safe_n_jobs, backend="loky")(
+            results = Parallel(
+                n_jobs=safe_n_jobs,
+                backend=joblib_backend,
+                batch_size=joblib_batch_size,
+            )(
                 delayed(self._process_single_feature)(
                     feat_idx,
                     y_mat,
@@ -569,10 +651,14 @@ class SERRFCorrector:
                 for feat_idx in range(n_features)
             )
 
-        for res in results:
-            feat_idx, res_full, res_oof = res
-            y_corrected[:, feat_idx] = res_full
-            y_corrected_oof[:, feat_idx] = res_oof
+        if results:
+            feat_order = [feat_idx for feat_idx, _, _ in results]
+            y_corrected[:, feat_order] = np.column_stack(
+                [res_full for _, res_full, _ in results]
+            )
+            y_corrected_oof[:, feat_order] = np.column_stack(
+                [res_oof for _, _, res_oof in results]
+            )
 
         res_df_full = pd.DataFrame(
             y_corrected.T, index=intensity_df.index, columns=intensity_df.columns
@@ -580,11 +666,367 @@ class SERRFCorrector:
         res_df_oof = pd.DataFrame(
             y_corrected_oof.T, index=intensity_df.index, columns=intensity_df.columns
         )
-        return {"Global SERRF": (res_df_full, res_df_oof)}
+        return {"SERRF": (res_df_full, res_df_oof)}
 
 
 # ==============================================================================
-# Engine 3: RUVCorrector
+# Engine 3: WaveICA2Corrector
+# ==============================================================================
+class WaveICA2Corrector:
+    """Native Python WaveICA 2.0 correction using order-associated stICA removal.
+
+    This implementation ports the public WaveICA_2.0 R workflow more closely
+    than the previous lightweight approximation: samples are ordered by
+    injection order, each feature is decomposed with periodic Haar MODWT,
+    scale-wise coefficients are factorized with the unbiased stICA/Jade-style
+    joint diagonalization routine, order-associated components are removed, and
+    the matrix is reconstructed with inverse MODWT plus the original feature
+    mean, matching the R wrapper's reconstruction convention.
+    """
+
+    def __init__(
+        self,
+        n_components: int = 10,
+        cutoff: float = 0.1,
+        n_levels: Optional[int] = None,
+        spline_knots: int = 5,
+        max_iter: int = 1000,
+        random_state: int = 123,
+    ) -> None:
+        self.n_components = max(1, int(n_components))
+        self.cutoff = float(cutoff)
+        self.n_levels = n_levels
+        self.spline_knots = max(3, int(spline_knots))
+        self.max_iter = max(50, int(max_iter))
+        self.random_state = int(random_state)
+        self.selected_component_counts: list[int] = []
+        self.selected_component_r2: list[np.ndarray] = []
+
+    @staticmethod
+    def _fill_missing_by_feature_median(data: np.ndarray) -> np.ndarray:
+        """Fill missing feature values before matrix factorization."""
+        filled = data.copy().astype(float)
+        nan_mask = np.isnan(filled)
+        if not nan_mask.any():
+            return filled
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            col_medians = np.nanmedian(filled, axis=0)
+            global_median = np.nanmedian(filled)
+
+        if not np.isfinite(global_median):
+            global_median = 0.0
+        col_medians = np.where(np.isfinite(col_medians), col_medians, global_median)
+        row_idx, col_idx = np.where(nan_mask)
+        filled[row_idx, col_idx] = col_medians[col_idx]
+        return filled
+
+    def _decompose(self, data: np.ndarray) -> list[np.ndarray]:
+        """Compute periodic Haar MODWT coefficients along the sample axis."""
+        n_samples = data.shape[0]
+        max_levels = max(1, int(np.floor(np.log2(max(n_samples, 2)))))
+        if self.n_levels is not None:
+            max_levels = max(1, min(int(self.n_levels), max_levels))
+
+        coeffs = []
+        smooth = data.copy()
+        for level_idx in range(max_levels):
+            lag = 2**level_idx
+            lagged = np.roll(smooth, shift=lag, axis=0)
+            detail = 0.5 * (smooth - lagged)
+            smooth_next = 0.5 * (smooth + lagged)
+            coeffs.append(detail)
+            smooth = smooth_next
+        coeffs.append(smooth)
+        return coeffs
+
+    @staticmethod
+    def _reconstruct(coeffs: list[np.ndarray]) -> np.ndarray:
+        """Reconstruct a matrix from periodic Haar MODWT coefficients."""
+        smooth = coeffs[-1].copy()
+        for level_idx in range(len(coeffs) - 2, -1, -1):
+            detail = coeffs[level_idx]
+            lag = 2**level_idx
+            smooth = 0.5 * (
+                smooth
+                + detail
+                + np.roll(smooth, shift=-lag, axis=0)
+                - np.roll(detail, shift=-lag, axis=0)
+            )
+        return smooth
+
+    @staticmethod
+    def _jade_cumulant_matrices(x: np.ndarray) -> np.ndarray:
+        """Calculate JADE cumulant-like matrices used by unbiased stICA."""
+        n_rows, n_cols = x.shape
+        n_mats = n_rows * (n_rows + 1) // 2
+        mats = np.zeros((n_rows, n_rows, n_mats), dtype=float)
+        cov = np.atleast_2d(np.cov(x.T, rowvar=False))
+        scale = 1.0 / float(n_cols)
+
+        mat_idx = 0
+        for p_idx in range(n_rows):
+            prod = x[p_idx] * x[p_idx]
+            c_mat = (x * (prod * scale)[None, :]) @ x.T
+            e_mat = np.zeros((n_rows, n_rows), dtype=float)
+            e_mat[p_idx, p_idx] = 1.0
+            mats[:, :, mat_idx] = (
+                c_mat
+                - cov @ e_mat @ cov
+                - np.trace(e_mat @ cov) * cov
+                - cov @ e_mat.T @ cov
+            )
+            mat_idx += 1
+
+            for q_idx in range(p_idx):
+                prod = x[p_idx] * x[q_idx]
+                c_mat = (x * (prod * scale)[None, :]) @ x.T * np.sqrt(2.0)
+                e_mat = np.zeros((n_rows, n_rows), dtype=float)
+                e_mat[p_idx, q_idx] = 1.0 / np.sqrt(2.0)
+                e_mat[q_idx, p_idx] = e_mat[p_idx, q_idx]
+                mats[:, :, mat_idx] = (
+                    c_mat
+                    - cov @ e_mat @ cov
+                    - np.trace(e_mat @ cov) * cov
+                    - cov @ e_mat.T @ cov
+                )
+                mat_idx += 1
+
+        return mats
+
+    def _joint_diagonalize(self, mats: np.ndarray) -> np.ndarray:
+        """Approximately jointly diagonalize symmetric matrices by Jacobi rotations."""
+        n_rows = mats.shape[0]
+        rot = np.eye(n_rows, dtype=float)
+        work = mats.copy()
+        eps = 1e-6
+
+        for _ in range(self.max_iter):
+            changed = False
+            for p_idx in range(n_rows - 1):
+                for q_idx in range(p_idx + 1, n_rows):
+                    g0 = work[p_idx, p_idx, :] - work[q_idx, q_idx, :]
+                    g1 = work[p_idx, q_idx, :] + work[q_idx, p_idx, :]
+                    ton = float(np.dot(g0, g0) - np.dot(g1, g1))
+                    toff = float(2.0 * np.dot(g0, g1))
+                    denom = ton + math.sqrt(ton * ton + toff * toff)
+                    if abs(denom) <= 1e-15 and abs(toff) <= 1e-15:
+                        continue
+
+                    theta = 0.5 * math.atan2(toff, denom)
+                    c_val = math.cos(theta)
+                    s_val = math.sin(theta)
+                    if abs(s_val) <= eps:
+                        continue
+
+                    changed = True
+                    left_p = c_val * work[p_idx, :, :] + s_val * work[q_idx, :, :]
+                    left_q = -s_val * work[p_idx, :, :] + c_val * work[q_idx, :, :]
+                    work[p_idx, :, :] = left_p
+                    work[q_idx, :, :] = left_q
+
+                    col_p = c_val * work[:, p_idx, :] + s_val * work[:, q_idx, :]
+                    col_q = -s_val * work[:, p_idx, :] + c_val * work[:, q_idx, :]
+                    work[:, p_idx, :] = col_p
+                    work[:, q_idx, :] = col_q
+
+                    rot_p = c_val * rot[:, p_idx] + s_val * rot[:, q_idx]
+                    rot_q = -s_val * rot[:, p_idx] + c_val * rot[:, q_idx]
+                    rot[:, p_idx] = rot_p
+                    rot[:, q_idx] = rot_q
+
+            if not changed:
+                break
+        return rot
+
+    def _unbiased_stica(
+        self,
+        x: np.ndarray,
+        n_components: int,
+        alpha: float = 0.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Port the WaveICA unbiased_stICA factorization X = A @ B.T."""
+        n_features, n_samples = x.shape
+        safe_k = min(int(n_components), n_features, n_samples)
+        if safe_k < 1:
+            raise ValueError("WaveICA 2.0 stICA requires at least one component.")
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("WaveICA 2.0 alpha must be in [0, 1].")
+
+        col_centered = x - np.mean(x, axis=0, keepdims=True)
+        x_centered = col_centered - np.mean(col_centered, axis=1, keepdims=True)
+
+        u_mat, s_vals, vt_mat = np.linalg.svd(x_centered, full_matrices=False)
+        u_mat = u_mat[:, :safe_k]
+        s_vals = s_vals[:safe_k]
+        v_mat = vt_mat[:safe_k, :].T
+
+        d_alpha = np.diag(s_vals**alpha)
+        d_one_minus_alpha = np.diag(s_vals ** (1.0 - alpha))
+
+        b_t = d_one_minus_alpha @ v_mat.T
+        if alpha == 1.0:
+            b_t = v_mat.T
+        a_t = d_alpha @ u_mat.T
+        if alpha == 0.0:
+            a_t = u_mat.T
+
+        n_cumulants = safe_k * (safe_k + 1) // 2
+        mats = np.zeros((safe_k, safe_k, 2 * n_cumulants), dtype=float)
+        mats[:, :, :n_cumulants] = self._jade_cumulant_matrices(b_t)
+        mats[:, :, n_cumulants:] = self._jade_cumulant_matrices(a_t)
+
+        first_norm = np.mean(
+            np.sqrt(np.sum(mats[:, :, :n_cumulants] ** 2, axis=(0, 1)))
+        )
+        second_norm = np.mean(
+            np.sqrt(np.sum(mats[:, :, n_cumulants:] ** 2, axis=(0, 1)))
+        )
+        if first_norm > 0:
+            mats[:, :, :n_cumulants] *= alpha / first_norm
+        else:
+            mats[:, :, :n_cumulants] = 0.0
+        if second_norm > 0:
+            mats[:, :, n_cumulants:] *= (1.0 - alpha) / second_norm
+        else:
+            mats[:, :, n_cumulants:] = 0.0
+
+        worth_v = self._joint_diagonalize(mats)
+        wo_mat = worth_v.T
+        wo_inv = np.linalg.pinv(wo_mat)
+
+        a0 = u_mat @ d_alpha @ wo_inv
+        b0 = v_mat @ d_one_minus_alpha @ wo_mat.T
+        if alpha == 1.0:
+            b0 = v_mat @ wo_mat.T
+        if alpha == 0.0:
+            a0 = u_mat @ wo_inv
+
+        mean_cols = np.mean(x, axis=0, keepdims=True).T
+        mean_rows = np.mean(x, axis=1, keepdims=True)
+        mean_b = np.linalg.pinv(a0) @ mean_rows
+        mean_a = np.linalg.pinv(b0) @ mean_cols
+
+        b_fin = b0 + np.tile(mean_b.T, (n_samples, 1))
+        a_fin = a0 + np.tile(mean_a.T, (n_features, 1))
+        return a_fin, b_fin
+
+    def _order_r2(self, component: np.ndarray, order_array: np.ndarray) -> float:
+        """Approximate mgcv GAM R2 for a component against injection order."""
+        valid = np.isfinite(component) & np.isfinite(order_array)
+        if valid.sum() < 4:
+            return 0.0
+
+        x = np.asarray(order_array[valid], dtype=float).reshape(-1, 1)
+        y = np.asarray(component[valid], dtype=float)
+        order_idx = np.argsort(x[:, 0])
+        x = x[order_idx]
+        y = y[order_idx]
+
+        if np.nanstd(y) <= 1e-12:
+            return 0.0
+
+        try:
+            n_knots = min(self.spline_knots, max(3, valid.sum() - 2))
+            degree = min(3, n_knots - 1)
+            basis = SplineTransformer(
+                n_knots=n_knots,
+                degree=degree,
+                include_bias=False,
+            ).fit_transform(x)
+            y_hat = LinearRegression().fit(basis, y).predict(basis)
+        except Exception:
+            x_vec = x[:, 0]
+            coefs = np.polyfit(x_vec, y, deg=1)
+            y_hat = np.polyval(coefs, x_vec)
+
+        sst = float(np.sum((y - np.mean(y)) ** 2))
+        if sst <= 1e-12:
+            return 0.0
+        sse = float(np.sum((y - y_hat) ** 2))
+        return float(np.clip(1.0 - sse / sst, 0.0, 1.0))
+
+    def _remove_order_components(
+        self, coeff: np.ndarray, order_array: np.ndarray
+    ) -> np.ndarray:
+        """Remove stICA components whose scores are explained by injection order."""
+        n_samples, n_features = coeff.shape
+        safe_k = min(self.n_components, n_samples, n_features)
+        if safe_k < 2 or n_samples < 4:
+            self.selected_component_counts.append(0)
+            self.selected_component_r2.append(np.array([], dtype=float))
+            return coeff
+
+        try:
+            mixing, sources = self._unbiased_stica(
+                x=coeff.T,
+                n_components=safe_k,
+                alpha=0.0,
+            )
+            r2_vals = np.array(
+                [self._order_r2(sources[:, i], order_array) for i in range(safe_k)]
+            )
+            selected = np.where(r2_vals >= self.cutoff)[0]
+            self.selected_component_counts.append(int(len(selected)))
+            self.selected_component_r2.append(r2_vals)
+
+            if len(selected) == 0:
+                return coeff
+
+            artifact = (mixing[:, selected] @ sources[:, selected].T).T
+            return coeff - artifact
+        except Exception as e:
+            logger.debug(f"WaveICA 2.0 coefficient correction failed: {e}")
+            self.selected_component_counts.append(0)
+            self.selected_component_r2.append(np.array([], dtype=float))
+            return coeff
+
+    def fit_transform(
+        self,
+        intensity_df: pd.DataFrame,
+        order_array: np.ndarray,
+    ) -> Dict[str, Tuple[pd.DataFrame, Optional[pd.DataFrame]]]:
+        """Execute WaveICA 2.0 correction."""
+        logger.info("Executing WaveICA 2.0 correction...")
+
+        order_array = np.asarray(order_array, dtype=float)
+        if order_array.shape[0] != intensity_df.shape[1]:
+            raise ValueError(
+                "WaveICA 2.0 requires one injection order value per sample."
+            )
+
+        sort_idx = np.argsort(order_array, kind="mergesort")
+        inverse_idx = np.argsort(sort_idx)
+        sorted_order = order_array[sort_idx]
+        sorted_df = intensity_df.iloc[:, sort_idx]
+
+        raw = sorted_df.T.values.astype(float)
+        nan_mask = np.isnan(raw)
+        filled = self._fill_missing_by_feature_median(raw)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            raw_means = np.nanmean(raw, axis=0)
+        raw_means = np.where(np.isfinite(raw_means), raw_means, 0.0)
+
+        coeffs = self._decompose(filled)
+        cleaned_coeffs = [
+            self._remove_order_components(coeff, sorted_order) for coeff in coeffs
+        ]
+        corrected = self._reconstruct(cleaned_coeffs) + raw_means[None, :]
+
+        corrected = np.clip(corrected, a_min=1e-6, a_max=None)
+        corrected[nan_mask] = np.nan
+        corrected = corrected[inverse_idx, :]
+
+        res_df_full = pd.DataFrame(
+            corrected.T, index=intensity_df.index, columns=intensity_df.columns
+        )
+        return {"WaveICA 2.0": (res_df_full, None)}
+
+
+# ==============================================================================
+# Engine 4: RUVCorrector
 # ==============================================================================
 class RUVCorrector:
     """Pure mathematical engine for RUV-III correction via SVD projection."""
@@ -599,7 +1041,7 @@ class RUVCorrector:
         control_features: pd.Index,
     ) -> Dict[str, Tuple[pd.DataFrame, Optional[pd.DataFrame]]]:
 
-        logger.info(f"Executing Global RUV-III (k={self.k})...")
+        logger.info(f"Executing RUV-III (k={self.k})...")
         if control_features.empty:
             raise ValueError("RUV-III requires at least one control feature.")
 
@@ -672,7 +1114,7 @@ class RUVCorrector:
         res_df_full = intensity_df.copy()
         res_df_full.iloc[:, :] = Y_corrected.T
 
-        return {"Global RUV": (res_df_full, None)}
+        return {"RUV-III": (res_df_full, None)}
 
 
 # ==============================================================================
@@ -683,9 +1125,10 @@ class MetaboIntCorrector(core_classes.MetaboInt):
     Quality control-based signal drift correction dispatcher.
 
     Orchestrates the dynamic execution routing between RegressionCorrector,
-    SERRFCorrector, and RUVCorrector. Extracts domain-specific metadata
-    into pure mathematical arrays to preserve engine purity. Manages file
-    exports, dual-mode RSD tracking, and downstream visualization diagnostics.
+    SERRFCorrector, WaveICA2Corrector, and RUVCorrector. Extracts
+    domain-specific metadata into pure mathematical arrays to preserve engine
+    purity. Manages file exports, dual-mode RSD tracking, and downstream
+    visualization diagnostics.
     """
 
     _metadata = ["attrs"]
@@ -699,10 +1142,19 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         rf_n_tree: Optional[int] = None,
         serrf_n_tree: Optional[int] = None,
         serrf_corr_features: Optional[int] = None,
+        serrf_backend: Optional[str] = None,
+        serrf_batch_size: Optional[Union[str, int]] = None,
         svr_kernel: Optional[str] = None,
         svr_c: Optional[Union[float, int]] = None,
         svr_gamma: Optional[Union[str, float]] = None,
         ruv_k: Optional[int] = None,
+        waveica_components: Optional[int] = None,
+        waveica_cutoff: Optional[float] = None,
+        waveica_levels: Optional[int] = None,
+        waveica_spline_knots: Optional[int] = None,
+        waveica_max_iter: Optional[int] = None,
+        regression_backend: Optional[str] = None,
+        regression_batch_size: Optional[Union[str, int]] = None,
         cv_folds: Optional[int] = None,
         n_jobs: Optional[int] = None,
         **kwargs: object,
@@ -717,11 +1169,20 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             "rf_n_tree": 200,
             "serrf_n_tree": 100,
             "serrf_corr_features": 5,
+            "serrf_backend": "loky",
+            "serrf_batch_size": "auto",
             "svr_kernel": "rbf",
             "svr_c": 10,
             "svr_gamma": 1.0,
             "cv_folds": 3,
             "ruv_k": 3,
+            "waveica_components": 10,
+            "waveica_cutoff": 0.1,
+            "waveica_levels": None,
+            "waveica_spline_knots": 5,
+            "waveica_max_iter": 1000,
+            "regression_backend": "loky",
+            "regression_batch_size": "auto",
             "n_jobs": getattr(iu, "__max_threading__", -1),
             "global_seed": 123,
         }
@@ -738,11 +1199,20 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             "rf_n_tree",
             "serrf_n_tree",
             "serrf_corr_features",
+            "serrf_backend",
+            "serrf_batch_size",
             "svr_kernel",
             "svr_c",
             "svr_gamma",
             "cv_folds",
             "ruv_k",
+            "waveica_components",
+            "waveica_cutoff",
+            "waveica_levels",
+            "waveica_spline_knots",
+            "waveica_max_iter",
+            "regression_backend",
+            "regression_batch_size",
             "n_jobs",
         ]
         for param in explicit_params:
@@ -869,7 +1339,8 @@ class MetaboIntCorrector(core_classes.MetaboInt):
     ) -> Dict[str, Any]:
         """Execute core computation and metrics extraction for all methods."""
         results_store = {}
-        for method in methods_to_run:
+        for raw_method in methods_to_run:
+            method = _normalize_correction_method(raw_method)
             logger.info(f"--- Evaluating Method: {method} ---")
 
             # 1. Route to specific engine
@@ -881,6 +1352,8 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                     n_corr_features=self.attrs.get("serrf_corr_features", 10),
                     random_state=self.attrs.get("global_seed", 123),
                     n_jobs=self.attrs.get("n_jobs", -1),
+                    joblib_backend=self.attrs.get("serrf_backend", "loky"),
+                    joblib_batch_size=self.attrs.get("serrf_batch_size", "auto"),
                 )
                 stages_output = engine.fit_transform(
                     intensity_df=self,
@@ -889,11 +1362,24 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                     order_array=order_array,
                     corr_mat=corr_mat,
                 )
-            elif method in ("RUV", "RUV-III"):
+            elif method == "RUV-III":
                 ctrl_features = self._prepare_ruv_control_features()
                 engine = RUVCorrector(k=self.attrs.get("ruv_k", 3))
                 stages_output = engine.fit_transform(
                     intensity_df=self, qc_mask=qc_mask, control_features=ctrl_features
+                )
+            elif method == "WaveICA 2.0":
+                engine = WaveICA2Corrector(
+                    n_components=self.attrs.get("waveica_components", 10),
+                    cutoff=self.attrs.get("waveica_cutoff", 0.1),
+                    n_levels=self.attrs.get("waveica_levels"),
+                    spline_knots=self.attrs.get("waveica_spline_knots", 5),
+                    max_iter=self.attrs.get("waveica_max_iter", 1000),
+                    random_state=self.attrs.get("global_seed", 123),
+                )
+                stages_output = engine.fit_transform(
+                    intensity_df=self,
+                    order_array=order_array,
                 )
             else:
                 engine = RegressionCorrector(method=method, **self.attrs)
@@ -914,7 +1400,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             for stage_name, (full_df, oof_df) in stages_output.items():
                 clean_name = stage_name.replace("\n", " ")
                 final_df = self._constructor(full_df).__finalize__(self)
-                final_df.attrs["pipeline_stage"] = clean_name
+                final_df.attrs["pipeline_stage"] = "Correction"
                 final_df.attrs["qc_rsd_baseline"] = raw_rsd
 
                 curr_full_rsd = MetaboIntCorrector.calculate_median_qc_rsd(final_df)
@@ -923,6 +1409,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
 
                 if oof_df is not None:
                     oof_wrap = self._constructor(oof_df).__finalize__(self)
+                    oof_wrap.attrs["pipeline_stage"] = "Correction"
                     curr_oof_rsd = MetaboIntCorrector.calculate_median_qc_rsd(oof_wrap)
                     rsd_hist_oof[clean_name] = curr_oof_rsd
                     final_df.attrs["qc_rsd_current_oof"] = curr_oof_rsd
@@ -942,8 +1429,8 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             pred_df = None
             if "Intra-batch corrected" in stage_dfs and method not in (
                 "SERRF",
-                "RUV",
                 "RUV-III",
+                "WaveICA 2.0",
             ):
                 try:
                     base_int_bc = self._calculate_qc_baseline_means(
@@ -971,7 +1458,8 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 "final_rsd_oof": final_oof,
             }
 
-            log_rsd = final_full if method in ("RUV", "RUV-III") else final_oof
+            full_only_methods = ("RUV-III", "WaveICA 2.0")
+            log_rsd = final_full if method in full_only_methods else final_oof
             if log_rsd is not None:
                 logger.info(f"{method} Eval QC RSD: {log_rsd * 100:.2f}%")
 
@@ -981,15 +1469,15 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         """
         Identify the optimal correction method based on QC RSD.
 
-        RUV methods evaluate using the full dataset RSD. All other
-        methods rely on the Out-Of-Fold (OOF) cross-validated RSD to
-        prevent overfitting.
+        RUV-III and WaveICA 2.0 evaluate using the full dataset RSD.
+        All other methods rely on the Out-Of-Fold (OOF) cross-validated
+        RSD to prevent overfitting.
         """
         best_method = ""
         min_rsd = float("inf")
 
         for method, res in results_store.items():
-            if method in ("RUV", "RUV-III"):
+            if method in ("RUV-III", "WaveICA 2.0"):
                 eval_rsd = res.get("final_rsd_full", float("inf"))
             else:
                 eval_rsd = res.get("final_rsd_oof")
@@ -1028,11 +1516,18 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         batch_array = self.columns.get_level_values(batch_col).values
         order_array = self.columns.get_level_values(inject_order_col).values
 
-        req_method = self.attrs.get("base_est", "QC-RLSC").upper()
+        req_method = _normalize_correction_method(self.attrs.get("base_est", "QC-RLSC"))
         self.attrs["is_auto_mode"] = req_method == "AUTO"
 
         if req_method == "AUTO":
-            methods_to_run = ["QC-RLSC", "QC-RFSC", "QC-SVR", "SERRF", "RUV"]
+            methods_to_run = [
+                "SERRF",
+                "RUV-III",
+                "WaveICA 2.0",
+                "QC-RLSC",
+                "QC-RFSC",
+                "QC-SVR",
+            ]
             logger.info("AUTO mode enabled. Evaluating multiple methods.")
         else:
             methods_to_run = [req_method]
@@ -1056,13 +1551,13 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         best_method = self._find_best_correction(results_store)
 
         if req_method == "AUTO":
-            if best_method in ("RUV", "RUV-III"):
+            if best_method in ("RUV-III", "WaveICA 2.0"):
                 best_rsd = results_store[best_method]["final_rsd_full"]
             else:
                 best_rsd = results_store[best_method]["final_rsd_oof"]
 
             logger.success(
-                f"Auto selection: {best_method} is optimal "
+                f"Auto selection: {_format_correction_method_label(best_method)} is optimal "
                 f"(Eval QC RSD = {best_rsd * 100:.2f}%)."
             )
             # Update metric tracker to reflect dynamically chosen algorithm
@@ -1077,10 +1572,10 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         # ---------------------------------------------------------------------
         vis = MetaboVisualizerCorrector(self)
 
-        # Auto mode: Generate the 2x3 comprehensive grid
+        # Auto mode: Generate the comprehensive comparison grid
         if req_method == "AUTO" and len(results_store) > 1:
             logger.info("Assembling evaluation grid for all methods...")
-            grid_obj = vis.plot_corr_rsd_grid(results_store, best_method)
+            grid_obj = vis.plot_correction_dashboard(results_store, best_method)
 
             if grid_obj is not None:
                 vis.save_and_show_pw(
@@ -1090,15 +1585,17 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 )
 
         # Standard behavior: Generate the specific plot for the chosen method
-        logger.info(f"Generating specific RSD plot for: {best_method}")
+        best_method_label = _format_correction_method_label(best_method)
+        best_method_file_label = _format_correction_method_file_label(best_method)
+        logger.info(f"Generating specific RSD plot for: {best_method_label}")
         m_res = results_store[best_method]
         fig_rsd = vis.plot_corr_rsd(
             stage_dfs=m_res["stage_dfs"], stage_oof_dfs=m_res.get("stage_oof_dfs", {})
         )
         vis.save_and_show_pw(
             pw_obj=fig_rsd,
-            width="30%",
-            file_path=os.path.join(output_dir, f"QC_RSD_{best_method}.svg"),
+            width="20%",
+            file_path=os.path.join(output_dir, f"QC_RSD_{best_method_file_label}.svg"),
         )
 
         # ---------------------------------------------------------------------
@@ -1114,9 +1611,11 @@ class MetaboIntCorrector(core_classes.MetaboInt):
 
             clean_name = stage_name.replace("\n", " ")
             if best_method == "SERRF":
-                file_name = "Global_SERRF.csv"
-            elif best_method in ("RUV", "RUV-III"):
-                file_name = "Global_RUV.csv"
+                file_name = "SERRF.csv"
+            elif best_method == "RUV-III":
+                file_name = "RUV-III.csv"
+            elif best_method == "WaveICA 2.0":
+                file_name = "WaveICA 2.0.csv"
             else:
                 prefix = clean_name.replace(" corrected", "")
                 prefix = prefix.replace(" ", "_")
@@ -1126,14 +1625,14 @@ class MetaboIntCorrector(core_classes.MetaboInt):
 
         if best_pred_df is not None:
             best_pred_df.to_csv(
-                os.path.join(output_dir, f"QC_Fit_Base_{best_method}.csv")
+                os.path.join(output_dir, f"QC_Fit_Base_{best_method_file_label}.csv")
             )
 
         pipe_params = self.attrs.get("pipeline_parameters", {})
         bound_type = pipe_params.get("MetaboInt", {}).get("boundary", "IQR")
 
         if len(self.valid_is) > 0:
-            logger.info(f"Generating IS plots for {best_method}...")
+            logger.info(f"Generating IS plots for {best_method_label}...")
 
             is_dir = os.path.join(output_dir, "Internal_Standard_Scatters")
             iu._check_dir_exists(is_dir, handle="makedirs")
@@ -1152,13 +1651,15 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             ):
                 safe_feat = re.sub(r"[^a-zA-Z0-9]", "_", feat)
                 save_path = os.path.join(
-                    is_dir, f"IS_Scatter_{safe_feat}_{best_method}.svg"
+                    is_dir, f"IS_Scatter_{safe_feat}_{best_method_file_label}.svg"
                 )
                 vis.save_and_show_pw(pw_obj=fig, file_path=save_path, show_plot=False)
 
-            if best_method not in ("SERRF", "RUV", "RUV-III") and (
-                best_pred_df is not None
-            ):
+            if best_method not in (
+                "SERRF",
+                "RUV-III",
+                "WaveICA 2.0",
+            ) and (best_pred_df is not None):
                 fig_pred = vis.plot_pred_baseline_is(
                     self,
                     best_pred_df,
@@ -1170,13 +1671,20 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                     actual_label,
                     method=best_method,
                 )
-                vis.save_and_close_fig(
-                    fig_pred, os.path.join(output_dir, f"Pred_Base_IS_{best_method}")
-                )
+                if fig_pred is not None:
+                    vis.save_and_show_pw(
+                        pw_obj=fig_pred,
+                        file_path=os.path.join(
+                            output_dir, f"Pred_Base_IS_{best_method_file_label}.svg"
+                        ),
+                        show_plot=False,
+                    )
             else:
-                logger.info(f"Bypassing IS baseline prediction for {best_method}.")
+                logger.info(
+                    f"Bypassing IS baseline prediction for {best_method_label}."
+                )
 
-        logger.success(f"Signal drift correction ({best_method}) completed.")
+        logger.success(f"Signal drift correction ({best_method_label}) completed.")
         return {k: v for k, v in self.stage_dfs.items() if k != "Original"}
 
     @property
@@ -1188,7 +1696,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         rsd_curr_full = self.attrs.get("qc_rsd_current_full")
         hist_oof = self.attrs.get("rsd_history_oof", {})
         hist_full = self.attrs.get("rsd_history_full", {})
-        method = self.attrs.get("base_est", "Unknown").upper()
+        method = _normalize_correction_method(self.attrs.get("base_est", "Unknown"))
 
         metrics = {
             "correction_status": stage,
@@ -1206,14 +1714,14 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         if rsd_base is not None and rsd_base > 0:
             if rsd_curr_oof is not None:
                 oof_reduction = (rsd_base - rsd_curr_oof) / rsd_base
-                metrics["overall_performance"][
-                    "relative_noise_reduction_oof"
-                ] = oof_reduction
+                metrics["overall_performance"]["relative_noise_reduction_oof"] = (
+                    oof_reduction
+                )
             if rsd_curr_full is not None:
                 full_reduction = (rsd_base - rsd_curr_full) / rsd_base
-                metrics["overall_performance"][
-                    "relative_noise_reduction_full"
-                ] = full_reduction
+                metrics["overall_performance"]["relative_noise_reduction_full"] = (
+                    full_reduction
+                )
 
         for stage_name in hist_oof.keys():
             if stage_name == "Original":
@@ -1239,10 +1747,23 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                     stage_params["n_corr_features"] = self.attrs.get(
                         "serrf_corr_features"
                     )
-                elif alg_identifier in ("RUV", "RUV-III"):
+                    stage_params["backend"] = self.attrs.get("serrf_backend")
+                    stage_params["batch_size"] = self.attrs.get("serrf_batch_size")
+                elif alg_identifier == "RUV-III":
                     stage_params["ruv_k"] = self.attrs.get("ruv_k")
+                elif alg_identifier == "WaveICA 2.0":
+                    stage_params["n_components"] = self.attrs.get("waveica_components")
+                    stage_params["cutoff"] = self.attrs.get("waveica_cutoff")
+                    stage_params["n_levels"] = self.attrs.get("waveica_levels")
+                    stage_params["spline_knots"] = self.attrs.get(
+                        "waveica_spline_knots"
+                    )
+                    stage_params["max_iter"] = self.attrs.get("waveica_max_iter")
 
-                if alg_identifier not in ("RUV", "RUV-III"):
+                if alg_identifier not in (
+                    "RUV-III",
+                    "WaveICA 2.0",
+                ):
                     stage_params["cv_folds"] = self.attrs.get("cv_folds")
 
             metrics["stages_executed"].append(
@@ -1314,7 +1835,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                 )
             )
         legend_elements.append(
-            Patch(facecolor=c_full, edgecolor="k", linewidth=1.0, label="Full Model")
+            Patch(facecolor=c_full, edgecolor="k", linewidth=1.0, label="Global model")
         )
 
         # Step 1: Bind the explicit handles to a temporary legend object
@@ -1323,7 +1844,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         # Step 2: Pass to the updated robust base formatter for styling
         self._format_single_legend(
             ax=current_ax,
-            title="Correction Mode",
+            group_title="Correction Mode",
             loc="center left",
             bbox_to_anchor=bbox_to_anchor,
         )
@@ -1407,10 +1928,10 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                 box_colors.append(c_full)
                 box_styles.append("-")
 
-                # Append asterisk strictly to the Full metric (e.g., RUV-III)
+                # Append asterisk strictly to the global model metric.
                 prefix = "* " if is_last else ""
                 medians_text.append(
-                    f"{prefix}{clean_name} (Full): {full_rsd.median() * 100:.2f}%"
+                    f"{prefix}{clean_name} (Global): {full_rsd.median() * 100:.2f}%"
                 )
 
             tick_pos.append(current_x)
@@ -1481,10 +2002,10 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
 
         return current_ax
 
-    def plot_corr_rsd_grid(
+    def plot_correction_dashboard(
         self, results_store: dict[str, dict[str, Any]], best_method: str
     ) -> object | None:
-        """Combine 5 RSD evaluation plots and a shared legend into 2x3 grid."""
+        """Combine AUTO RSD evaluation plots and a shared legend."""
         try:
             import patchworklib as pw
         except ImportError:
@@ -1493,15 +2014,16 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         pw.clear()
         bricks = {}
 
-        # Ensure row sums are exactly 10.0 for perfectly aligned layouts
-        # Row 1: 4.5 + 4.5 + 1.0 (Legend) = 10.0
-        # Row 2: 4.5 + 2.9 + 2.6 = 10.0
+        # Ensure row sums are exactly 10.2 for perfectly aligned layouts
+        # Row 1: 3.0 + 3.0 + 3.0 + 1.2 (Legend) = 10.2
+        # Row 2: 3.4 + 3.4 + 3.4 = 10.2
         width_map = {
-            "QC-RLSC": 4.2,
-            "QC-RFSC": 4.2,
-            "QC-SVR": 4.2,
-            "SERRF": 3.1,
-            "RUV": 2.7,
+            "SERRF": 3.0,
+            "RUV-III": 3.0,
+            "WaveICA 2.0": 3.0,
+            "QC-RLSC": 3.4,
+            "QC-RFSC": 3.4,
+            "QC-SVR": 3.4,
         }
 
         for method, res in results_store.items():
@@ -1509,7 +2031,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             stage_oof_dfs = res.get("stage_oof_dfs", {})
 
             fig_width = width_map.get(method, max(3.0, len(stage_dfs) * 1.0))
-            safe_label = f"rsd_box_{method.replace('-', '_')}"
+            safe_label = re.sub(r"[^A-Za-z0-9_]+", "_", f"rsd_box_{method}")
 
             b = pw.Brick(figsize=(fig_width, 4.0), label=safe_label)
 
@@ -1520,17 +2042,18 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                 show_legend=False,
             )
 
+            method_label = _format_correction_method_label(method)
             # Formatted to prefix the asterisk cleanly (e.g., "* SERRF")
-            title = f"* {method}" if method == best_method else method
+            title = f"* {method_label}" if method == best_method else method_label
             b.set_title(title)
             bricks[method] = b
 
         # Dynamically attach explicit handles legend to the 1.0-width slot
-        leg_brick = pw.Brick(figsize=(1.6, 4.0), label="shared_legend")
+        leg_brick = pw.Brick(figsize=(1.2, 4.0), label="shared_legend")
         self.plot_rsd_standalone_legend(ax=leg_brick, show_cv=True)
 
-        r1_keys = ["QC-RLSC", "QC-RFSC"]
-        r2_keys = ["QC-SVR", "SERRF", "RUV"]
+        r1_keys = ["SERRF", "RUV-III", "WaveICA 2.0"]
+        r2_keys = ["QC-RLSC", "QC-RFSC", "QC-SVR"]
 
         row1_bricks = [bricks[k] for k in r1_keys if k in bricks]
         row2_bricks = [bricks[k] for k in r2_keys if k in bricks]
@@ -1649,9 +2172,10 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             group_titles=group_titles,
             loc="upper left",
             start_bbox=(0.0, 0.95),
-            group_pad=0.04,
-            ncols=1,
-            col_pad=0.1,
+            row_gap=0.04,
+            layout_cols=1,
+            column_gap=0.1,
+            sublegend_cols=1,
         )
 
         # Prevent Patchworklib from discarding figure-level legends
@@ -1661,6 +2185,105 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             ax.figure.legends.clear()
 
         return ax
+
+    def _get_is_shared_ylim(
+        self,
+        stage_dfs: dict[str, core_classes.MetaboInt],
+        pred_df: core_classes.MetaboInt | None,
+        feat: str,
+        boundary: str,
+    ) -> tuple[float, float] | None:
+        """Calculate one y-axis range for one internal standard across stages."""
+        y_values: list[float] = []
+        boundary_helper = core_classes.MetaboInt()
+
+        for df in stage_dfs.values():
+            try:
+                plot_data = df.int_order_info(feat_type="IS").reset_index()
+            except Exception:
+                continue
+
+            if feat not in plot_data.columns:
+                continue
+
+            feature_values = pd.to_numeric(plot_data[feat], errors="coerce")
+            finite_values = feature_values[np.isfinite(feature_values)]
+            if finite_values.empty:
+                continue
+
+            y_values.extend(finite_values.astype(float).tolist())
+
+            try:
+                boundaries = boundary_helper.calculate_boundaries(
+                    finite_values, boundary
+                )
+            except Exception:
+                boundaries = ()
+            y_values.extend(
+                float(value) for value in boundaries if np.isfinite(float(value))
+            )
+
+        if pred_df is not None:
+            try:
+                pred_info = pred_df.int_order_info(feat_type="IS").reset_index()
+            except Exception:
+                pred_info = pd.DataFrame()
+
+            if feat in pred_info.columns:
+                pred_values = pd.to_numeric(pred_info[feat], errors="coerce")
+                finite_pred = pred_values[np.isfinite(pred_values)]
+                y_values.extend(finite_pred.astype(float).tolist())
+
+        if not y_values:
+            return None
+
+        finite_y = np.asarray(y_values, dtype=float)
+        finite_y = finite_y[np.isfinite(finite_y)]
+        if finite_y.size == 0:
+            return None
+
+        y_min = float(np.min(finite_y))
+        y_max = float(np.max(finite_y))
+        if np.isclose(y_min, y_max):
+            y_pad = max(abs(y_min) * 0.05, 1.0)
+        else:
+            y_pad = (y_max - y_min) * 0.08
+        return y_min - y_pad, y_max + y_pad
+
+    @staticmethod
+    def _get_is_shared_yticks(ylim: tuple[float, float] | None) -> np.ndarray | None:
+        """Resolve one set of y ticks shared by all IS scatter stages."""
+        if ylim is None:
+            return None
+
+        locator = mticker.MaxNLocator(nbins=4, min_n_ticks=3, steps=[1, 2, 2.5, 5, 10])
+        ticks = locator.tick_values(ylim[0], ylim[1])
+        ticks = ticks[np.isfinite(ticks)]
+        ticks = ticks[(ticks >= ylim[0]) & (ticks <= ylim[1])]
+
+        if ticks.size < 3:
+            ticks = np.linspace(ylim[0], ylim[1], num=4)
+
+        return ticks
+
+    @staticmethod
+    def _apply_is_shared_y_axis(
+        ax: plt.Axes,
+        ylim: tuple[float, float] | None,
+        yticks: np.ndarray | None,
+    ) -> None:
+        """Apply shared y limits, ticks, formatter, and tick styling."""
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        if yticks is not None:
+            ax.yaxis.set_major_locator(mticker.FixedLocator(yticks))
+
+        pu.change_axis_format(ax, "scientific notation", "y")
+        pu.change_fontsize(ax, axis=pu.DEFAULT_FORMAT_AXIS)
+        pu.change_weight(ax, axis=pu.DEFAULT_FORMAT_AXIS)
+        offset_text = ax.yaxis.get_offset_text()
+        offset_text.set_fontsize(pu.DEFAULT_AXIS_TICK_FONTSIZE)
+        offset_text.set_weight(pu.DEFAULT_AXIS_TICK_WEIGHT)
 
     def plot_is_int_order_scatter(
         self,
@@ -1693,6 +2316,13 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         for feat in valid:
             pw.clear()
             bricks = []
+            shared_ylim = self._get_is_shared_ylim(
+                stage_dfs=stage_dfs,
+                pred_df=pred_df,
+                feat=feat,
+                boundary=boundary,
+            )
+            shared_yticks = self._get_is_shared_yticks(shared_ylim)
 
             for stage_name, df in stage_dfs.items():
                 brick = pw.Brick(figsize=(6.5, 2.0))
@@ -1709,6 +2339,8 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                     ylabel=stage_name,
                     boundary=boundary,
                     ax=brick,
+                    ylim=shared_ylim,
+                    yticks=shared_yticks,
                 )
 
                 # Overlay prediction lines strictly for the Original stage
@@ -1725,6 +2357,10 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                             linestyle="-",
                             ax=brick,
                             zorder=3,
+                        )
+                    if shared_ylim is not None:
+                        self._apply_is_shared_y_axis(
+                            ax=brick, ylim=shared_ylim, yticks=shared_yticks
                         )
 
                 # Strip internal standard legends to favor the global brick
@@ -1769,6 +2405,8 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         ylabel: str,
         boundary: str,
         ax: plt.Axes | None = None,
+        ylim: tuple[float, float] | None = None,
+        yticks: np.ndarray | None = None,
     ) -> object:
         """Plot a single scatter panel with calculated boundaries."""
         if ax is None:
@@ -1806,6 +2444,12 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         ):
             current_ax.axhline(y, color="k", linestyle=linestyle)
 
+        self._apply_is_shared_y_axis(
+            ax=current_ax,
+            ylim=ylim,
+            yticks=yticks,
+        )
+
         # Enable append_stage=True and feed the precise pipeline stage attribute
         self._apply_standard_format(
             current_ax,
@@ -1815,7 +2459,11 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             append_stage=True,
             custom_stage=df.attrs.get("pipeline_stage", ""),
         )
-        pu.change_axis_format(current_ax, "scientific notation", "y")
+        self._apply_is_shared_y_axis(
+            ax=current_ax,
+            ylim=ylim,
+            yticks=yticks,
+        )
         return fig
 
     def plot_pred_baseline_is(
@@ -1829,14 +2477,28 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         qc_label: str,
         actual_label: str,
         method: str = "QC-RLSC",
-    ) -> plt.Figure:
-        """Reconstruct original multi-panel baseline overlay grid."""
-        num_cols = 2
-        num_rows = int(np.ceil(len(valid) / num_cols))
-        fig = plt.figure(figsize=(7.5 * num_cols, 2.5 * num_rows), layout="constrained")
+    ) -> object | None:
+        """Assemble IS fitted-baseline panels with a single shared legend."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            return None
+
+        if not valid:
+            return None
+
+        pw.clear()
+        plot_bricks = []
+        panel_cols = 1 if len(valid) == 1 else 2
+        panel_size = (6.5, 2.0)
+
+        pred_info = None
+        global_model_methods = {"SERRF", "RUV-III", "WAVEICA 2.0"}
+        if pred is not None and method.upper() not in global_model_methods:
+            pred_info = pred.int_order_info(feat_type="IS").reset_index()
 
         for n, feat in enumerate(valid):
-            ax = plt.subplot(num_rows, num_cols, n + 1)
+            ax = pw.Brick(figsize=panel_size, label=f"pred_base_is_{n}")
             plot_data = raw.int_order_info(feat_type="IS").reset_index()
 
             plot_data[sample_type] = pd.Categorical(
@@ -1861,9 +2523,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                 ax=ax,
             )
 
-            # [Fix]: Only overlay baseline if it exists (i.e., not SERRF)
-            if pred is not None and method.upper() != "SERRF":
-                pred_info = pred.int_order_info(feat_type="IS").reset_index()
+            if pred_info is not None and feat in pred_info.columns:
                 for batch_id in pred_info[batch].unique():
                     sns.lineplot(
                         data=pred_info[pred_info[batch] == batch_id],
@@ -1873,11 +2533,49 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
                         ax=ax,
                     )
             self._apply_standard_format(
-                ax, xlabel=inject_order, ylabel=feat, append_stage=False
+                ax,
+                title=feat,
+                xlabel=inject_order,
+                ylabel="Intensity",
+                append_stage=False,
             )
+            pu.change_axis_format(ax, "scientific notation", "y")
+            pu.change_fontsize(ax, axis="y")
+            pu.change_weight(ax, axis="y")
+            offset_text = ax.yaxis.get_offset_text()
+            offset_text.set_fontsize(pu.DEFAULT_AXIS_TICK_FONTSIZE)
+            offset_text.set_weight(pu.DEFAULT_AXIS_TICK_WEIGHT)
 
-            if n == len(valid) - 1:
-                self._format_multi_legends(ax=ax, group_titles=[sample_type, batch])
-            elif ax.get_legend():
-                ax.legend().remove()
-        return fig
+            if ax.get_legend():
+                ax.get_legend().remove()
+            plot_bricks.append(ax)
+
+        row_bricks = []
+        for row_start in range(0, len(plot_bricks), panel_cols):
+            row_items = plot_bricks[row_start : row_start + panel_cols]
+            if panel_cols == 2 and len(row_items) == 1:
+                spacer = pw.Brick(figsize=panel_size, label=f"pred_base_is_spacer_{n}")
+                spacer.axis("off")
+                row_items.append(spacer)
+
+            row = row_items[0]
+            for item in row_items[1:]:
+                row = row | item
+            row_bricks.append(row)
+
+        plot_grid = row_bricks[0]
+        for row in row_bricks[1:]:
+            plot_grid = plot_grid / row
+
+        legend_height = max(panel_size[1], len(row_bricks) * panel_size[1])
+        leg_brick = pw.Brick(figsize=(2.5, legend_height), label="pred_base_is_legend")
+        self._plot_standalone_is_legend(
+            ax=leg_brick,
+            sample_type=sample_type,
+            batch=batch,
+            qc_label=qc_label,
+            actual_label=actual_label,
+            has_baseline=pred_info is not None,
+        )
+
+        return plot_grid | leg_brick

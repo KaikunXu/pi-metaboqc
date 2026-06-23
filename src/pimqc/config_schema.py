@@ -11,7 +11,7 @@ modes consistent across the pipeline, reducing silent configuration errors.
 """
 
 from typing import List, Dict, Union, Literal, Optional
-from pydantic import BaseModel, Field, model_validator, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class MetaboIntConfig(BaseModel):
@@ -129,17 +129,60 @@ class FilterConfig(BaseModel):
 class CorrectorConfig(BaseModel):
     """Signal Drift Correction Schema."""
 
-    base_est: Literal["QC-SVR", "QC-RFSC", "QC-RLSC", "SERRF", "RUV", "Auto"] = "Auto"
+    base_est: Literal[
+        "QC-SVR",
+        "QC-RFSC",
+        "QC-RLSC",
+        "SERRF",
+        "RUV",
+        "RUV-III",
+        "WaveICA 2.0",
+        "WaveICA2",
+        "WAVEICA2",
+        "WaveICA2.0",
+        "WAVEICA2.0",
+        "WaveICA-2.0",
+        "WAVEICA-2.0",
+        "Auto",
+        "AUTO",
+    ] = "Auto"
     loess_frac: float = Field(default=0.3, gt=0.0, le=1.0)
     rf_n_tree: int = Field(default=500, gt=0, description="Trees for QC-RFSC")
     serrf_n_tree: int = Field(default=100, gt=0, description="Trees for SERRF")
     serrf_corr_features: int = Field(
         default=10, ge=0, description="Correlated features for SERRF"
     )
+    serrf_backend: Literal["threading", "loky"] = Field(
+        default="loky",
+        description=(
+            "Joblib backend for feature-wise SERRF correction. "
+            "'loky' is the default for CPU-bound sklearn workers."
+        ),
+    )
+    serrf_batch_size: Union[Literal["auto"], int] = Field(
+        default="auto",
+        description="Joblib task batch size for SERRF feature workers.",
+    )
     svr_kernel: Literal["rbf", "linear", "poly"] = "rbf"
     svr_c: float = Field(default=500.0, gt=0.0)
     svr_gamma: Union[Literal["scale", "auto"], float] = 1.0
     ruv_k: int = Field(default=5, gt=0, description="K-factors to remove for RUV-III")
+    waveica_components: int = Field(default=10, gt=0)
+    waveica_cutoff: float = Field(default=0.1, ge=0.0, le=1.0)
+    waveica_levels: Optional[int] = Field(default=None, gt=0)
+    waveica_spline_knots: int = Field(default=5, ge=3)
+    waveica_max_iter: int = Field(default=1000, gt=0)
+    regression_backend: Literal["threading", "loky"] = Field(
+        default="loky",
+        description=(
+            "Joblib backend for feature-wise QC-RFSC/QC-SVR regression. "
+            "'loky' is the default for CPU-bound sklearn workers."
+        ),
+    )
+    regression_batch_size: Union[Literal["auto"], int] = Field(
+        default="auto",
+        description="Joblib task batch size for feature-wise regression workers.",
+    )
     cv_folds: int = Field(
         default=5,
         ge=2,
@@ -148,25 +191,19 @@ class CorrectorConfig(BaseModel):
 
 
 class NormalizerConfig(BaseModel):
-    """Configuration for global normalization and log transform."""
+    """Configuration for global normalization."""
 
-    norm_method: Literal["PQN", "MDFC", "TIC", "Median", "VSN", "Quantile", "None"] = (
-        "PQN"
-    )
-    robust_log: bool = False
-
-    @model_validator(mode="after")
-    def validate_normalization_logic(self) -> "NormalizerConfig":
-        """Enforces exclusivity between VSN and manual robust log."""
-        method = self.norm_method.upper()
-        is_log = self.robust_log
-
-        if method == "VSN" and is_log:
-            raise ValueError(
-                "Incompatible parameters: VSN internally applies a "
-                "generalized log. 'robust_log' must be set to False."
-            )
-        return self
+    norm_method: Literal[
+        "Auto",
+        "ROBUST_LOG_ONLY",
+        "RobustLogOnly",
+        "PQN",
+        "MDFC",
+        "TIC",
+        "Median",
+        "VSN",
+        "Quantile",
+    ] = "Auto"
 
 
 class ImputerConfig(BaseModel):
@@ -174,9 +211,12 @@ class ImputerConfig(BaseModel):
 
     mnar_method: Literal["Row-wise", "Column-wise", "Global", "QRILC"] = "QRILC"
     mnar_fraction: float = Field(default=0.5, gt=0.0)
-    mar_method: Literal["Auto", "MinProb", "KNN", "LLS", "Median"] = "Auto"
+    mar_method: Literal["Auto", "MinProb", "KNN", "LLS", "BPCA", "Median"] = "Auto"
     knn_neighbors: int = Field(default=5, gt=0)
     lls_neighbors: int = Field(default=15, gt=0)
+    bpca_components: int = Field(default=2, gt=0)
+    bpca_max_iter: int = Field(default=100, gt=0)
+    bpca_tol: float = Field(default=1e-4, gt=0.0)
     sim_mask_ratio: float = Field(default=0.05, gt=0.0, lt=1.0)
 
 
