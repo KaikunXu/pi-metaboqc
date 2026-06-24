@@ -23,7 +23,7 @@ The initial uncorrected analytical dataset, acquired in **{{ meta.get('mode', 'U
 To ensure quantification fidelity and monitor system stability, a suite of **{{ feats.get('internal_standards_count') }}** internal standards (including {{ feats.get('internal_standards', []) | join(', ') }}) was systematically incorporated into the experimental design.
 {%- endif %}
 
-The sample cohort is strategically distributed across **{{ batch_info.get('batch_count', 1) }}** analytical batches{%- if batch_info.get('batch_count', 1) > 1 -%}, processed in the sequential order of **{{ batch_info.get('ordered_batches', []) | join(' → ') }}**{%- endif -%}. Specifically, the cohort consists of **{{ samps.get('actual', 'N/A') }}** actual biological samples, **{{ samps.get('qc', 'N/A') }}** pooled Quality Control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blank samples, establishing a robust foundation for downstream noise removal.
+The sample cohort is strategically distributed across **{{ batch_info.get('batch_count', 1) }}** analytical batches{%- if batch_info.get('batch_count', 1) > 1 -%}, processed in the sequential order of **{{ batch_info.get('ordered_batches', []) | join(' -> ') }}**{%- endif -%}. Specifically, the cohort consists of **{{ samps.get('actual', 'N/A') }}** actual biological samples, **{{ samps.get('qc', 'N/A') }}** pooled Quality Control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blank samples, establishing a robust foundation for downstream noise removal.
 
 Table: Detailed Batch and Injection Distribution
 {{ raw_dataset.get('batch_table', '') }}
@@ -116,21 +116,40 @@ Signal correction was applied, but QC RSD metrics are currently unavailable.
 {% endif %}
 
 ### 1.4 Low-quality Features Filtering
-
-{%- set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
+{% set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
 {%- set lq_ret = lq_params.get('feature_retention', {}) -%}
 {%- set lq_thresh = lq_params.get('thresholds', {}) -%}
-{%- set lq_drop = lq_params.get('filtering_breakdown', {}) %}
+{%- set lq_drop = lq_params.get('filtering_breakdown', {}) -%}
+{%- set lq_pre = lq_ret.get('pre_stage2', {}) -%}
+{%- set lq_post_blank = lq_ret.get('post_blank_check', {}) -%}
+{%- set lq_post_rsd = lq_ret.get('post_rsd_check', {}) -%}
+{%- set lq_pre_sum = lq_pre.get('mar_count', 0) + lq_pre.get('mnar_count', 0) -%}
+{%- set lq_post_blank_sum = lq_post_blank.get('mar_count', 0) + lq_post_blank.get('mnar_count', 0) -%}
+{%- set lq_post_rsd_sum = lq_post_rsd.get('mar_count', 0) + lq_post_rsd.get('mnar_count', 0) -%}
+{%- set lq_pre_total = lq_pre.get('total', lq_pre_sum) -%}
+{%- set lq_post_blank_total = lq_post_blank.get('total', lq_post_blank_sum) -%}
+{%- set lq_post_rsd_total = lq_post_rsd.get('total', lq_post_rsd_sum) -%}
+{%- if lq_pre_total == 0 and lq_pre_sum > 0 -%}
+    {%- set lq_pre_total = lq_pre_sum -%}
+{%- endif -%}
+{%- if lq_post_blank_total == 0 and lq_post_blank_sum > 0 -%}
+    {%- set lq_post_blank_total = lq_post_blank_sum -%}
+{%- endif -%}
+{%- if lq_post_rsd_total == 0 and lq_post_rsd_sum > 0 -%}
+    {%- set lq_post_rsd_total = lq_post_rsd_sum -%}
+{%- endif %}
 
-Following the initial missing value topological screening and signal correction, a stringent two-tier quality control module was implemented. This stage ensures that only robust, highly reproducible metabolic features with true biological origins are propagated to downstream statistical learning. A total of **{{ lq_ret.get('pre_stage2', {}).get('total', 'N/A') }}** features (**{{ lq_ret.get('pre_stage2', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('pre_stage2', {}).get('mnar_count', 'N/A') }}** MNAR) entered this stage.
+Following the initial missing value topological screening and signal correction, a stringent two-tier quality control module was implemented. This stage ensures that only robust, highly reproducible metabolic features with true biological origins are propagated to downstream statistical learning. A total of **{{ lq_pre_total }}** features (**{{ lq_pre.get('mar_count', 'N/A') }}** MAR and **{{ lq_pre.get('mnar_count', 'N/A') }}** MNAR) entered this stage.
 
 **Tier 1: Background Noise Elimination (Blank/QC Ratio Check)**
-To filter out ubiquitous environmental contaminants, solvent impurities, and instrument background noise, a Blank/QC intensity ratio check was applied. Features with an average Blank-to-QC ratio exceeding the threshold of {{ lq_thresh.get('blank_qc_ratio_tol', 'N/A') }} were discarded. This procedure pruned a total of **{{ lq_drop.get('dropped_by_blank', {}).get('total', 'N/A') }}** features. Post-Blank check, **{{ lq_ret.get('post_blank_check', {}).get('total', 'N/A') }}** features survived.
+
+To filter out ubiquitous environmental contaminants, solvent impurities, and instrument background noise, a Blank/QC intensity ratio check was applied. Features with an average Blank-to-QC ratio exceeding the threshold of {{ lq_thresh.get('blank_qc_ratio_tol', 'N/A') }} were discarded. This procedure pruned a total of **{{ lq_drop.get('dropped_by_blank', {}).get('total', 'N/A') }}** features. Post-Blank check, **{{ lq_post_blank_total }}** features survived.
 
 **Tier 2: Analytical Reproducibility Check (QC RSD Check)**
+
 Subsequently, to guarantee strict technical reproducibility, a Relative Standard Deviation (RSD) threshold of {{ lq_thresh.get('qc_rsd_tol', 'N/A') }} was applied to the pooled QC samples. Crucially, this step was executed exclusively on MAR features. MNAR features, which often represent genuine biological signals near the limit of detection (LOD), were exempted. Consequently, **{{ lq_drop.get('dropped_by_rsd', {}).get('total', 'N/A') }}** MAR features failed this reproducibility test.
 
-Ultimately, the low-quality feature filtering cascade yielded a robust, high-confidence matrix containing **{{ lq_ret.get('post_rsd_check', {}).get('total', 'N/A') }}** purified metabolic features (**{{ lq_ret.get('post_rsd_check', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('post_rsd_check', {}).get('mnar_count', 'N/A') }}** MNAR).
+Ultimately, the low-quality feature filtering cascade yielded a robust, high-confidence matrix containing **{{ lq_post_rsd_total }}** purified metabolic features (**{{ lq_post_rsd.get('mar_count', 'N/A') }}** MAR and **{{ lq_post_rsd.get('mnar_count', 'N/A') }}** MNAR).
 
 ![**Low-quality Features Filtering Summary**](../04_Quality_Filtered/Low-quality_Filtering_Dashboard.svg){.full-width-image}
 
@@ -180,13 +199,21 @@ The Jensen-Shannon Divergence (JSD) between the pre- and post-imputation distrib
 {%- set norm_params = normalization.get('pipeline_params', {}) -%}
 {%- set norm_strat = norm_params.get('strategies', {}) -%}
 {%- set norm_method = norm_strat.get('normalization_method', 'ROBUST_LOG_ONLY') | upper -%}
+{%- set requested_norm_method = norm_strat.get('requested_norm_method', norm_method) | upper -%}
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
 {%- set vsn_p = norm_params.get('vsn_parameters', {}) %}
 {%- set auto_sel = norm_params.get('auto_selection', {}) %}
+{%- set is_auto_norm = auto_sel or requested_norm_method == 'AUTO' %}
 
-Systematic analytical variations—such as global concentration disparities, dilution effects, and instrument sensitivity drift—were mitigated to ensure downstream statistical fidelity.
+Systematic analytical variation, including global concentration differences, dilution effects, and residual instrument sensitivity shifts, was addressed before downstream statistical analysis.
 
-{%- if norm_method == 'ROBUST_LOG_ONLY' %}
+{%- if is_auto_norm %}
+**Automatic Normalization Selection**
+The normalization strategy was selected automatically from predefined log-only, sample-wise scaling, distribution-alignment, and variance-stabilizing candidates. Each candidate was evaluated on a common log-like view using four label-independent criteria: QC RLE alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation. The robust Log2-only strategy served as the neutral reference for candidate scoring, while the sample structure term combined actual-sample neighborhood trustworthiness, distance-rank preservation, and distance-scale preservation. The selected strategy was **{{ auto_sel.get('selected_method', norm_method) | replace('_', ' ') }}**
+{%- if auto_sel.get('selected_score') is number %} with an overall score of **{{ auto_sel.get('selected_score') | round(3) }}**{%- endif -%}
+{%- if auto_sel.get('selection_margin') is number %} and a score margin of **{{ auto_sel.get('selection_margin') | round(3) }}**{%- endif %}.
+
+{%- elif norm_method == 'ROBUST_LOG_ONLY' %}
 **Robust Log2 Transformation Only**
 Sample-wise intensity correction was bypassed, and a robust Log2 transformation was applied to compress the dynamic range while preserving the original sample-wise scaling structure.
 
@@ -205,19 +232,13 @@ To mitigate analytical baseline fluctuations across the injection sequence, the 
 {%- if is_log %} Following sample calibration, a robust Log2 transformation was applied to stabilize variance.{%- endif %}
 {%- endif %}
 
-{%- if auto_sel %}
-**Automatic Normalization Selection**
-The normalization strategy was selected automatically from predefined log-only, sample-wise normalization, distribution-alignment, and variance-stabilizing candidates. Candidate methods were compared using four label-independent composite scores: QC precision change, RLE distributional-alignment change, MA intensity-bias change, and local sample-structure preservation. The selected strategy was **{{ auto_sel.get('selected_method', norm_method) }}**
-{%- if auto_sel.get('selected_score') is number %} with an overall score of **{{ auto_sel.get('selected_score') | round(3) }}**{%- endif %}
-.
+**Score-Aligned Normalization Diagnostics**
+{%- if is_auto_norm %}
+The normalization dashboard summarizes the automatic method ranking through a weighted score-contribution panel and then visualizes the diagnostic evidence supporting the selected method.
+{%- else %}
+Because a fixed normalization method was specified, no candidate-ranking score panel was generated. The normalization dashboard instead reports the same QC and sample structure diagnostics for the applied method.
 {%- endif %}
-
-**Global Distribution Fidelity**
-{%- set norm_qa = norm_params.get('quality_metrics', {}) -%}
-{%- set sim_qc = norm_qa.get('JSD', {}).get('QC', {}) -%}
-{%- set sim_sam = norm_qa.get('JSD', {}).get('Sample', {}) %}
-
-The structural integrity of the Pooled QC samples remained consistent, yielding a Before vs After JSD score of **{{ sim_qc.get('Before vs After', 'N/A') | round(3) if sim_qc.get('Before vs After') is number else sim_qc.get('Before vs After', 'N/A') }}**. Concurrently, actual biological samples exhibited a controlled density evolution with a JSD score of **{{ sim_sam.get('Before vs After', 'N/A') | round(3) if sim_sam.get('Before vs After') is number else sim_sam.get('Before vs After', 'N/A') }}**.
+Specifically, QC RLE alignment is evaluated using the median RLE center offset and RLE spread; QC variance stabilization is evaluated from the dependence between feature-wise mean QC log2 intensity and robust QC dispersion; QC structure distance improvement is assessed through distance-to-pooled-QC-centroid and QC-QC pairwise-distance changes; and sample structure preservation is monitored using actual-sample neighborhood trustworthiness together with distance-rank and distance-scale preservation diagnostics.
 
 {%- set suffix = norm_method -%}
 {%- if is_log and suffix | upper not in ['VSN', 'ROBUST_LOG_ONLY'] -%}

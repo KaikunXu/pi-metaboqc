@@ -8,6 +8,12 @@
 
 {%- set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
 {%- set lq_ret = lq_params.get('feature_retention', {}) -%}
+{%- set lq_final = lq_ret.get('post_rsd_check', {}) -%}
+{%- set lq_final_sum = lq_final.get('mar_count', 0) + lq_final.get('mnar_count', 0) -%}
+{%- set lq_final_total = lq_final.get('total', lq_final_sum) -%}
+{%- if lq_final_total == 0 and lq_final_sum > 0 -%}
+    {%- set lq_final_total = lq_final_sum -%}
+{%- endif -%}
 
 {%- set sc_perf = signal_correction.get('overall_performance', {}) -%}
 
@@ -18,7 +24,10 @@
 {%- set norm_params = normalization.get('pipeline_params', {}) -%}
 {%- set norm_strat = norm_params.get('strategies', {}) -%}
 {%- set norm_method = norm_strat.get('normalization_method', 'ROBUST_LOG_ONLY') | upper -%}
+{%- set requested_norm_method = norm_strat.get('requested_norm_method', norm_method) | upper -%}
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
+{%- set auto_sel = norm_params.get('auto_selection', {}) -%}
+{%- set is_auto_norm = auto_sel or requested_norm_method == 'AUTO' %}
 
 > **Date Generated:** {{ meta.get('date', 'Unknown') }}<br>
 {%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
@@ -33,7 +42,7 @@ The analytical dataset, acquired in **{{ meta.get('mode', 'Unknown') }}** ioniza
 **Feature Retention Summary:**
 
 * **Initial Acquisition:** **{{ feats.get('total', 'N/A') }}** raw mass spectral features.
-* **Final High-Fidelity Matrix:** Following stringent topological missing value screening, blank-ratio background elimination, and strict RSD reproducibility evaluation, **{{ lq_ret.get('post_rsd_check', {}).get('total', 'N/A') }}** genuine metabolic features (**{{ lq_ret.get('post_rsd_check', {}).get('mar_count', 'N/A') }}** MAR and **{{ lq_ret.get('post_rsd_check', {}).get('mnar_count', 'N/A') }}** MNAR) were successfully isolated for downstream statistical analysis.
+* **Final High-Fidelity Matrix:** Following stringent topological missing value screening, blank-ratio background elimination, and strict RSD reproducibility evaluation, **{{ lq_final_total }}** genuine metabolic features (**{{ lq_final.get('mar_count', 'N/A') }}** MAR and **{{ lq_final.get('mnar_count', 'N/A') }}** MNAR) were successfully isolated for downstream statistical analysis.
 
 ## 2. Signal Drift Correction, Imputation & Normalization
 
@@ -57,10 +66,12 @@ Subsequently, structurally missing values were reconstructed. MNAR components we
 {%- endif %}
 
 Finally, global quantitative refinement was performed
-{%- if norm_method == 'ROBUST_LOG_ONLY' %} using a robust Log2 transformation without sample-wise normalization.
-{%- elif norm_method == 'VSN' %} utilizing **VSN** to shift the data into a variance-stabilized generalized logarithmic space (glog), ensuring homoscedasticity for downstream multivariate modeling.
-{%- elif norm_method == 'QUANTILE' %} utilizing {% if is_log %}a robust Log2 transformation followed by {% endif %}**QUANTILE** normalization, ensuring homoscedasticity for downstream multivariate modeling.
-{%- else %} utilizing **{{ norm_method }}** normalization{% if is_log %} followed by a robust Log2 transformation{% endif %}, ensuring homoscedasticity for downstream multivariate modeling.
+{%- if is_auto_norm %} through automatic selection of **{{ auto_sel.get('selected_method', norm_method) | replace('_', ' ') }}** normalization from predefined candidates using QC RLE alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation criteria relative to the robust-log reference
+{%- if auto_sel.get('selected_score') is number %} (overall score: **{{ auto_sel.get('selected_score') | round(3) }}**){%- endif %}.
+{%- elif norm_method == 'ROBUST_LOG_ONLY' %} using a robust Log2 transformation without sample-wise normalization; QC RLE alignment, QC variance stabilization, QC structure distance, and sample structure preservation diagnostics were generated for review.
+{%- elif norm_method == 'VSN' %} utilizing **VSN** to shift the data into a generalized logarithmic space (glog), with normalization diagnostics focused on QC RLE alignment, QC variance stabilization, QC structure distance, and sample structure preservation.
+{%- elif norm_method == 'QUANTILE' %} utilizing {% if is_log %}a robust Log2 transformation followed by {% endif %}**QUANTILE** normalization, with score-aligned diagnostics used to inspect technical alignment and sample structure preservation.
+{%- else %} utilizing **{{ norm_method }}** normalization{% if is_log %} followed by a robust Log2 transformation{% endif %}, with score-aligned diagnostics used to inspect technical alignment and sample structure preservation.
 {%- endif %}
 
 ## 3. Global Data Quality Validation

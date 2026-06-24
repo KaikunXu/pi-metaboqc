@@ -852,7 +852,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
     @cached_property
     def quality_filtering_metrics(self) -> dict:
         """Extracts metrics from Stage-2 low-quality feature filtering."""
-        feature_counts = self.attrs.get("feature_counts", {})
+        feature_counts = self.stats.get("feature_counts", {})
 
         idx_dropped_blank = self.stats.get("idx_dropped_blank", pd.Index([]))
         idx_dropped_rsd = self.stats.get("idx_dropped_rsd", pd.Index([]))

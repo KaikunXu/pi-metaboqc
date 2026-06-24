@@ -5,12 +5,11 @@ Script purpose: Execute final normalization and diagnostic export.
 apply_normalization() selects fixed method-specific transformations:
 ROBUST_LOG_ONLY, TIC, Median, PQN, MDFC, log-first distribution alignment for
 Quantile, or intrinsic glog transformation for VSN. Auto mode ranks these
-log-like strategies with QC/RLE/MA change metrics and local
-sample-neighborhood preservation.
+log-like strategies with QC RLE alignment, QC variance stabilization, QC
+structure distance improvement, and sample structure preservation.
 execute_normalization() creates the output folder, drops blanks from the final
-target matrix, saves the normalized dataset, calculates normalization quality
-metrics, stores them on the returned MetaboInt object, and renders a dashboard
-aligned with the Auto scoring dimensions.
+target matrix, saves the normalized dataset and Auto summary, and renders a
+dashboard aligned with the Auto scoring dimensions.
 """
 
 import os
@@ -22,7 +21,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import scipy.stats as stats
 from scipy.optimize import minimize
-from scipy.spatial.distance import pdist
+from scipy.spatial.distance import pdist, squareform
 from sklearn.manifold import trustworthiness
 from numba import njit
 from joblib import Parallel, delayed
@@ -113,17 +112,19 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         "VSN": False,
     }
     _AUTO_SCORE_COMPONENT_WEIGHTS = {
-        "qc_precision_change_score": 0.35,
-        "rle_alignment_change_score": 0.30,
-        "ma_bias_change_score": 0.20,
-        "sample_neighborhood_score": 0.15,
+        "rle_alignment_change_score": 0.35,
+        "variance_stabilization_score": 0.25,
+        "qc_structure_change_score": 0.25,
+        "sample_structure_score": 0.15,
     }
     _AUTO_CENTERED_CHANGE_COMPONENTS = {
-        "qc_precision_change_score",
         "rle_alignment_change_score",
-        "ma_bias_change_score",
+        "variance_stabilization_score",
+        "qc_structure_change_score",
     }
-    _AUTO_NEIGHBORHOOD_SCORE_COL = "sample_neighborhood_score"
+    _AUTO_STRUCTURE_SCORE_COL = "sample_structure_score"
+    _SAMPLE_SCALE_LOG_RATIO_TOL = 0.25
+    _SAMPLE_SCALE_REL_DELTA_TOL = 0.25
     _AUTO_BASELINE_METHOD = "ROBUST_LOG_ONLY"
     _AUTO_CONSERVATIVE_ORDER = {
         "ROBUST_LOG_ONLY": 0,
@@ -183,213 +184,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             if hasattr(other, name):
                 setattr(self, name, copy.deepcopy(getattr(other, name)))
         return self
-
-    # ====================================================================
-    # Statistical Metrics for Normalization
-    # ====================================================================
-    @staticmethod
-    def calc_ma_arrays(
-        df_log: pd.DataFrame,
-        flat_positions: Optional[np.ndarray] = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Calculate flattened A and M values for MA-plot visualization.
-
-        M is the feature-wise mean-centered log2 intensity, not a biological
-        group-level fold change or a sample-to-QC fold change.
-
-        Args:
-            df_log: DataFrame of log2 intensities (Features x Samples).
-            flat_positions: Optional flattened matrix positions to evaluate.
-
-        Returns:
-            a_flat, m_flat: Flattened 1D numpy arrays with NaNs removed.
-        """
-        # A: The average log2 intensity for each feature (X-axis)
-        a_vals = df_log.mean(axis="columns")
-
-        # M: The deviation of each sample from that feature's mean (Y-axis)
-        m_df = df_log.sub(a_vals, axis="index")
-
-        if flat_positions is None:
-            # Optimized vectorized implementation using numpy repeat.
-            a_flat = np.repeat(a_vals.values, m_df.shape[1])
-            m_flat = m_df.values.flatten()
-        else:
-            total_size = m_df.shape[0] * m_df.shape[1]
-            selected_positions = np.asarray(flat_positions, dtype=np.int64)
-            selected_positions = selected_positions[
-                (selected_positions >= 0) & (selected_positions < total_size)
-            ]
-            row_idx = selected_positions // m_df.shape[1]
-            a_flat = a_vals.to_numpy(dtype=float)[row_idx]
-            m_flat = m_df.to_numpy(dtype=float, copy=False).ravel()[selected_positions]
-
-        # Filter out non-finite values to ensure metric and plot stability.
-        valid = np.isfinite(a_flat) & np.isfinite(m_flat)
-        return a_flat[valid], m_flat[valid]
-
-    @classmethod
-    def _select_ma_flat_positions(
-        cls,
-        log_df: pd.DataFrame,
-        max_points: Optional[int] = 50000,
-    ) -> np.ndarray | None:
-        """Select deterministic intensity-stratified flattened MA positions.
-
-        The returned flattened positions can be reused across candidate
-        normalization outputs or plotting calls.
-        """
-        if max_points is None:
-            return None
-
-        n_rows, n_cols = log_df.shape
-        total_size = n_rows * n_cols
-        if total_size <= max_points:
-            return None
-
-        a_vals = log_df.mean(axis="columns").to_numpy(dtype=float)
-        m_vals = log_df.sub(log_df.mean(axis="columns"), axis="index").to_numpy(
-            dtype=float,
-            copy=False,
-        )
-        a_flat = np.repeat(a_vals, n_cols)
-        m_flat = m_vals.ravel()
-        valid_positions = np.flatnonzero(np.isfinite(a_flat) & np.isfinite(m_flat))
-        if valid_positions.size <= max_points:
-            return None
-
-        ranked_positions = valid_positions[np.argsort(a_flat[valid_positions])]
-        selected_rank = np.linspace(
-            0,
-            ranked_positions.size - 1,
-            num=max_points,
-            dtype=np.int64,
-        )
-        return ranked_positions[selected_rank]
-
-    def calc_norm_quality_metrics(
-        self,
-        raw_obj: core_classes.MetaboInt,
-        norm_obj: core_classes.MetaboInt,
-        max_points: Optional[int] = 50000,
-    ) -> dict[str, Any]:
-        """Calculate normalization-related metrics for technical reporting.
-
-        Computes Jensen-Shannon Divergence (JSD), MA plot statistics
-        (MAD and binned trend bias), and eCDF alignment (Wasserstein, KS).
-        Supports statistical subsampling to prevent O(N log N) bottlenecks.
-        """
-        metrics = {
-            "JSD": {"QC": {}, "Sample": {}},
-            "MA": {"Before Norm": {}, "After Norm": {}},
-            "eCDF": {"Before Norm": {}, "After Norm": {}},
-        }
-
-        log_raw = su._extract_log2_target(raw_obj)
-        log_norm = su._extract_log2_target(norm_obj)
-
-        if log_raw is None or log_norm is None:
-            return metrics
-
-        log_raw, log_norm = self._align_paired_log_matrices(log_raw, log_norm)
-        if log_raw.empty or log_norm.empty:
-            return metrics
-
-        g_seed = self.attrs.get("global_seed", 123)
-
-        # ==========================================
-        # Robust inner closure for array subsampling
-        # ==========================================
-        def _subsample(
-            arr: np.ndarray, max_n: Optional[int] = max_points
-        ) -> np.ndarray:
-            """Safely subsample 1D arrays, bypassed if max_n is None."""
-            valid_arr = arr[~np.isnan(arr)]
-            # Skip subsampling if max_n is None or array is small enough
-            if max_n is not None and len(valid_arr) > max_n:
-                np.random.seed(g_seed)
-                return np.random.choice(valid_arr, size=max_n, replace=False)
-            return valid_arr
-
-        # 1. JSD Metrics (Density Alignment)
-        qc_cols = raw_obj._qc.columns.intersection(log_raw.columns)
-        sam_cols = raw_obj._actual_sample.columns.intersection(log_raw.columns)
-
-        if not qc_cols.empty:
-            raw_vals = _subsample(log_raw[qc_cols].values.flatten())
-            norm_vals = _subsample(log_norm[qc_cols].values.flatten())
-            qc_jsd = su.calc_jsd_similarity(raw_vals, norm_vals)
-
-            metrics["JSD"]["QC"]["Before vs After"] = (
-                float(qc_jsd.get("JSD", qc_jsd.get("jsd", np.nan)))
-                if isinstance(qc_jsd, dict)
-                else float(qc_jsd)
-            )
-
-        if not sam_cols.empty:
-            raw_vals = _subsample(log_raw[sam_cols].values.flatten())
-            norm_vals = _subsample(log_norm[sam_cols].values.flatten())
-            sam_jsd = su.calc_jsd_similarity(raw_vals, norm_vals)
-
-            metrics["JSD"]["Sample"]["Before vs After"] = (
-                float(sam_jsd.get("JSD", sam_jsd.get("jsd", np.nan)))
-                if isinstance(sam_jsd, dict)
-                else float(sam_jsd)
-            )
-
-        # 2. MA Plot & 3. eCDF Distribution Metrics
-        ma_eval_positions = self._select_ma_flat_positions(
-            log_df=log_raw,
-            max_points=max_points,
-        )
-        stages = [("Before Norm", log_raw), ("After Norm", log_norm)]
-        for stage, df in stages:
-            # ----------------------------------------------------
-            # MA Metrics (MAD, binned trend bias, Spearman rho)
-            # ----------------------------------------------------
-            ma_values = self._calc_ma_metric_values(
-                log_df=df,
-                max_points=max_points,
-                flat_positions=ma_eval_positions,
-            )
-            if np.isfinite(ma_values["ma_spread"]):
-                metrics["MA"][stage] = {
-                    "MAD": ma_values["ma_spread"],
-                    "TrendBias": ma_values["ma_trend_bias"],
-                    "Spearman": ma_values["ma_spearman"],
-                }
-
-            # ----------------------------------------------------
-            # eCDF Metrics (Wasserstein distance, KS statistic)
-            # ----------------------------------------------------
-            pooled = df.values.flatten()
-            pooled_ref = _subsample(pooled)  # Controlled by max_points
-
-            if len(pooled_ref) > 0:
-                w_dists, ks_dists = [], []
-
-                eval_cols = df.columns
-                # Subsample samples (columns) for global eCDF estimation
-                if max_points is not None and len(eval_cols) > 200:
-                    np.random.seed(g_seed)
-                    eval_cols = np.random.choice(eval_cols, 200, replace=False)
-
-                for col in eval_cols:
-                    vals = df[col].dropna().values
-                    if len(vals) > 0:
-                        # Subsample intra-sample features if exceptionally huge
-                        if max_points is not None and len(vals) > 10000:
-                            np.random.seed(g_seed)
-                            vals = np.random.choice(vals, 10000, replace=False)
-
-                        w_dists.append(stats.wasserstein_distance(vals, pooled_ref))
-                        ks_dists.append(stats.ks_2samp(vals, pooled_ref)[0])
-
-                metrics["eCDF"][stage] = {
-                    "Wasserstein": float(np.mean(w_dists)),
-                    "KS": float(np.mean(ks_dists)),
-                }
-        return metrics
 
     # ====================================================================
     # Lightweight Auto-normalization Metrics
@@ -455,6 +249,69 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         return float((before_val - after_val) / before_val)
 
     @staticmethod
+    def _practical_signed_change_lower_better(
+        before: object,
+        after: object,
+        min_abs_change: float = 0.0,
+        min_rel_change: float = 0.0,
+    ) -> float:
+        """Return signed relative change for a lower-is-better metric."""
+        before_val = MetaboIntNormalizer._finite_or_nan(before)
+        after_val = MetaboIntNormalizer._finite_or_nan(after)
+        if not np.isfinite(before_val) or not np.isfinite(after_val):
+            return float("nan")
+
+        signed_change = MetaboIntNormalizer._relative_change_lower_better(
+            before_val,
+            after_val,
+        )
+        if not np.isfinite(signed_change):
+            return float("nan")
+
+        abs_change = abs(before_val - after_val)
+        if abs_change < min_abs_change or abs(signed_change) < min_rel_change:
+            return 0.0
+        return float(signed_change)
+
+    @staticmethod
+    def _median_signed_change_lower_better(
+        before_values: pd.Series,
+        after_values: pd.Series,
+        min_abs_change: float = 0.0,
+        min_rel_change: float = 0.0,
+    ) -> float:
+        """Return median paired signed change for lower-is-better values."""
+        common_index = before_values.index.intersection(after_values.index)
+        if len(common_index) == 0:
+            return float("nan")
+
+        before_arr = before_values.loc[common_index].to_numpy(dtype=float)
+        after_arr = after_values.loc[common_index].to_numpy(dtype=float)
+        finite_mask = np.isfinite(before_arr) & np.isfinite(after_arr)
+        before_arr = before_arr[finite_mask]
+        after_arr = after_arr[finite_mask]
+        if before_arr.size == 0:
+            return float("nan")
+
+        denominator = np.maximum(before_arr, np.finfo(float).eps)
+        signed_change = (before_arr - after_arr) / denominator
+        abs_change = np.abs(before_arr - after_arr)
+        finite_change = np.isfinite(signed_change) & np.isfinite(abs_change)
+        signed_change = signed_change[finite_change]
+        abs_change = abs_change[finite_change]
+        if signed_change.size == 0:
+            return float("nan")
+
+        median_signed_change = float(np.nanmedian(signed_change))
+        median_abs_change = float(np.nanmedian(abs_change))
+        if (
+            median_abs_change < min_abs_change
+            or abs(median_signed_change) < min_rel_change
+        ):
+            return 0.0
+        return median_signed_change
+
+    @staticmethod
     def _weighted_mean_score(
         score_weights: list[tuple[float, float]],
         clip_values: bool = True,
@@ -499,48 +356,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         valid_feature = z_df.notna().sum(axis=1) >= 3
         return z_df.loc[valid_feature].fillna(0.0)
 
-    @staticmethod
-    def _calc_qc_centroid_residuals(
-        log_df: pd.DataFrame,
-        qc_cols: pd.Index,
-    ) -> pd.Series:
-        """Calculate QC-sample residuals against the pooled QC median profile."""
-        if len(qc_cols) < 2:
-            return pd.Series(dtype=float)
-
-        qc_log = log_df[qc_cols].astype(float)
-        qc_centroid = qc_log.median(axis=1, skipna=True)
-        residual = qc_log.sub(qc_centroid, axis=0)
-
-        residual_arr = residual.to_numpy(dtype=float, copy=True)
-        residual_arr[~np.isfinite(residual_arr)] = np.nan
-        sample_residual = np.sqrt(np.nanmedian(np.square(residual_arr), axis=0))
-
-        residual_series = pd.Series(sample_residual, index=qc_cols, dtype=float)
-        return residual_series.replace([np.inf, -np.inf], np.nan).dropna()
-
-    @classmethod
-    def _calc_qc_precision_values(
-        cls,
-        log_df: pd.DataFrame,
-        qc_cols: pd.Index,
-    ) -> dict[str, float]:
-        """Calculate pooled-QC centroid compactness metrics."""
-        metrics = {
-            "qc_centroid_median": float("nan"),
-            "qc_centroid_iqr": float("nan"),
-        }
-        if len(qc_cols) < 2:
-            return metrics
-
-        qc_residuals = cls._calc_qc_centroid_residuals(log_df, qc_cols)
-        if qc_residuals.empty:
-            return metrics
-
-        metrics["qc_centroid_median"] = cls._finite_or_nan(qc_residuals.median())
-        metrics["qc_centroid_iqr"] = cls._series_iqr(qc_residuals)
-        return metrics
-
     @classmethod
     def _calc_qc_rle_values(
         cls,
@@ -573,69 +388,197 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             metrics["rle_spread"] = cls._finite_or_nan(qc_rle_iqrs.median())
         return metrics
 
-    @staticmethod
-    def _calc_ma_trend_bias(
-        a_vals: np.ndarray,
-        m_vals: np.ndarray,
-        n_bins: int = 30,
-        min_bin_size: int = 20,
-    ) -> float:
-        """Estimate intensity-dependent MA trend amplitude from binned medians."""
-        a_arr = np.asarray(a_vals, dtype=float)
-        m_arr = np.asarray(m_vals, dtype=float)
-        finite_mask = np.isfinite(a_arr) & np.isfinite(m_arr)
-        a_arr = a_arr[finite_mask]
-        m_arr = m_arr[finite_mask]
-        if a_arr.size < max(3 * min_bin_size, 30):
-            return float("nan")
-
-        bin_count = min(n_bins, max(3, int(a_arr.size // min_bin_size)))
-        if bin_count < 3:
-            return float("nan")
-
-        order = np.argsort(a_arr)
-        trend_medians = []
-        for bin_idx in np.array_split(order, bin_count):
-            if bin_idx.size < 3:
-                continue
-            trend_medians.append(float(np.nanmedian(m_arr[bin_idx])))
-
-        if len(trend_medians) < 3:
-            return float("nan")
-        trend_arr = np.asarray(trend_medians, dtype=float)
-        trend_center = np.nanmedian(trend_arr)
-        return float(np.nanmedian(np.abs(trend_arr - trend_center)))
-
     @classmethod
-    def _calc_ma_metric_values(
+    def _calc_qc_structure_values(
         cls,
         log_df: pd.DataFrame,
-        max_points: Optional[int] = 50000,
-        flat_positions: Optional[np.ndarray] = None,
-    ) -> dict[str, float]:
-        """Calculate MA spread and binned-trend bias metrics."""
-        metrics = {
-            "ma_spread": float("nan"),
-            "ma_trend_bias": float("nan"),
-            "ma_spearman": float("nan"),
+        qc_cols: pd.Index,
+        max_features: Optional[int] = 5000,
+        seed: int = 123,
+    ) -> dict[str, Any]:
+        """Calculate multivariate QC compactness around the pooled-QC centroid."""
+        metrics: dict[str, Any] = {
+            "qc_centroid_distance": pd.Series(dtype=float),
+            "qc_centroid_distance_median": float("nan"),
+            "qc_centroid_distance_iqr": float("nan"),
+            "qc_pairwise_distance": pd.Series(dtype=float),
+            "qc_pairwise_distance_median": float("nan"),
         }
-        eval_positions = flat_positions
-        if eval_positions is None:
-            eval_positions = cls._select_ma_flat_positions(
-                log_df=log_df,
-                max_points=max_points,
-            )
-
-        a_vals, m_vals = cls.calc_ma_arrays(log_df, flat_positions=eval_positions)
-        if len(m_vals) == 0:
+        if len(qc_cols) < 3:
             return metrics
 
-        m_median = np.nanmedian(m_vals)
-        metrics["ma_spread"] = float(np.nanmedian(np.abs(m_vals - m_median)))
+        data_df = log_df.replace([np.inf, -np.inf], np.nan).astype(float)
+        finite_rows = np.isfinite(data_df.to_numpy()).any(axis=1)
+        data_df = data_df.loc[finite_rows]
+        if data_df.empty:
+            return metrics
 
-        metrics["ma_trend_bias"] = cls._calc_ma_trend_bias(a_vals, m_vals)
-        rho_val = stats.spearmanr(a_vals, m_vals)[0]
-        metrics["ma_spearman"] = cls._finite_or_nan(rho_val)
+        if max_features is not None and data_df.shape[0] > max_features:
+            rng = np.random.default_rng(seed)
+            keep_idx = rng.choice(data_df.index, size=max_features, replace=False)
+            data_df = data_df.loc[keep_idx]
+
+        z_df = cls._robust_feature_zscore(data_df)
+        qc_z = z_df[qc_cols.intersection(z_df.columns)]
+        if qc_z.shape[1] < 3 or qc_z.shape[0] < 2:
+            return metrics
+
+        qc_centroid = qc_z.median(axis=1, skipna=True)
+        qc_residual = qc_z.sub(qc_centroid, axis=0).to_numpy(dtype=float, copy=True)
+        qc_residual[~np.isfinite(qc_residual)] = np.nan
+        scale = np.sqrt(float(qc_z.shape[0]))
+        centroid_distance = np.sqrt(np.nanmean(np.square(qc_residual), axis=0))
+        centroid_distance = centroid_distance / max(scale, np.finfo(float).eps)
+        distance_series = pd.Series(
+            centroid_distance,
+            index=qc_z.columns,
+            dtype=float,
+        ).replace([np.inf, -np.inf], np.nan)
+        distance_series = distance_series.dropna()
+
+        if not distance_series.empty:
+            metrics["qc_centroid_distance"] = distance_series
+            metrics["qc_centroid_distance_median"] = cls._finite_or_nan(
+                distance_series.median()
+            )
+            metrics["qc_centroid_distance_iqr"] = cls._series_iqr(distance_series)
+
+        pairwise_dist = pdist(qc_z.T.to_numpy(dtype=float), metric="euclidean")
+        pairwise_dist = pairwise_dist / max(scale, np.finfo(float).eps)
+        pairwise_dist = pairwise_dist[np.isfinite(pairwise_dist)]
+        if pairwise_dist.size > 0:
+            metrics["qc_pairwise_distance"] = pd.Series(
+                pairwise_dist,
+                dtype=float,
+            )
+            metrics["qc_pairwise_distance_median"] = cls._finite_or_nan(
+                np.nanmedian(pairwise_dist)
+            )
+        return metrics
+
+    @classmethod
+    def _calc_qc_mean_dispersion_table(
+        cls,
+        log_df: pd.DataFrame,
+        qc_cols: pd.Index,
+    ) -> pd.DataFrame:
+        """Calculate feature-wise QC mean intensity and robust dispersion."""
+        qc_log = log_df[qc_cols.intersection(log_df.columns)].astype(float)
+        if qc_log.shape[1] < 3:
+            return pd.DataFrame(columns=["mean_intensity", "qc_dispersion"])
+
+        feature_mean = qc_log.mean(axis=1, skipna=True)
+        feature_center = qc_log.median(axis=1, skipna=True)
+        feature_mad = qc_log.sub(feature_center, axis=0).abs().median(axis=1)
+        feature_dispersion = feature_mad * 1.4826
+        stats_df = pd.DataFrame(
+            {
+                "mean_intensity": feature_mean,
+                "qc_dispersion": feature_dispersion,
+            }
+        ).replace([np.inf, -np.inf], np.nan)
+        stats_df = stats_df.dropna()
+        stats_df = stats_df[stats_df["qc_dispersion"] >= 0]
+        return stats_df
+
+    @classmethod
+    def _calc_qc_variance_trend(
+        cls,
+        stats_df: pd.DataFrame,
+        n_bins: int = 12,
+        min_bin_size: int = 10,
+    ) -> pd.DataFrame:
+        """Bin QC features by mean intensity and summarize dispersion trend."""
+        if stats_df.empty:
+            return pd.DataFrame(
+                columns=[
+                    "mean_intensity",
+                    "dispersion_median",
+                    "dispersion_q25",
+                    "dispersion_q75",
+                    "n_features",
+                ]
+            )
+
+        clean_df = stats_df.replace([np.inf, -np.inf], np.nan).dropna()
+        if clean_df.shape[0] < max(3 * min_bin_size, 30):
+            return pd.DataFrame()
+
+        bin_count = min(n_bins, max(3, int(clean_df.shape[0] // min_bin_size)))
+        if bin_count < 3:
+            return pd.DataFrame()
+
+        ordered_index = clean_df["mean_intensity"].sort_values().index
+        records = []
+        for bin_index in np.array_split(ordered_index.to_numpy(), bin_count):
+            bin_df = clean_df.loc[bin_index]
+            if bin_df.shape[0] < 3:
+                continue
+            records.append(
+                {
+                    "mean_intensity": cls._finite_or_nan(
+                        bin_df["mean_intensity"].median()
+                    ),
+                    "dispersion_median": cls._finite_or_nan(
+                        bin_df["qc_dispersion"].median()
+                    ),
+                    "dispersion_q25": cls._finite_or_nan(
+                        bin_df["qc_dispersion"].quantile(0.25)
+                    ),
+                    "dispersion_q75": cls._finite_or_nan(
+                        bin_df["qc_dispersion"].quantile(0.75)
+                    ),
+                    "n_features": int(bin_df.shape[0]),
+                }
+            )
+        return pd.DataFrame(records)
+
+    @classmethod
+    def _calc_qc_variance_stabilization_values(
+        cls,
+        log_df: pd.DataFrame,
+        qc_cols: pd.Index,
+    ) -> dict[str, Any]:
+        """Calculate QC mean-dispersion dependence for variance stabilization."""
+        metrics: dict[str, Any] = {
+            "feature_stats": pd.DataFrame(),
+            "trend": pd.DataFrame(),
+            "qc_dispersion_median": float("nan"),
+            "mean_variance_abs_rho": float("nan"),
+            "mean_variance_abs_slope": float("nan"),
+        }
+
+        stats_df = cls._calc_qc_mean_dispersion_table(log_df=log_df, qc_cols=qc_cols)
+        if stats_df.shape[0] < 3:
+            return metrics
+
+        metrics["feature_stats"] = stats_df
+        metrics["trend"] = cls._calc_qc_variance_trend(stats_df)
+        metrics["qc_dispersion_median"] = cls._finite_or_nan(
+            stats_df["qc_dispersion"].median()
+        )
+
+        rho_val = stats.spearmanr(
+            stats_df["mean_intensity"].to_numpy(dtype=float),
+            stats_df["qc_dispersion"].to_numpy(dtype=float),
+        )[0]
+        metrics["mean_variance_abs_rho"] = abs(cls._finite_or_nan(rho_val))
+
+        slope_df = stats_df[stats_df["qc_dispersion"] > 0].copy()
+        if slope_df.shape[0] >= 3:
+            x_vals = slope_df["mean_intensity"].to_numpy(dtype=float)
+            y_vals = np.log2(slope_df["qc_dispersion"].to_numpy(dtype=float))
+            finite_mask = np.isfinite(x_vals) & np.isfinite(y_vals)
+            if int(finite_mask.sum()) >= 3:
+                try:
+                    slope_val = stats.theilslopes(
+                        y_vals[finite_mask],
+                        x_vals[finite_mask],
+                    )[0]
+                except (ValueError, FloatingPointError):
+                    slope_val = float("nan")
+                metrics["mean_variance_abs_slope"] = abs(cls._finite_or_nan(slope_val))
+
         return metrics
 
     @classmethod
@@ -651,8 +594,10 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             "geometry": {
                 "raw_dist": np.array([], dtype=float),
                 "norm_dist": np.array([], dtype=float),
+                "sample_log2_distance_ratio": pd.Series(dtype=float),
                 "rank_loss": float("nan"),
                 "median_relative_delta": float("nan"),
+                "median_sample_log2_distance_ratio": float("nan"),
                 "neighborhood_trustworthiness": float("nan"),
                 "n_neighbors": float("nan"),
             },
@@ -706,6 +651,8 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             norm_geom_dist = pdist(norm_z.T.to_numpy(dtype=float), metric="euclidean")
             raw_geom_dist = raw_geom_dist / scale
             norm_geom_dist = norm_geom_dist / scale
+            raw_geom_dist_full = raw_geom_dist.copy()
+            norm_geom_dist_full = norm_geom_dist.copy()
 
             valid_geom = np.isfinite(raw_geom_dist) & np.isfinite(norm_geom_dist)
             raw_geom_dist = raw_geom_dist[valid_geom]
@@ -713,13 +660,30 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             if raw_geom_dist.size > 0:
                 denominator = np.maximum(np.abs(raw_geom_dist), np.finfo(float).eps)
                 relative_delta = np.abs(norm_geom_dist - raw_geom_dist) / denominator
+                raw_square = squareform(raw_geom_dist_full)
+                norm_square = squareform(norm_geom_dist_full)
+                ratio_square = np.log2(
+                    (norm_square + np.finfo(float).eps)
+                    / (raw_square + np.finfo(float).eps)
+                )
+                np.fill_diagonal(ratio_square, np.nan)
+                sample_distance_shift = pd.Series(
+                    np.nanmedian(ratio_square, axis=1),
+                    index=raw_z.columns,
+                    dtype=float,
+                ).replace([np.inf, -np.inf], np.nan)
+                sample_distance_shift = sample_distance_shift.dropna()
                 empty["geometry"] = {
                     "raw_dist": raw_geom_dist,
                     "norm_dist": norm_geom_dist,
+                    "sample_log2_distance_ratio": sample_distance_shift,
                     "rank_loss": cls._rank_loss_from_distances(
                         raw_geom_dist, norm_geom_dist
                     ),
                     "median_relative_delta": float(np.median(relative_delta)),
+                    "median_sample_log2_distance_ratio": cls._finite_or_nan(
+                        sample_distance_shift.median()
+                    ),
                     "neighborhood_trustworthiness": float("nan"),
                     "n_neighbors": float("nan"),
                 }
@@ -756,16 +720,22 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         """
         return su._extract_log2_target(norm_obj)
 
-    def _sample_structure_guardrail_metrics(
+    def _sample_structure_preservation_metrics(
         self,
         norm_obj: core_classes.MetaboInt,
         max_features: Optional[int] = 5000,
     ) -> dict[str, float]:
-        """Quantify local sample-neighborhood preservation without labels."""
+        """Quantify local sample structure preservation without labels."""
         metrics = {
             "robust_distance_rank_loss": float("nan"),
             "robust_distance_relative_delta": float("nan"),
-            "sample_neighborhood_trustworthiness": float("nan"),
+            "median_sample_log2_distance_ratio": float("nan"),
+            "sample_structure_trustworthiness": float("nan"),
+            "sample_structure_rank_preservation": float("nan"),
+            "sample_structure_scale_shift_preservation": float("nan"),
+            "sample_structure_scale_delta_preservation": float("nan"),
+            "sample_structure_scale_preservation": float("nan"),
+            "sample_structure_composite_preservation": float("nan"),
         }
 
         structure = self._calc_sample_structure_arrays(
@@ -782,8 +752,47 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         metrics["robust_distance_relative_delta"] = self._finite_or_nan(
             geom_metrics.get("median_relative_delta")
         )
-        metrics["sample_neighborhood_trustworthiness"] = self._finite_or_nan(
+        metrics["median_sample_log2_distance_ratio"] = self._finite_or_nan(
+            geom_metrics.get("median_sample_log2_distance_ratio")
+        )
+        metrics["sample_structure_trustworthiness"] = self._finite_or_nan(
             geom_metrics.get("neighborhood_trustworthiness")
+        )
+
+        rank_loss = self._finite_or_nan(metrics["robust_distance_rank_loss"])
+        if np.isfinite(rank_loss):
+            metrics["sample_structure_rank_preservation"] = float(
+                np.clip(1.0 - rank_loss, 0.0, 1.0)
+            )
+
+        median_log2_ratio = self._finite_or_nan(
+            metrics["median_sample_log2_distance_ratio"]
+        )
+        if np.isfinite(median_log2_ratio):
+            metrics["sample_structure_scale_shift_preservation"] = float(
+                np.exp(-abs(median_log2_ratio) / self._SAMPLE_SCALE_LOG_RATIO_TOL)
+            )
+
+        median_relative_delta = self._finite_or_nan(
+            metrics["robust_distance_relative_delta"]
+        )
+        if np.isfinite(median_relative_delta):
+            metrics["sample_structure_scale_delta_preservation"] = float(
+                np.exp(-median_relative_delta / self._SAMPLE_SCALE_REL_DELTA_TOL)
+            )
+
+        metrics["sample_structure_scale_preservation"] = self._weighted_mean_score(
+            [
+                (metrics["sample_structure_scale_shift_preservation"], 1.0),
+                (metrics["sample_structure_scale_delta_preservation"], 1.0),
+            ],
+        )
+        metrics["sample_structure_composite_preservation"] = self._weighted_mean_score(
+            [
+                (metrics["sample_structure_trustworthiness"], 0.50),
+                (metrics["sample_structure_rank_preservation"], 0.25),
+                (metrics["sample_structure_scale_preservation"], 0.25),
+            ],
         )
 
         return metrics
@@ -791,30 +800,36 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
     def calc_auto_norm_candidate_metrics(
         self,
         norm_obj: core_classes.MetaboInt,
-        max_points: Optional[int] = 50000,
-        ma_eval_positions: Optional[np.ndarray] = None,
     ) -> dict[str, float]:
         """Calculate component scores for Auto normalization."""
         metrics = {
-            "qc_centroid_median_before": float("nan"),
-            "qc_centroid_median_after": float("nan"),
-            "qc_centroid_iqr_before": float("nan"),
-            "qc_centroid_iqr_after": float("nan"),
             "rle_center_offset_before": float("nan"),
             "rle_center_offset_after": float("nan"),
             "rle_spread_before": float("nan"),
             "rle_spread_after": float("nan"),
-            "ma_spread_before": float("nan"),
-            "ma_spread_after": float("nan"),
-            "ma_trend_bias_before": float("nan"),
-            "ma_trend_bias_after": float("nan"),
+            "qc_dispersion_median_before": float("nan"),
+            "qc_dispersion_median_after": float("nan"),
+            "mean_variance_abs_rho_before": float("nan"),
+            "mean_variance_abs_rho_after": float("nan"),
+            "mean_variance_abs_slope_before": float("nan"),
+            "mean_variance_abs_slope_after": float("nan"),
+            "qc_structure_distance_before": float("nan"),
+            "qc_structure_distance_after": float("nan"),
+            "qc_pairwise_distance_before": float("nan"),
+            "qc_pairwise_distance_after": float("nan"),
             "robust_distance_rank_loss": float("nan"),
             "robust_distance_relative_delta": float("nan"),
-            "sample_neighborhood_trustworthiness": float("nan"),
-            "qc_precision_change_score": float("nan"),
+            "median_sample_log2_distance_ratio": float("nan"),
+            "sample_structure_trustworthiness": float("nan"),
+            "sample_structure_rank_preservation": float("nan"),
+            "sample_structure_scale_shift_preservation": float("nan"),
+            "sample_structure_scale_delta_preservation": float("nan"),
+            "sample_structure_scale_preservation": float("nan"),
+            "sample_structure_composite_preservation": float("nan"),
             "rle_alignment_change_score": float("nan"),
-            "ma_bias_change_score": float("nan"),
-            self._AUTO_NEIGHBORHOOD_SCORE_COL: float("nan"),
+            "variance_stabilization_score": float("nan"),
+            "qc_structure_change_score": float("nan"),
+            self._AUTO_STRUCTURE_SCORE_COL: float("nan"),
         }
 
         log_raw = self._extract_auto_eval_target(self)
@@ -832,35 +847,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             .intersection(log_norm.columns)
         )
         if len(qc_cols) >= 2:
-            qc_before = self._calc_qc_precision_values(log_raw, qc_cols)
-            qc_after = self._calc_qc_precision_values(log_norm, qc_cols)
-            metrics["qc_centroid_median_before"] = qc_before["qc_centroid_median"]
-            metrics["qc_centroid_median_after"] = qc_after["qc_centroid_median"]
-            metrics["qc_centroid_iqr_before"] = qc_before["qc_centroid_iqr"]
-            metrics["qc_centroid_iqr_after"] = qc_after["qc_centroid_iqr"]
-
-            metrics["qc_precision_change_score"] = (
-                MetaboIntNormalizer._weighted_mean_score(
-                    [
-                        (
-                            MetaboIntNormalizer._relative_change_lower_better(
-                                qc_before["qc_centroid_median"],
-                                qc_after["qc_centroid_median"],
-                            ),
-                            2.0,
-                        ),
-                        (
-                            MetaboIntNormalizer._relative_change_lower_better(
-                                qc_before["qc_centroid_iqr"],
-                                qc_after["qc_centroid_iqr"],
-                            ),
-                            1.0,
-                        ),
-                    ],
-                    clip_values=False,
-                )
-            )
-
             rle_before = self._calc_qc_rle_values(log_raw, qc_cols)
             rle_after = self._calc_qc_rle_values(log_norm, qc_cols)
             metrics["rle_center_offset_before"] = rle_before["rle_center_offset"]
@@ -872,16 +858,18 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 MetaboIntNormalizer._weighted_mean_score(
                     [
                         (
-                            MetaboIntNormalizer._relative_change_lower_better(
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
                                 rle_before["rle_center_offset"],
                                 rle_after["rle_center_offset"],
+                                min_rel_change=0.01,
                             ),
                             3.0,
                         ),
                         (
-                            MetaboIntNormalizer._relative_change_lower_better(
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
                                 rle_before["rle_spread"],
                                 rle_after["rle_spread"],
+                                min_rel_change=0.01,
                             ),
                             2.0,
                         ),
@@ -890,47 +878,121 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 )
             )
 
-        ma_before = self._calc_ma_metric_values(
-            log_raw,
-            max_points=max_points,
-            flat_positions=ma_eval_positions,
-        )
-        ma_after = self._calc_ma_metric_values(
-            log_norm,
-            max_points=max_points,
-            flat_positions=ma_eval_positions,
-        )
-        metrics["ma_spread_before"] = ma_before["ma_spread"]
-        metrics["ma_spread_after"] = ma_after["ma_spread"]
-        metrics["ma_trend_bias_before"] = ma_before["ma_trend_bias"]
-        metrics["ma_trend_bias_after"] = ma_after["ma_trend_bias"]
-        metrics["ma_bias_change_score"] = MetaboIntNormalizer._weighted_mean_score(
-            [
-                (
-                    MetaboIntNormalizer._relative_change_lower_better(
-                        ma_before["ma_spread"],
-                        ma_after["ma_spread"],
-                    ),
-                    7.0,
-                ),
-                (
-                    MetaboIntNormalizer._relative_change_lower_better(
-                        ma_before["ma_trend_bias"],
-                        ma_after["ma_trend_bias"],
-                    ),
-                    3.0,
-                ),
-            ],
-            clip_values=False,
-        )
+            qc_log_raw = log_raw[qc_cols].astype(float)
+            qc_log_norm = log_norm[qc_cols].astype(float)
+            var_before = self._calc_qc_variance_stabilization_values(
+                qc_log_raw,
+                qc_cols=qc_cols,
+            )
+            var_after = self._calc_qc_variance_stabilization_values(
+                qc_log_norm,
+                qc_cols=qc_cols,
+            )
+            metrics["qc_dispersion_median_before"] = var_before["qc_dispersion_median"]
+            metrics["qc_dispersion_median_after"] = var_after["qc_dispersion_median"]
+            metrics["mean_variance_abs_rho_before"] = var_before[
+                "mean_variance_abs_rho"
+            ]
+            metrics["mean_variance_abs_rho_after"] = var_after["mean_variance_abs_rho"]
+            metrics["mean_variance_abs_slope_before"] = var_before[
+                "mean_variance_abs_slope"
+            ]
+            metrics["mean_variance_abs_slope_after"] = var_after[
+                "mean_variance_abs_slope"
+            ]
+            metrics["variance_stabilization_score"] = (
+                MetaboIntNormalizer._weighted_mean_score(
+                    [
+                        (
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
+                                var_before["mean_variance_abs_rho"],
+                                var_after["mean_variance_abs_rho"],
+                                min_abs_change=0.01,
+                                min_rel_change=0.02,
+                            ),
+                            4.0,
+                        ),
+                        (
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
+                                var_before["mean_variance_abs_slope"],
+                                var_after["mean_variance_abs_slope"],
+                                min_abs_change=0.005,
+                                min_rel_change=0.02,
+                            ),
+                            4.0,
+                        ),
+                        (
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
+                                var_before["qc_dispersion_median"],
+                                var_after["qc_dispersion_median"],
+                                min_abs_change=0.001,
+                                min_rel_change=0.02,
+                            ),
+                            2.0,
+                        ),
+                    ],
+                    clip_values=False,
+                )
+            )
 
-        metrics.update(self._sample_structure_guardrail_metrics(norm_obj))
-        trustworthiness_score = self._finite_or_nan(
-            metrics["sample_neighborhood_trustworthiness"]
+        if len(qc_cols) >= 3:
+            qc_structure_before = self._calc_qc_structure_values(
+                log_raw,
+                qc_cols=qc_cols,
+                max_features=5000,
+                seed=int(self.attrs.get("global_seed", 123)),
+            )
+            qc_structure_after = self._calc_qc_structure_values(
+                log_norm,
+                qc_cols=qc_cols,
+                max_features=5000,
+                seed=int(self.attrs.get("global_seed", 123)),
+            )
+            metrics["qc_structure_distance_before"] = qc_structure_before[
+                "qc_centroid_distance_median"
+            ]
+            metrics["qc_structure_distance_after"] = qc_structure_after[
+                "qc_centroid_distance_median"
+            ]
+            metrics["qc_pairwise_distance_before"] = qc_structure_before[
+                "qc_pairwise_distance_median"
+            ]
+            metrics["qc_pairwise_distance_after"] = qc_structure_after[
+                "qc_pairwise_distance_median"
+            ]
+            metrics["qc_structure_change_score"] = (
+                MetaboIntNormalizer._weighted_mean_score(
+                    [
+                        (
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
+                                qc_structure_before["qc_centroid_distance_median"],
+                                qc_structure_after["qc_centroid_distance_median"],
+                                min_abs_change=0.005,
+                                min_rel_change=0.02,
+                            ),
+                            2.0,
+                        ),
+                        (
+                            MetaboIntNormalizer._practical_signed_change_lower_better(
+                                qc_structure_before["qc_pairwise_distance_median"],
+                                qc_structure_after["qc_pairwise_distance_median"],
+                                min_abs_change=0.005,
+                                min_rel_change=0.02,
+                            ),
+                            1.0,
+                        ),
+                    ],
+                    clip_values=False,
+                )
+            )
+
+        metrics.update(self._sample_structure_preservation_metrics(norm_obj))
+        sample_structure_preservation = self._finite_or_nan(
+            metrics["sample_structure_composite_preservation"]
         )
-        if np.isfinite(trustworthiness_score):
-            metrics[self._AUTO_NEIGHBORHOOD_SCORE_COL] = float(
-                0.5 * np.clip(trustworthiness_score, 0.0, 1.0)
+        if np.isfinite(sample_structure_preservation):
+            metrics[self._AUTO_STRUCTURE_SCORE_COL] = float(
+                0.5 * np.clip(sample_structure_preservation, 0.0, 1.0)
             )
         return metrics
 
@@ -997,7 +1059,7 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 clipped_scores = centered_scores.clip(lower=0.0, upper=1.0)
             else:
                 clipped_scores = score_values.clip(lower=0.0, upper=1.0)
-                if score_col == cls._AUTO_NEIGHBORHOOD_SCORE_COL:
+                if score_col == cls._AUTO_STRUCTURE_SCORE_COL:
                     clipped_scores = score_values.clip(lower=0.0, upper=0.5)
                     baseline_mask = ok_mask & score_df["method"].eq(
                         cls._AUTO_BASELINE_METHOD
@@ -1027,6 +1089,10 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         score_df.loc[scoreable_mask, "available_metric_weight"] = (
             overall_weight_sum.loc[scoreable_mask]
         )
+        baseline_scoreable_mask = scoreable_mask & score_df["method"].eq(
+            cls._AUTO_BASELINE_METHOD
+        )
+        score_df.loc[baseline_scoreable_mask, "auto_score"] = 0.5
 
         candidate_rank = score_df.loc[scoreable_mask].copy()
         candidate_rank["_conservative_order"] = candidate_rank["method"].map(
@@ -1060,10 +1126,10 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             "status",
             "selected",
             "auto_score",
-            "qc_precision_change_score",
             "rle_alignment_change_score",
-            "ma_bias_change_score",
-            cls._AUTO_NEIGHBORHOOD_SCORE_COL,
+            "variance_stabilization_score",
+            "qc_structure_change_score",
+            cls._AUTO_STRUCTURE_SCORE_COL,
             "selection_margin",
         ]
         summary = score_df.reindex(columns=summary_cols).copy()
@@ -1071,10 +1137,10 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
 
         for col in [
             "overall_score",
-            "qc_precision_change_score",
             "rle_alignment_change_score",
-            "ma_bias_change_score",
-            cls._AUTO_NEIGHBORHOOD_SCORE_COL,
+            "variance_stabilization_score",
+            "qc_structure_change_score",
+            cls._AUTO_STRUCTURE_SCORE_COL,
             "selection_margin",
         ]:
             summary[col] = pd.to_numeric(summary[col], errors="coerce")
@@ -1098,10 +1164,10 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             "status",
             "selected",
             "overall_score",
-            "qc_precision_change_score",
             "rle_alignment_change_score",
-            "ma_bias_change_score",
-            cls._AUTO_NEIGHBORHOOD_SCORE_COL,
+            "variance_stabilization_score",
+            "qc_structure_change_score",
+            cls._AUTO_STRUCTURE_SCORE_COL,
             "delta_vs_robust_log_only",
             "selection_margin",
         ]
@@ -1467,21 +1533,12 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
         """Evaluate fixed strategies and select the best normalization method."""
         logger.info(
             "Auto normalization evaluates fixed strategies on a common log-like "
-            "view using before-to-after QC/RLE/MA improvements and local "
-            "sample-neighborhood preservation."
+            "view using QC RLE, QC variance stabilization, QC structure, and "
+            "sample structure criteria."
         )
 
         records: list[dict[str, object]] = []
         candidate_outputs: dict[str, tuple[pd.DataFrame, dict[str, Any]]] = {}
-        log_raw_eval = self._extract_auto_eval_target(self)
-        if log_raw_eval is not None:
-            eval_cols = df_target.columns.intersection(log_raw_eval.columns, sort=False)
-            log_raw_eval = log_raw_eval.loc[:, eval_cols]
-        ma_eval_positions = (
-            self._select_ma_flat_positions(log_raw_eval, max_points=50000)
-            if log_raw_eval is not None
-            else None
-        )
 
         for method in self._AUTO_CANDIDATES:
             apply_external_log = self._uses_external_log_for_method(method)
@@ -1504,8 +1561,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 candidate_obj.attrs["pipeline_stage"] = "Normalization"
                 auto_metrics = self.calc_auto_norm_candidate_metrics(
                     candidate_obj,
-                    max_points=50000,
-                    ma_eval_positions=ma_eval_positions,
                 )
 
                 record = {
@@ -1636,11 +1691,6 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
                 "vsn_shift": self.attrs.get("vsn_shift", float("nan")),
             }
 
-        # Retrieve the comprehensive QA metrics from the data passport
-        quality_metrics = self.attrs.get("normalization_quality_metrics", {})
-        if quality_metrics:
-            metrics["quality_metrics"] = quality_metrics
-
         return metrics
 
     @iu._exe_time
@@ -1684,19 +1734,12 @@ class MetaboIntNormalizer(core_classes.MetaboInt):
             )
             logger.info(f"Auto normalization summary saved as: {summary_path}")
 
-        # 3. QA Metrics Engine
-        logger.info("Calculating normalization-related metrics...")
-        quality_metrics = self.calc_norm_quality_metrics(
-            raw_obj=self, norm_obj=clean_obj, max_points=50000
-        )
-        clean_obj.attrs["normalization_quality_metrics"] = quality_metrics
-
-        # 4. Visualization Phase (2-Stage)
+        # 3. Visualization Phase (2-Stage)
         logger.info("Generating diagnostic plots for normalization...")
         vis = MetaboVisualizerNormalizer(raw_obj=self, norm_obj=clean_obj)
 
         grid_path = None
-        fig_grid = vis.plot_normalization_summary_grid(metrics=quality_metrics)
+        fig_grid = vis.plot_normalization_summary_grid()
         if fig_grid:
             grid_path = os.path.join(
                 output_dir, f"Normalization_Dashboard_{suffix}.svg"
@@ -1729,6 +1772,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
     def plot_auto_selection_stacked_bar(
         self,
         auto_summary: list[dict[str, Any]] | pd.DataFrame | None = None,
+        figsize: tuple[float, float] = (4.0, 4.0),
     ) -> object | None:
         """Plot Auto normalization weighted score components as stacked bars."""
         if auto_summary is None:
@@ -1748,23 +1792,25 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             return None
 
         score_cols = [
-            "qc_precision_change_score",
             "rle_alignment_change_score",
-            "ma_bias_change_score",
-            "sample_neighborhood_score",
+            "variance_stabilization_score",
+            "qc_structure_change_score",
+            "sample_structure_score",
         ]
         label_map = {
-            "qc_precision_change_score": "QC precision change",
-            "rle_alignment_change_score": "RLE alignment change",
-            "ma_bias_change_score": "MA bias change",
-            "sample_neighborhood_score": "Sample neighborhood",
+            "rle_alignment_change_score": "QC RLE alignment change",
+            "variance_stabilization_score": "QC variance stabilization",
+            "qc_structure_change_score": "QC structure distance change",
+            "sample_structure_score": "Sample structure preservation",
         }
         contribution_weights = MetaboIntNormalizer._AUTO_SCORE_COMPONENT_WEIGHTS
         color_map = {
-            "qc_precision_change_score": "tab:red",
-            "rle_alignment_change_score": "#f2a6a6",
-            "ma_bias_change_score": "#595959",
-            "sample_neighborhood_score": "#bdbdbd",
+            "rle_alignment_change_score": "tab:red",
+            "variance_stabilization_score": pu.get_equivalent_hex(
+                "tab:red", alpha=0.67
+            ),
+            "qc_structure_change_score": pu.get_equivalent_hex("tab:red", alpha=0.33),
+            "sample_structure_score": "#bdbdbd",
         }
         bar_edgecolor = "k"
         bar_linewidth = 0.5
@@ -1833,7 +1879,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
                 for contribution_col in contribution_cols:
                     plot_df.loc[idx, contribution_col] *= scale_factor
 
-        ax = pw.Brick(figsize=(4.0, 4.0), label="auto_norm_stacked_bar")
+        ax = pw.Brick(figsize=figsize, label="auto_norm_stacked_bar")
         y_pos = np.arange(len(plot_df))
         left = np.zeros(len(plot_df), dtype=float)
 
@@ -1962,109 +2008,6 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             ),
         )
 
-    def _plot_qc_centroid_residuals(
-        self, ax: plt.Axes | None = None, max_points: int = 50000
-    ) -> plt.Figure | plt.Axes:
-        """Plot QC-sample compactness against the pooled QC centroid."""
-        if ax is None:
-            fig, current_ax = plt.subplots(figsize=(4, 4))
-        else:
-            current_ax = ax
-            fig = current_ax.figure
-
-        plot_records = []
-        stats_lines = []
-        for label, obj in self.stages:
-            log_d = su._extract_log2_target(obj)
-            if log_d is None or log_d.empty:
-                continue
-
-            qc_cols = obj._qc.columns.intersection(log_d.columns)
-            if len(qc_cols) < 2:
-                continue
-
-            qc_residuals = MetaboIntNormalizer._calc_qc_centroid_residuals(
-                log_d, qc_cols
-            )
-            if qc_residuals.empty:
-                continue
-
-            qc_iqr = qc_residuals.quantile(0.75) - qc_residuals.quantile(0.25)
-            stats_lines.append(
-                f"{label.replace(' Norm', '')}: {qc_residuals.median():.3f} / {qc_iqr:.3f}"
-            )
-
-            if len(qc_residuals) > max_points:
-                qc_residuals = qc_residuals.sample(
-                    n=max_points,
-                    random_state=int(self.norm.attrs.get("global_seed", 123)),
-                )
-
-            plot_records.append(
-                pd.DataFrame(
-                    {
-                        "Stage": label,
-                        "QC centroid residual": qc_residuals.to_numpy(),
-                    }
-                )
-            )
-
-        if plot_records:
-            plot_df = pd.concat(plot_records, ignore_index=True)
-            sns.boxplot(
-                data=plot_df,
-                x="Stage",
-                y="QC centroid residual",
-                hue="Stage",
-                order=["Before Norm", "After Norm"],
-                hue_order=["Before Norm", "After Norm"],
-                palette=self.pal,
-                showfliers=False,
-                ax=current_ax,
-                width=0.56,
-                linewidth=1.2,
-                legend=False,
-            )
-            sns.stripplot(
-                data=plot_df,
-                x="Stage",
-                y="QC centroid residual",
-                hue="Stage",
-                order=["Before Norm", "After Norm"],
-                hue_order=["Before Norm", "After Norm"],
-                palette=self.pal,
-                dodge=False,
-                jitter=0.12,
-                alpha=0.65,
-                size=3.0,
-                edgecolor="k",
-                linewidth=0.3,
-                ax=current_ax,
-                legend=False,
-                zorder=4,
-            )
-        else:
-            current_ax.text(
-                0.5,
-                0.5,
-                "Insufficient QC data",
-                transform=current_ax.transAxes,
-                ha="center",
-                va="center",
-                fontsize=12,
-            )
-
-        note_lines = ["Median / IQR", *stats_lines] if stats_lines else []
-        self._add_metric_note(current_ax, note_lines, loc="upper right")
-        self._apply_standard_format(
-            ax=current_ax,
-            title="Pooled QC Precision",
-            xlabel="Pipeline Stage",
-            ylabel="QC centroid residual",
-            append_stage=False,
-        )
-        return fig if ax is None else current_ax
-
     def _plot_qc_rle_boxplot(
         self, ax: plt.Axes | None = None, max_points: int = 50000
     ) -> plt.Figure | plt.Axes:
@@ -2144,6 +2087,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             plot_df = pd.DataFrame(plot_records)
             metric_order = ["RLE center offset", "RLE spread"]
             stage_order = ["Before Norm", "After Norm"]
+            note_lines = ["Relative change"]
             x_base = np.arange(len(metric_order), dtype=float)
             bar_width = 0.34
             offsets = {
@@ -2151,6 +2095,8 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
                 "After Norm": bar_width / 2,
             }
             bar_label_records = []
+            bar_top_lookup: dict[tuple[str, str], float] = {}
+            bar_label_top_lookup: dict[str, float] = {}
 
             for stage in stage_order:
                 stage_df = plot_df[plot_df["Stage"].eq(stage)].set_index("Metric")
@@ -2172,6 +2118,9 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
                     values.append(value)
                     lower_errors.append(lower_error)
                     upper_errors.append(upper_error)
+                    bar_top_lookup[(metric, stage)] = (
+                        value + upper_error if np.isfinite(value) else 0.0
+                    )
 
                 bar_container = current_ax.bar(
                     x_base + offsets[stage],
@@ -2181,7 +2130,6 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
                     color=self.pal[stage],
                     edgecolor="k",
                     linewidth=1.0,
-                    alpha=0.78,
                     label=stage,
                     zorder=3,
                     error_kw={
@@ -2200,52 +2148,117 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
                 ):
                     bar_label_records.append(
                         {
+                            "metric": metric,
+                            "stage": stage,
                             "x": patch.get_x() + patch.get_width() / 2.0,
                             "value": value,
                             "y": value + upper_error,
                         }
                     )
 
+            current_ax.legend(loc="best")
+            self._format_single_legend(
+                ax=current_ax,
+                loc="best",
+                bbox_to_anchor=None,
+                group_title="Stage",
+                legend_cols=1,
+            )
+
             y_max = float(np.nanmax(plot_df[["Value", "Q75"]].to_numpy(dtype=float)))
-            y_upper = y_max * 1.35 if y_max > 0 else 1.0
+            y_upper = y_max * 1.18 if y_max > 0 else 1.0
             current_ax.set_ylim(0, y_upper)
-            label_offset = y_upper * 0.025
+            label_offset = y_upper * 0.018
             for label_record in bar_label_records:
                 value = MetaboIntNormalizer._finite_or_nan(label_record["value"])
                 if not np.isfinite(value):
                     continue
+                metric = str(label_record["metric"])
+                inside_bar = value > y_upper * 0.12
+                if inside_bar:
+                    text_y = max(value - y_upper * 0.035, value * 0.88)
+                    va = "top"
+                    text_color = "white"
+                    label_top = value
+                else:
+                    text_y = label_record["y"] + label_offset
+                    va = "bottom"
+                    text_color = "0.15"
+                    label_top = text_y + y_upper * 0.025
                 current_ax.text(
                     label_record["x"],
-                    label_record["y"] + label_offset,
+                    text_y,
                     f"{value:.3f}",
                     ha="center",
-                    va="bottom",
+                    va=va,
                     fontsize=9,
-                    color="0.15",
+                    color=text_color,
                     zorder=4,
+                )
+                bar_label_top_lookup[metric] = max(
+                    bar_label_top_lookup.get(metric, 0.0),
+                    label_top,
                 )
             current_ax.set_xlim(-0.5, len(metric_order) - 0.5)
             current_ax.set_xticks(x_base)
             current_ax.set_xticklabels(["RLE center\noffset", "RLE\nspread"])
 
+            metric_note_labels = {
+                "RLE center offset": "Center",
+                "RLE spread": "Spread",
+            }
+            for metric in metric_order:
+                before_subset = plot_df[
+                    plot_df["Metric"].eq(metric) & plot_df["Stage"].eq("Before Norm")
+                ]["Value"]
+                after_subset = plot_df[
+                    plot_df["Metric"].eq(metric) & plot_df["Stage"].eq("After Norm")
+                ]["Value"]
+                before_value = MetaboIntNormalizer._finite_or_nan(
+                    before_subset.iloc[0] if not before_subset.empty else np.nan
+                )
+                after_value = MetaboIntNormalizer._finite_or_nan(
+                    after_subset.iloc[0] if not after_subset.empty else np.nan
+                )
+                rel_reduction = (
+                    100.0
+                    * MetaboIntNormalizer._relative_change_lower_better(
+                        before_value, after_value
+                    )
+                )
+                if np.isfinite(rel_reduction):
+                    note_lines.append(
+                        f"{metric_note_labels[metric]}: {rel_reduction:.1f}%"
+                    )
+
             bracket_top = y_upper
+            bracket_height = y_upper * 0.018
+            bracket_gap = y_upper * 0.045
             for metric_idx, metric in enumerate(metric_order):
                 p_val = self._paired_wilcoxon_pvalue(
                     sample_metric_values.get("Before Norm", {}).get(metric),
                     sample_metric_values.get("After Norm", {}).get(metric),
                 )
-                y_level = y_max * (1.12 + 0.10 * metric_idx)
-                y_level = max(y_level, y_upper * (0.70 + 0.08 * metric_idx))
-                bracket_top = max(bracket_top, y_level * 1.08)
+                local_bar_top = max(
+                    bar_top_lookup.get((metric, "Before Norm"), 0.0),
+                    bar_top_lookup.get((metric, "After Norm"), 0.0),
+                    bar_label_top_lookup.get(metric, 0.0),
+                )
+                y_level = local_bar_top + bracket_gap
+                bracket_top = max(
+                    bracket_top,
+                    y_level + bracket_height + y_upper * 0.05,
+                )
                 self._add_pairwise_significance(
                     ax=current_ax,
                     x_left=x_base[metric_idx] + offsets["Before Norm"],
                     x_right=x_base[metric_idx] + offsets["After Norm"],
                     y=y_level,
                     text=self._pvalue_to_stars(p_val),
-                    height=y_upper * 0.025,
+                    height=bracket_height,
                 )
             current_ax.set_ylim(0, bracket_top)
+            self._add_metric_note(current_ax, note_lines, loc="lower right")
         else:
             current_ax.text(
                 0.5,
@@ -2259,9 +2272,9 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
 
         self._apply_standard_format(
             ax=current_ax,
-            title="QC RLE Alignment",
-            xlabel="QC RLE Metric",
-            ylabel="Metric Value",
+            title="QC RLE Alignment Change",
+            xlabel="QC RLE metric",
+            ylabel="Median value (IQR)",
             append_stage=False,
         )
         return fig if ax is None else current_ax
@@ -2341,40 +2354,6 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             clip_on=False,
             zorder=6,
         )
-
-    def _plot_stage_legend_atom(self, ax: plt.Axes | None = None) -> plt.Axes:
-        """Render a standalone legend for before/after normalization stages."""
-        import matplotlib.patches as mpatches
-
-        if ax is None:
-            _, ax = plt.subplots(figsize=(0.9, 4.0))
-
-        ax.axis("off")
-        handles = [
-            mpatches.Patch(
-                facecolor=self.pal["Before Norm"],
-                edgecolor="k",
-                linewidth=1.0,
-                alpha=0.78,
-                label="Before Norm",
-            ),
-            mpatches.Patch(
-                facecolor=self.pal["After Norm"],
-                edgecolor="k",
-                linewidth=1.0,
-                alpha=0.78,
-                label="After Norm",
-            ),
-        ]
-        ax.legend(handles=handles, loc="center", bbox_to_anchor=(0.5, 0.5))
-        self._format_single_legend(
-            ax=ax,
-            loc="center",
-            bbox_to_anchor=(0.5, 0.5),
-            group_title="Stage",
-            legend_cols=1,
-        )
-        return ax
 
     def _plot_density_kde(
         self,
@@ -2461,145 +2440,51 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             return fig
         return ax_qc, ax_sample
 
-    def _plot_ma_scatter(
-        self,
-        metrics: dict[str, Any] | None = None,
-        ax_before: plt.Axes | None = None,
-        ax_after: plt.Axes | None = None,
-        cax: plt.Axes | None = None,
-        max_plot_points: Optional[int] = 200000,
-    ) -> plt.Figure | tuple[plt.Axes, plt.Axes]:
-        """Plot true MA hexbin scatter using a continuous density scale."""
-        return_fig = False
-        if ax_before is None or ax_after is None:
-            fig, (ax_before, ax_after) = plt.subplots(1, 2, figsize=(8, 4))
-            return_fig = True
-
-        color_map = pu.custom_linear_cmap(
-            color_list=["white", "tab:red"], n_colors=256, cmin=0.1, cmax=1.0
-        )
-
-        stages_data = []
-        all_a_vals = []
-
-        for label, obj in self.stages:
-            log_d = su._extract_log2_target(obj)
-            if log_d is not None and not log_d.empty:
-                ma_plot_positions = MetaboIntNormalizer._select_ma_flat_positions(
-                    log_df=log_d,
-                    max_points=max_plot_points,
-                )
-                a_vals, m_vals = MetaboIntNormalizer.calc_ma_arrays(
-                    log_d,
-                    flat_positions=ma_plot_positions,
-                )
-                stages_data.append((label, a_vals, m_vals))
-                all_a_vals.extend(a_vals)
-            else:
-                stages_data.append((label, [], []))
-
-        if all_a_vals:
-            a_min, a_max = np.nanmin(all_a_vals), np.nanmax(all_a_vals)
-            margin_x = (a_max - a_min) * 0.08
-            extent = (a_min - margin_x, a_max + margin_x, -5, 5)
-        else:
-            extent = (0, 25, -5, 5)
-
-        hb_list = []
-        for i, (label, x_val, y_val) in enumerate(stages_data):
-            current_ax = ax_before if i == 0 else ax_after
-            stage_title = {
-                "Before Norm": "Before Normalization",
-                "After Norm": "After Normalization",
-            }.get(label, label)
-            if len(x_val) > 0:
-                hb = current_ax.hexbin(
-                    x=x_val,
-                    y=y_val,
-                    gridsize=80,
-                    extent=extent,
-                    cmap=color_map,
-                    mincnt=1,
-                    bins="log",
-                    linewidths=0,
-                    alpha=0.95,
-                )
-                hb_list.append(hb)
-
-                if metrics and "MA" in metrics and label in metrics["MA"]:
-                    m_dict = metrics["MA"][label]
-                    annot_text = (
-                        f"Spread (MAD): {m_dict.get('MAD', 0):.3f}\n"
-                        f"Trend bias: {m_dict.get('TrendBias', 0):.3f}"
-                    )
-                    current_ax.text(
-                        0.96,
-                        0.02,
-                        annot_text,
-                        transform=current_ax.transAxes,
-                        fontsize=9,
-                        verticalalignment="bottom",
-                        horizontalalignment="right",
-                        clip_on=False,
-                        bbox=dict(
-                            boxstyle="round,pad=0.4",
-                            facecolor="white",
-                            edgecolor="none",
-                            alpha=0.6,
-                        ),
-                    )
-
-            current_ax.axhline(0, color="k", linestyle="--", linewidth=1.5)
-
-            self._apply_standard_format(
-                ax=current_ax,
-                title=f"MA Plot ({stage_title})",
-                xlabel="Average Log2 Intensity (A)",
-                ylabel="Mean-centered Log2 Intensity (M)",
-                append_stage=False,
-            )
-            current_ax.set_xlim(extent[0], extent[1])
-            current_ax.set_ylim(extent[2], extent[3])
-
-        if cax is not None and hb_list:
-            cb = plt.colorbar(hb_list[-1], cax=cax)
-            cb.set_label("Log10(Count)")
-            cb.outline.set_linewidth(1.0)
-
-        if return_fig:
-            plt.tight_layout()
-            return fig
-        return ax_before, ax_after
-
-    def _plot_structure_scatter(
+    def _plot_qc_variance_stabilization(
         self,
         ax: plt.Axes | None = None,
-        raw_dist: np.ndarray | None = None,
-        norm_dist: np.ndarray | None = None,
-        title: str = "Sample Structure Preservation",
-        xlabel: str = "Raw sample distance",
-        ylabel: str = "Normalized sample distance",
-        note_lines: list[str] | None = None,
-        max_pairs: int = 20000,
     ) -> plt.Figure | plt.Axes:
-        """Plot raw-vs-normalized pairwise sample distances."""
+        """Plot QC mean-dispersion dependence before/after normalization."""
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(4, 4))
         else:
             current_ax = ax
             fig = current_ax.figure
 
-        raw_dist = np.asarray(raw_dist if raw_dist is not None else [], dtype=float)
-        norm_dist = np.asarray(norm_dist if norm_dist is not None else [], dtype=float)
-        valid_dist = np.isfinite(raw_dist) & np.isfinite(norm_dist)
-        raw_dist = raw_dist[valid_dist]
-        norm_dist = norm_dist[valid_dist]
+        stage_records = []
+        for label, obj in self.stages:
+            log_d = su._extract_log2_target(obj)
+            if log_d is None or log_d.empty:
+                continue
 
-        if raw_dist.size == 0 or norm_dist.size == 0:
+            qc_cols = obj._qc.columns.intersection(log_d.columns)
+            if len(qc_cols) < 3:
+                continue
+
+            variance_metrics = (
+                MetaboIntNormalizer._calc_qc_variance_stabilization_values(
+                    log_d,
+                    qc_cols=qc_cols,
+                )
+            )
+            feature_stats = variance_metrics["feature_stats"]
+            trend_df = variance_metrics["trend"]
+            if feature_stats.empty or trend_df.empty:
+                continue
+
+            stage_records.append(
+                {
+                    "label": label,
+                    "trend": trend_df,
+                    "metrics": variance_metrics,
+                }
+            )
+
+        if not stage_records:
             current_ax.text(
                 0.5,
                 0.5,
-                "Insufficient Sample pairs",
+                "Insufficient QC data",
                 transform=current_ax.transAxes,
                 ha="center",
                 va="center",
@@ -2607,52 +2492,365 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
             )
             self._apply_standard_format(
                 ax=current_ax,
-                title=title,
-                xlabel=xlabel,
-                ylabel=ylabel,
+                title="QC Variance Stabilization",
+                xlabel="Feature-wise mean QC log2 intensity",
+                ylabel="Feature-wise QC dispersion",
                 append_stage=False,
             )
             return fig if ax is None else current_ax
 
-        if raw_dist.size > max_pairs:
-            rng = np.random.default_rng(self.norm.attrs.get("global_seed", 123))
-            keep = rng.choice(raw_dist.size, size=max_pairs, replace=False)
-            x_plot = raw_dist[keep]
-            y_plot = norm_dist[keep]
-        else:
-            x_plot = raw_dist
-            y_plot = norm_dist
+        line_style_map = {
+            "Before Norm": {"color": "tab:gray", "linestyle": "--"},
+            "After Norm": {"color": "tab:red", "linestyle": "-"},
+        }
+        for record in stage_records:
+            label = record["label"]
+            trend_df = record["trend"]
+            style = line_style_map.get(label, line_style_map["After Norm"])
+            x_vals = trend_df["mean_intensity"].to_numpy(dtype=float)
+            y_vals = trend_df["dispersion_median"].to_numpy(dtype=float)
+            y_low = trend_df["dispersion_q25"].to_numpy(dtype=float)
+            y_high = trend_df["dispersion_q75"].to_numpy(dtype=float)
+            current_ax.fill_between(
+                x_vals,
+                y_low,
+                y_high,
+                color=style["color"],
+                alpha=0.16,
+                linewidth=0,
+                zorder=1 if label == "Before Norm" else 2,
+            )
+            current_ax.plot(
+                x_vals,
+                y_vals,
+                color=style["color"],
+                linestyle=style["linestyle"],
+                linewidth=2.0,
+                marker="o",
+                markersize=3.0,
+                label=label,
+                zorder=4,
+            )
 
-        current_ax.scatter(
-            x_plot,
-            y_plot,
-            s=12,
-            color="tab:red",
-            alpha=0.35,
-            edgecolors="none",
-            rasterized=True,
+        before_metrics = next(
+            (
+                record["metrics"]
+                for record in stage_records
+                if record["label"] == "Before Norm"
+            ),
+            {},
+        )
+        after_metrics = next(
+            (
+                record["metrics"]
+                for record in stage_records
+                if record["label"] == "After Norm"
+            ),
+            {},
+        )
+        note_lines = []
+        if before_metrics and after_metrics:
+            note_lines.extend(
+                [
+                    "Before / After",
+                    (
+                        "|rho|: "
+                        f"{before_metrics.get('mean_variance_abs_rho', np.nan):.3f} / "
+                        f"{after_metrics.get('mean_variance_abs_rho', np.nan):.3f}"
+                    ),
+                    (
+                        "|slope|: "
+                        f"{before_metrics.get('mean_variance_abs_slope', np.nan):.3f} / "
+                        f"{after_metrics.get('mean_variance_abs_slope', np.nan):.3f}"
+                    ),
+                    (
+                        "Median dispersion: "
+                        f"{before_metrics.get('qc_dispersion_median', np.nan):.3f} / "
+                        f"{after_metrics.get('qc_dispersion_median', np.nan):.3f}"
+                    ),
+                ]
+            )
+        self._add_metric_note(current_ax, note_lines, loc="upper right")
+
+        current_ax.legend(loc="best")
+        self._format_single_legend(
+            ax=current_ax,
+            loc="best",
+            bbox_to_anchor=None,
+            group_title="Stage",
+            legend_cols=1,
         )
 
-        lim_max = float(np.nanmax([raw_dist.max(), norm_dist.max(), 1.0]))
-        lim_pad = max(lim_max * 0.04, 0.02)
-        current_ax.plot(
-            [0, lim_max + lim_pad],
-            [0, lim_max + lim_pad],
-            color="0.25",
-            linestyle="--",
-            linewidth=1.2,
-            zorder=1,
-        )
-        current_ax.set_xlim(0, lim_max + lim_pad)
-        current_ax.set_ylim(0, lim_max + lim_pad)
-        current_ax.set_aspect("equal", adjustable="box")
-
-        self._add_metric_note(current_ax, note_lines or [])
         self._apply_standard_format(
             ax=current_ax,
-            title=title,
-            xlabel=xlabel,
-            ylabel=ylabel,
+            title="QC Variance Stabilization",
+            xlabel="Feature-wise mean QC log2 intensity",
+            ylabel="Feature-wise QC dispersion",
+            append_stage=False,
+        )
+        return fig if ax is None else current_ax
+
+    def _plot_qc_structure_improvement(
+        self,
+        ax: plt.Axes | None = None,
+        max_features: int = 5000,
+        max_pair_points: int = 300,
+    ) -> plt.Figure | plt.Axes:
+        """Plot before/after multivariate QC-distance distributions."""
+        if ax is None:
+            fig, current_ax = plt.subplots(figsize=(4, 4))
+        else:
+            current_ax = ax
+            fig = current_ax.figure
+
+        summary_by_stage = {}
+        for label, obj in self.stages:
+            log_d = su._extract_log2_target(obj)
+            if log_d is None or log_d.empty:
+                continue
+
+            qc_cols = obj._qc.columns.intersection(log_d.columns)
+            qc_structure = MetaboIntNormalizer._calc_qc_structure_values(
+                log_d,
+                qc_cols=qc_cols,
+                max_features=max_features,
+                seed=int(self.norm.attrs.get("global_seed", 123)),
+            )
+            distances = qc_structure["qc_centroid_distance"]
+            if distances.empty:
+                continue
+
+            summary_by_stage[label] = qc_structure
+
+        before_summary = summary_by_stage.get("Before Norm", {})
+        after_summary = summary_by_stage.get("After Norm", {})
+        if not before_summary or not after_summary:
+            current_ax.text(
+                0.5,
+                0.5,
+                "Insufficient QC data",
+                transform=current_ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=12,
+            )
+            self._apply_standard_format(
+                ax=current_ax,
+                title="QC Structure Distance Change",
+                xlabel="QC distance metric",
+                ylabel="Robust QC distance",
+                append_stage=False,
+            )
+            return fig if ax is None else current_ax
+
+        def _clean_distance_series(values: object) -> pd.Series:
+            """Convert a stored QC-distance vector to finite numeric values."""
+            if not isinstance(values, pd.Series):
+                values = pd.Series(values, dtype=float)
+            return (
+                pd.to_numeric(values, errors="coerce")
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+            )
+
+        distance_specs = [
+            {
+                "label": "Distance to\npooled-QC centroid",
+                "short_label": "Centroid",
+                "before": _clean_distance_series(
+                    before_summary.get("qc_centroid_distance", pd.Series(dtype=float))
+                ),
+                "after": _clean_distance_series(
+                    after_summary.get("qc_centroid_distance", pd.Series(dtype=float))
+                ),
+                "point_limit": None,
+            },
+            {
+                "label": "QC-QC\npairwise distance",
+                "short_label": "Pairwise",
+                "before": _clean_distance_series(
+                    before_summary.get("qc_pairwise_distance", pd.Series(dtype=float))
+                ),
+                "after": _clean_distance_series(
+                    after_summary.get("qc_pairwise_distance", pd.Series(dtype=float))
+                ),
+                "point_limit": max_pair_points,
+            },
+        ]
+        distance_specs = [
+            spec
+            for spec in distance_specs
+            if not spec["before"].empty and not spec["after"].empty
+        ]
+        if not distance_specs:
+            current_ax.text(
+                0.5,
+                0.5,
+                "Insufficient QC-distance data",
+                transform=current_ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=12,
+            )
+            self._apply_standard_format(
+                ax=current_ax,
+                title="QC Structure Distance Change",
+                xlabel="QC distance metric",
+                ylabel="Robust QC distance",
+                append_stage=False,
+            )
+            return fig if ax is None else current_ax
+
+        rng = np.random.default_rng(int(self.norm.attrs.get("global_seed", 123)))
+        stage_order = ["Before Norm", "After Norm"]
+        stage_offsets = {"Before Norm": -0.17, "After Norm": 0.17}
+        box_width = 0.28
+        all_values: list[np.ndarray] = []
+        note_lines = ["Median distance (Before / After)"]
+
+        for metric_idx, spec in enumerate(distance_specs):
+            stage_medians: dict[str, float] = {}
+            for stage in stage_order:
+                values = spec["before"] if stage == "Before Norm" else spec["after"]
+                values = values.astype(float).replace([np.inf, -np.inf], np.nan)
+                values = values.dropna()
+                if values.empty:
+                    continue
+
+                value_array = values.to_numpy(dtype=float)
+                all_values.append(value_array[np.isfinite(value_array)])
+                x_pos = metric_idx + stage_offsets[stage]
+                current_ax.boxplot(
+                    value_array,
+                    positions=[x_pos],
+                    widths=box_width,
+                    patch_artist=True,
+                    showfliers=False,
+                    boxprops={
+                        "facecolor": "white",
+                        "edgecolor": self.pal[stage],
+                        "linewidth": 1.25,
+                    },
+                    medianprops={"color": "0.15", "linewidth": 1.25},
+                    whiskerprops={"color": self.pal[stage], "linewidth": 1.0},
+                    capprops={"color": self.pal[stage], "linewidth": 1.0},
+                )
+
+                point_values = value_array
+                point_limit = spec["point_limit"]
+                if point_limit is not None and point_values.size > point_limit:
+                    keep = rng.choice(
+                        point_values.size, size=int(point_limit), replace=False
+                    )
+                    point_values = point_values[keep]
+                jitter = rng.normal(loc=0.0, scale=0.025, size=point_values.size)
+                current_ax.scatter(
+                    np.full(point_values.size, x_pos, dtype=float) + jitter,
+                    point_values,
+                    color=self.pal[stage],
+                    edgecolor="k",
+                    linewidth=0.20,
+                    s=16,
+                    alpha=0.55,
+                    zorder=3,
+                )
+                stage_medians[stage] = MetaboIntNormalizer._finite_or_nan(
+                    values.median()
+                )
+
+            if all(
+                np.isfinite(stage_medians.get(stage, np.nan)) for stage in stage_order
+            ):
+                current_ax.plot(
+                    [
+                        metric_idx + stage_offsets["Before Norm"],
+                        metric_idx + stage_offsets["After Norm"],
+                    ],
+                    [
+                        stage_medians["Before Norm"],
+                        stage_medians["After Norm"],
+                    ],
+                    color="0.25",
+                    linewidth=1.0,
+                    alpha=0.70,
+                    zorder=4,
+                )
+
+            before_median = stage_medians.get("Before Norm", np.nan)
+            after_median = stage_medians.get("After Norm", np.nan)
+            if np.isfinite(before_median) and np.isfinite(after_median):
+                improvement = MetaboIntNormalizer._relative_change_lower_better(
+                    before_median,
+                    after_median,
+                )
+                improvement_text = (
+                    f"; improvement {100.0 * improvement:+.1f}%"
+                    if np.isfinite(improvement)
+                    else ""
+                )
+                note_lines.append(
+                    (
+                        f"{spec['short_label']}: "
+                        f"{before_median:.3f} / {after_median:.3f}{improvement_text}"
+                    )
+                )
+
+        if all_values:
+            finite_values = np.concatenate([arr for arr in all_values if arr.size > 0])
+        else:
+            finite_values = np.array([], dtype=float)
+        finite_values = finite_values[np.isfinite(finite_values)]
+        positive_values = finite_values[finite_values > 0]
+        use_log_scale = (
+            positive_values.size > 0
+            and np.nanmax(positive_values) / np.nanmin(positive_values) > 20
+        )
+        y_label = "Robust QC distance"
+        if use_log_scale:
+            current_ax.set_yscale("log")
+            y_label = "Robust QC distance (log scale)"
+            y_lower = np.nanmin(positive_values) / 1.6
+            y_upper = np.nanmax(positive_values) * 1.6
+            current_ax.set_ylim(y_lower, y_upper)
+        elif finite_values.size > 0:
+            y_upper = np.nanpercentile(finite_values, 98)
+            y_upper = max(y_upper, np.nanmax(finite_values) * 0.85)
+            current_ax.set_ylim(0, y_upper * 1.18 if y_upper > 0 else 1.0)
+
+        from matplotlib.lines import Line2D
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=self.pal[stage],
+                marker="o",
+                linestyle="",
+                markeredgecolor="k",
+                markeredgewidth=0.25,
+                markersize=6,
+                label=stage,
+            )
+            for stage in stage_order
+        ]
+        current_ax.legend(handles=legend_handles, loc="best")
+        self._format_single_legend(
+            ax=current_ax,
+            loc="best",
+            bbox_to_anchor=None,
+            group_title="Stage",
+            legend_cols=1,
+        )
+
+        current_ax.set_xlim(-0.55, len(distance_specs) - 0.45)
+        current_ax.set_xticks(range(len(distance_specs)))
+        current_ax.set_xticklabels([spec["label"] for spec in distance_specs])
+        self._add_metric_note(current_ax, note_lines, loc="lower right")
+        self._apply_standard_format(
+            ax=current_ax,
+            title="QC Structure Distance Change",
+            xlabel="QC distance metric",
+            ylabel=y_label,
             append_stage=False,
         )
         return fig if ax is None else current_ax
@@ -2661,9 +2859,9 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         self,
         ax_geom: plt.Axes | None = None,
         max_features: int = 5000,
-        max_pairs: int = 20000,
+        max_points: int = 250,
     ) -> plt.Axes | plt.Figure:
-        """Plot robust geometric sample-structure preservation."""
+        """Plot sample-level robust structure shifts after normalization."""
         if ax_geom is None:
             created_fig, ax_geom = plt.subplots(figsize=(4, 4))
         else:
@@ -2677,12 +2875,22 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         )
         geom_metrics = structure["geometry"]
 
+        sample_shift = geom_metrics.get(
+            "sample_log2_distance_ratio", pd.Series(dtype=float)
+        )
+        if not isinstance(sample_shift, pd.Series):
+            sample_shift = pd.Series(sample_shift, dtype=float)
+        sample_shift = pd.to_numeric(sample_shift, errors="coerce").dropna()
+
         geom_rank_loss = MetaboIntNormalizer._finite_or_nan(
             geom_metrics.get("rank_loss")
         )
         geom_rho = 1.0 - geom_rank_loss if np.isfinite(geom_rank_loss) else float("nan")
         geom_delta = MetaboIntNormalizer._finite_or_nan(
             geom_metrics.get("median_relative_delta")
+        )
+        median_sample_shift = MetaboIntNormalizer._finite_or_nan(
+            geom_metrics.get("median_sample_log2_distance_ratio")
         )
         trust_value = MetaboIntNormalizer._finite_or_nan(
             geom_metrics.get("neighborhood_trustworthiness")
@@ -2700,43 +2908,141 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
                 geom_note.append(f"Trustworthiness: {trust_value:.3f}")
         if np.isfinite(geom_rho):
             geom_note.append(f"Distance rank rho: {geom_rho:.3f}")
+        if np.isfinite(median_sample_shift):
+            geom_note.append(f"Median log2 ratio: {median_sample_shift:.3f}")
         if np.isfinite(geom_delta):
             geom_note.append(f"Median rel. |delta d|: {geom_delta:.3f}")
 
-        self._plot_structure_scatter(
+        if sample_shift.empty:
+            ax_geom.text(
+                0.5,
+                0.5,
+                "Insufficient Sample data",
+                transform=ax_geom.transAxes,
+                ha="center",
+                va="center",
+                fontsize=12,
+            )
+            self._apply_standard_format(
+                ax=ax_geom,
+                title="Sample Structure Preservation",
+                xlabel="Sample-level log2 distance ratio",
+                ylabel="",
+                append_stage=False,
+            )
+            if created_fig is not None:
+                plt.tight_layout()
+                return created_fig
+            return ax_geom
+
+        x_values = sample_shift.to_numpy(dtype=float)
+        ax_geom.boxplot(
+            x_values,
+            vert=False,
+            positions=[0],
+            widths=0.36,
+            patch_artist=True,
+            showfliers=False,
+            boxprops={
+                "facecolor": "white",
+                "edgecolor": "tab:red",
+                "linewidth": 1.2,
+            },
+            medianprops={"color": "0.15", "linewidth": 1.2},
+            whiskerprops={"color": "0.35", "linewidth": 1.0},
+            capprops={"color": "0.35", "linewidth": 1.0},
+        )
+
+        rng = np.random.default_rng(int(self.norm.attrs.get("global_seed", 123)))
+        plot_values = x_values
+        if plot_values.size > max_points:
+            keep = rng.choice(plot_values.size, size=max_points, replace=False)
+            plot_values = plot_values[keep]
+        y_jitter = rng.normal(loc=0.0, scale=0.045, size=plot_values.size)
+        ax_geom.scatter(
+            plot_values,
+            y_jitter,
+            color="tab:red",
+            edgecolor="k",
+            linewidth=0.25,
+            s=18,
+            alpha=0.65,
+            zorder=3,
+        )
+        ax_geom.axvline(0, color="0.20", linestyle="--", linewidth=1.1, zorder=2)
+
+        finite_vals = sample_shift.replace([np.inf, -np.inf], np.nan).dropna()
+        x_low, x_high = np.nanpercentile(finite_vals.to_numpy(dtype=float), [2, 98])
+        x_abs = max(abs(float(x_low)), abs(float(x_high)), 0.25)
+        ax_geom.set_xlim(-x_abs * 1.25, x_abs * 1.25)
+        ax_geom.set_ylim(-0.45, 0.45)
+        ax_geom.set_yticks([0])
+        ax_geom.set_yticklabels(["Actual\nsamples"])
+        ax_geom.text(
+            0.02,
+            0.96,
+            "Compressed",
+            transform=ax_geom.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="0.35",
+        )
+        ax_geom.annotate(
+            "",
+            xy=(0.05, 0.90),
+            xytext=(0.30, 0.90),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            arrowprops={
+                "arrowstyle": "-|>",
+                "color": "0.45",
+                "linewidth": 0.9,
+                "mutation_scale": 9,
+                "shrinkA": 0,
+                "shrinkB": 0,
+            },
+            annotation_clip=False,
+        )
+        ax_geom.text(
+            0.98,
+            0.96,
+            "Expanded",
+            transform=ax_geom.transAxes,
+            ha="right",
+            va="top",
+            fontsize=9,
+            color="0.35",
+        )
+        ax_geom.annotate(
+            "",
+            xy=(0.95, 0.90),
+            xytext=(0.70, 0.90),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            arrowprops={
+                "arrowstyle": "-|>",
+                "color": "0.45",
+                "linewidth": 0.9,
+                "mutation_scale": 9,
+                "shrinkA": 0,
+                "shrinkB": 0,
+            },
+            annotation_clip=False,
+        )
+        self._add_metric_note(ax_geom, geom_note, loc="lower right")
+        self._apply_standard_format(
             ax=ax_geom,
-            raw_dist=geom_metrics["raw_dist"],
-            norm_dist=geom_metrics["norm_dist"],
             title="Sample Structure Preservation",
-            xlabel="Raw robust distance",
-            ylabel="Normalized robust distance",
-            note_lines=geom_note,
-            max_pairs=max_pairs,
+            xlabel="Sample-level log2 distance ratio",
+            ylabel="",
+            append_stage=False,
         )
 
         if created_fig is not None:
             plt.tight_layout()
             return created_fig
         return ax_geom
-
-    def _plot_distance_preservation(
-        self,
-        ax: plt.Axes | None = None,
-        max_features: int = 5000,
-        max_pairs: int = 20000,
-    ) -> plt.Figure | plt.Axes:
-        """Backward-compatible wrapper for sample-neighborhood preservation."""
-        if ax is None:
-            fig, current_ax = plt.subplots(figsize=(4, 4))
-        else:
-            current_ax = ax
-            fig = current_ax.figure
-        self._plot_sample_structure_preservation(
-            ax_geom=current_ax,
-            max_features=max_features,
-            max_pairs=max_pairs,
-        )
-        return fig if ax is None else current_ax
 
     def _plot_ecdf_overlay(
         self, metrics: dict[str, Any] | None = None, ax: plt.Axes | None = None
@@ -2830,7 +3136,7 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
 
         return fig if ax is None else ax
 
-    def plot_normalization_summary_grid(self, metrics: dict[str, Any]) -> object | None:
+    def plot_normalization_summary_grid(self) -> object | None:
         """Combine score-aligned normalization diagnostics into a PW dashboard."""
         try:
             import patchworklib as pw
@@ -2843,39 +3149,37 @@ class MetaboVisualizerNormalizer(visualizer_classes.BaseMetaboVisualizer):
         auto_summary = self.norm.attrs.get("normalization_auto_summary")
         is_auto = bool(auto_summary)
 
-        # Row 1 in Auto mode: Auto score | QC Precision | QC Alignment | Legend.
-        # Row 1 in fixed-method mode: QC Precision | QC Alignment | Legend.
-        qc_panel_size = (3.7, 4.0) if is_auto else (5.6, 4.0)
-        ax_qc_precision = pw.Brick(figsize=qc_panel_size, label="QC_Precision")
-        self._plot_qc_centroid_residuals(ax=ax_qc_precision)
-
-        ax_qc_alignment = pw.Brick(figsize=qc_panel_size, label="QC_Alignment")
-        self._plot_qc_rle_boxplot(ax=ax_qc_alignment)
-
-        ax_stage_legend = pw.Brick(figsize=(0.9, 4.0), label="Stage_Legend")
-        self._plot_stage_legend_atom(ax=ax_stage_legend)
-
         if is_auto:
-            ax_auto = self.plot_auto_selection_stacked_bar(auto_summary=auto_summary)
+            ax_auto = self.plot_auto_selection_stacked_bar(
+                auto_summary=auto_summary,
+                figsize=(7.8, 4.0),
+            )
             if ax_auto is None:
-                ax_auto = pw.Brick(figsize=(4.0, 4.0), label="Auto_Score_Spacer")
+                ax_auto = pw.Brick(figsize=(7.8, 4.0), label="Auto_Score_Spacer")
                 ax_auto.axis("off")
-            row1 = ax_auto | ax_qc_precision | ax_qc_alignment | ax_stage_legend
-        else:
-            row1 = ax_qc_precision | ax_qc_alignment | ax_stage_legend
+            ax_qc_alignment = pw.Brick(figsize=(3.9, 4.0), label="QC_Alignment")
+            self._plot_qc_rle_boxplot(ax=ax_qc_alignment)
+            row1 = ax_auto | ax_qc_alignment
 
-        # Row 2: MA before | MA after | colorbar | sample-neighborhood structure.
-        ax_ma_before = pw.Brick(figsize=(3.9, 4.0), label="MA_Before")
-        ax_ma_after = pw.Brick(figsize=(3.9, 4.0), label="MA_After")
-        ax_cb = pw.Brick(figsize=(0.2, 4.0), label="MA_CB")
+            ax_qc_variance = pw.Brick(figsize=(3.9, 4.0), label="QC_Variance")
+            self._plot_qc_variance_stabilization(ax=ax_qc_variance)
+            ax_qc_structure = pw.Brick(figsize=(3.9, 4.0), label="QC_Structure")
+            self._plot_qc_structure_improvement(ax=ax_qc_structure)
+            ax_sample_structure = pw.Brick(figsize=(3.9, 4.0), label="Sample_Structure")
+            self._plot_sample_structure_preservation(ax_geom=ax_sample_structure)
+            row2 = ax_qc_variance | ax_qc_structure | ax_sample_structure
+            return row1 / row2
 
-        self._plot_ma_scatter(
-            metrics=metrics, ax_before=ax_ma_before, ax_after=ax_ma_after, cax=ax_cb
-        )
+        ax_qc_alignment = pw.Brick(figsize=(4.0, 4.0), label="QC_Alignment")
+        self._plot_qc_rle_boxplot(ax=ax_qc_alignment)
+        ax_qc_variance = pw.Brick(figsize=(4.0, 4.0), label="QC_Variance")
+        self._plot_qc_variance_stabilization(ax=ax_qc_variance)
+        row1 = ax_qc_alignment | ax_qc_variance
 
-        ax_geom_structure = pw.Brick(figsize=(4.0, 4.0), label="Geometric_Structure")
-        self._plot_sample_structure_preservation(ax_geom=ax_geom_structure)
-
-        row2 = ax_ma_before | ax_ma_after | ax_cb | ax_geom_structure
+        ax_qc_structure = pw.Brick(figsize=(4.0, 4.0), label="QC_Structure")
+        self._plot_qc_structure_improvement(ax=ax_qc_structure)
+        ax_sample_structure = pw.Brick(figsize=(4.0, 4.0), label="Sample_Structure")
+        self._plot_sample_structure_preservation(ax_geom=ax_sample_structure)
+        row2 = ax_qc_structure | ax_sample_structure
 
         return row1 / row2
