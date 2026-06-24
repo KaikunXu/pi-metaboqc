@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
-## [1.1.4] - 2026-06-17
+## [1.1.4] - 2026-06-24
 
 ### Added
 
@@ -32,6 +32,27 @@ and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for ver
 - **[Imputation]** Fixed no-missing-value datasets so imputation is reported as not required and unnecessary imputation dashboards are omitted.
 - **[Normalization]** Fixed normalization score/rendering consistency by using deterministic QC variance-stabilization and structure metrics, centered improvement scoring against the `ROBUST_LOG_ONLY` baseline, and a composite sample structure term based on trustworthiness, distance-rank preservation, and distance-scale preservation.
 - **[Reports]** Fixed low-quality filtering feature totals and Section 1.4 paragraph rendering in brief and comprehensive reports.
+
+
+## [1.1.3] - 2026-06-08
+
+### Changed
+
+- Improved module-level script purpose comments across source and test files.
+- Added and refined type hints across the codebase.
+- Standardized code formatting with Ruff and Black.
+- Cleaned up project metadata and packaging-related configuration.
+- Kept package metadata centralized in `pyproject.toml`.
+
+### Validation
+
+- Ruff checks passed for source and test files.
+- Black formatting checks passed.
+- Python compile checks passed.
+
+### Notes
+
+This release focused on codebase standardization, maintainability, and packaging readiness. It did not introduce user-facing workflow changes relative to `v1.1.2a1`.
 
 
 ## [1.1.2a1] - 2026-06-01
