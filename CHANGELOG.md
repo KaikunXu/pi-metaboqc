@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
+## [1.1.5] - 2026-07-23
+
+### Added
+
+- **[Shared Metrics]** Added reusable metrics for relative technical improvement, masked-value distribution fidelity, and study-sample structure preservation, enabling consistent `AUTO` evaluation across correction, imputation, and normalization.
+- **[Correction]** Added preservation-aware `AUTO` selection that combines median and feature-wise QC-RSD improvements with study-sample structure retention, together with candidate QC-RSD comparison outputs.
+- **[Imputation]** Added GMM- and low-intensity-noise masking for MAR candidate evaluation and preservation-aware scoring based on total/low-intensity reconstruction error, masked-value distribution fidelity, and study-sample structure retention; QRILC is included in candidate comparison and reporting.
+- **[Normalization]** Added a multi-criterion `AUTO` normalization evaluation using QC RLE alignment, QC variance stabilization, QC structure distance change, and sample structure preservation, with `ROBUST_LOG_ONLY` retained as the neutral reference strategy.
+
+### Changed
+
+- **[Filtering]** Consolidated high-missing-value feature routing around biological-group MNAR rescue, QC-level MNAR rescue, MAR eligibility checking, and explicit exclusion, while applying QC-RSD reproducibility filtering only to eligible MAR features.
+- **[Correction/Imputation/Normalization]** Reorganized `AUTO` dashboards around score summaries, candidate preservation scorecards, and selected-method diagnostics; fixed-method workflows now show only the relevant downstream diagnostics.
+- **[Correction/Imputation/Normalization]** Aligned score terminology, candidate ranking, and selected-method diagnostics across the three adaptive modules, including score-aligned sample-structure change maps.
+- **[Visualizer]** Standardized editable SVG/PDF output across all processing and QA visualizers, including solid equivalents for transparent categorical colors, AI-compatible text handling, adaptive heatmap/tick formatting, and grouped standalone legends.
+- **[Visualizer]** Migrated the shared QC/preprocessing visualization accent from `tab:red` to `tab:blue`, including equivalent solid shades used in vector exports. Dataset-construction sample-type plots retain their established red/blue/gray encoding.
+- **[Reports]** Updated brief and comprehensive report templates for revised `AUTO` metrics, candidate-comparison figures, fixed-method outputs, skipped-imputation states, and consistent scientific terminology.
+
+### Fixed
+
+- **[Reports]** Fixed Markdown/PDF rendering in correction, filtering, imputation, and normalization sections, including headings, abbreviation reuse, conditional OOF descriptions, and associated figure captions.
+- **[Visualizer]** Fixed SVG/PDF export issues affecting heatmap colorbars and cell boundaries, patch backgrounds, alpha rendering, text editability, legend placement, and sequential Patchworklib dashboard export.
+- **[Assessment/Filtering]** Fixed dense heatmap, tick-label, legend, PCA annotation, missing-value rescue-region, and filtering-summary rendering edge cases for report-ready figures.
+
 ## [1.1.4] - 2026-06-24
 
 ### Added

@@ -2,11 +2,11 @@
 
 [![PyPI version](https://badgen.net/pypi/v/pi-metaboqc)](https://pypi.org/project/pi-metaboqc/)
 [![Python 3.10+](https://badgen.net/badge/python/3.10%2B/blue)](https://www.python.org/downloads/)
-[![License: MIT](https://badgen.net/badge/license/MIT/blue)](https://github.com/KaikunXu/pi-metaboqc/blob/main/LICENSE)
+[![License: MIT](https://badgen.net/badge/license/MIT/blue)](https://github.com/PHOENIXcenter/pi-metaboqc/blob/main/LICENSE)
 
-**pi-metaboqc** is a high-performance, fully automated data quality control pipeline designed specifically for large-scale, multi-batch clinical metabolomics.
+**pi-metaboqc** is a traceable, adaptive Python workflow for quality control and preprocessing of LC-MS metabolomics feature-intensity matrices. It combines missingness-aware feature filtering, preservation-aware method selection, stage-wise quality assessment, and automated reporting for large, multi-batch studies.
 
-![Pipeline of pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc/raw/main/docs/pipeline_of_pi-metaboqc.png)
+![Pipeline of pi-metaboqc](https://github.com/PHOENIXcenter/pi-metaboqc/raw/main/docs/pipeline_of_pi-metaboqc.png)
 
 ## ✨ Core Capabilities
 
@@ -14,9 +14,9 @@
 
 * **Python-native data model and method implementations:** The core `MetaboInt` object inherits from `pandas.DataFrame`, allowing users to work with standard tabular operations while preserving pipeline metadata. Classical preprocessing methods that often require R dependencies, including quantile normalization, VSN, QRILC, BPCA, RUV-III, and WaveICA 2.0, are implemented or reconstructed in Python and checked against R reference implementations where applicable.
 
-* **Adaptive missing-value classification and imputation:** High-missing-value features are separated into biologically structured MNAR, QC/low-intensity MNAR, MAR-like, and invalid categories using group-level, QC-level, and intensity-aware rules. For MAR-like features, candidate imputers are evaluated through a mask-based NRMSE strategy, allowing the pipeline to select the imputation method that best reconstructs observed data under the dataset's own missingness structure.
+* **Adaptive missing-value classification and imputation:** High-missing-value features are routed through biological-group MNAR rescue, QC-level MNAR rescue, MAR eligibility checking, or exclusion. MAR candidates are compared using a GMM- and low-intensity-noise mask that reflects the greater dropout risk of low-abundance MS signals. Selection integrates total and low-intensity NRMSE with masked-value distribution fidelity and study-sample structure preservation.
 
-* **Adaptive correction and normalization selection:** For signal correction, the pipeline compares QC-anchored regression methods (QC-RLSC, QC-RFSC, and QC-SVR) with global model correction methods (SERRF, RUV-III, and WaveICA 2.0), using internal OOF evaluation where applicable and global refitting for final output. For normalization, it evaluates robust log transformation, TIC, median, PQN, MDFC, quantile normalization, and VSN on a common log-like view using QC RLE alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation relative to the robust-log baseline.
+* **Evidence- and preservation-aware adaptive selection:** `AUTO` mode uses a common design across correction, imputation, and normalization. Correction combines median and feature-wise QC-RSD improvements; imputation combines masked reconstruction and distribution fidelity; normalization combines QC RLE alignment, variance stabilization, and QC structure improvement. Each ranking also includes a study-sample structure-preservation guardrail.
 
 * **End-to-end quality assessment and traceability:** QA dashboards are generated across pipeline stages to summarize feature retention, missing-value behavior, QC precision, batch correlation, PCA structure, outlier diagnostics, correction performance, imputation quality, and normalization effects. These outputs make the preprocessing trajectory inspectable rather than hidden behind a single final matrix.
 
@@ -61,14 +61,14 @@ pip install pi-metaboqc
 Alternatively, install the latest development version directly from GitHub:
 
 ```bash
-pip install git+https://github.com/KaikunXu/pi-metaboqc.git
+pip install git+https://github.com/PHOENIXcenter/pi-metaboqc.git
 ```
 
 **For developers (Editable mode):**
 If you plan to modify the source code or contribute to the project:
 
 ```bash
-git clone https://github.com/KaikunXu/pi-metaboqc.git
+git clone https://github.com/PHOENIXcenter/pi-metaboqc.git
 cd pi-metaboqc
 pip install -e .
 ```
@@ -81,9 +81,9 @@ We provide execution modalities for different use cases in the `examples/` direc
 
 ### 1. Interactive Notebook (Recommended for Onboarding)
 
-**Interactive Tutorial (`interactive_tutorial.ipynb`)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards, and intuitively grasp the core algorithmic logic.
+**[Interactive Tutorial (`interactive_tutorial.ipynb`)](https://github.com/PHOENIXcenter/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards, and intuitively grasp the core algorithmic logic.
 
-* **[Pre-rendered HTML Viewer](https://raw.githack.com/KaikunXu/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage. This ensures all inline high-resolution plots and metrics are displayed instantly, bypassing any GitHub API rendering timeouts or file size limits..
+**[Pre-rendered HTML Viewer](https://raw.githack.com/PHOENIXcenter/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage. This ensures all inline high-resolution plots and metrics are displayed instantly, bypassing any GitHub API rendering timeouts or file size limits.
 
 ### 2. Headless CLI Execution (For Production & Batch Processing)
 
@@ -109,7 +109,7 @@ python run_pimqc.py -q
 
 > ⚠️ **Troubleshooting Note for VS Code Users:** When running the CLI script via the integrated terminal in Visual Studio Code, the IDE may occasionally fail to properly inherit full Conda environment variables. This prevents the PDF rendering engine from locating essential system-level C libraries (e.g., GTK3/Pango), causing the report generation to gracefully degrade and output an **HTML** report instead. 
 
-> **Resolution:** You can bypass this by executing the script from a native system terminal (e.g., Anaconda Prompt, macOS Terminal). Alternatively, to permanently configure VS Code for seamless PDF rendering and resolve PowerShell restrictions, please refer to our **[VS Code Environment & Troubleshooting Guide](https://github.com/KaikunXu/pi-metaboqc/tree/main/docs/vscode_conda_troubleshooting_guide.md)**.
+> **Resolution:** You can bypass this by executing the script from a native system terminal (e.g., Anaconda Prompt, macOS Terminal). Alternatively, to permanently configure VS Code for seamless PDF rendering and resolve PowerShell restrictions, please refer to our **[VS Code Environment & Troubleshooting Guide](https://github.com/PHOENIXcenter/pi-metaboqc/tree/main/docs/vscode_conda_troubleshooting_guide.md)**.
 
 ## 📂 Project Structure
 
@@ -154,7 +154,7 @@ pi-metaboqc/
 
 To demonstrate the robustness, reproducibility, and correction efficacy of `pi-metaboqc` in real-world scenarios, we provide a dedicated case study repository. 
 
-👉 **[pi-metaboqc-casestudy](https://github.com/KaikunXu/pi-metaboqc-casestudy)**
+👉 **[pi-metaboqc-casestudy](https://github.com/PHOENIXcenter/pi-metaboqc-casestudy)**
 
 The case study repository contains:
 
@@ -171,4 +171,4 @@ We highly recommend new users start with the case study to familiarize themselve
 ## 🤝 Contributing & License
 
 This project is licensed under the **MIT License**.
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/KaikunXu/pi-metaboqc/issues).
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/PHOENIXcenter/pi-metaboqc/issues).

@@ -33,16 +33,6 @@ from . import core_classes
 from . import visualizer_classes
 
 
-def _format_percentile_label(percentile: float) -> str:
-    """Format a 0-1 percentile fraction as a compact percentile label."""
-    pct_value = float(percentile) * 100
-    if np.isclose(pct_value, round(pct_value)):
-        pct_text = f"{pct_value:.0f}"
-    else:
-        pct_text = f"{pct_value:.1f}".rstrip("0").rstrip(".")
-    return f"P{pct_text}"
-
-
 class MetaboIntFilter(core_classes.MetaboInt):
     """Filtering engine for metabolomics datasets with QC enforcement."""
 
@@ -366,7 +356,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
     @iu._exe_time
     def execute_mv_filtering(self, output_dir: str = None) -> pd.DataFrame:
         """Orchestrates Stage-1 MV filtering and exports diagnostics."""
-        # --- NEW: Step 0 - Execute Sample Filtering First ---
+        # Execute sample filtering before feature-level missingness checks.
         # Update current instance data with sample-filtered dataframe
         df_clean_samples = self.execute_sample_filtering(output_dir)
         self._update_inplace(df_clean_samples)
@@ -401,7 +391,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
         feature_counts["post_stage1"] = len(retained_idx)
         df_final = self.loc[retained_idx].copy(deep=True)
 
-        # [FIX]: Store indices as native Python lists to prevent JSON
+        # Store indices as native Python lists for JSON serialization.
         # serialization bugs in downstream metadata parsers.
         df_final.attrs["idx_mar"] = idx_mar.tolist()
         df_final.attrs["idx_mnar"] = idx_mnar.tolist()
@@ -468,7 +458,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
             val_intensity = qc_median.get(feat, np.nan)
             log2_int = np.log2(val_intensity + 1) if pd.notna(val_intensity) else np.nan
 
-            # CRITICAL FIX: Restored explicitly exact string matching.
+            # Use exact string matching for sample-type labels.
             # Downstream visualization relies heavily on .str.contains("Group")
             # and .str.contains("QC"). Abbreviations break the routing logic!
             if feat in idx_dropped:
@@ -535,6 +525,14 @@ class MetaboIntFilter(core_classes.MetaboInt):
             grid_path = os.path.join(output_dir, "MV_Classification_Dashboard.svg")
             vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
             logger.info(f"High-MV Filter summary dashboard saved as: {grid_path}")
+
+        # article_grid = vis.plot_high_mv_filter_article_dashboard()
+        # if article_grid:
+        #     article_path = os.path.join(
+        #         output_dir, "High_MV_Filter_Article_Dashboard.svg"
+        #     )
+        #     vis.save_and_show_pw(pw_obj=article_grid, file_path=article_path)
+        #     logger.info(f"High-MV article dashboard saved as: {article_path}")
 
     @cached_property
     def mv_filtering_metrics(self) -> Dict[str, Any]:
@@ -715,7 +713,7 @@ class MetaboIntFilter(core_classes.MetaboInt):
         feature_counts["post_stage2_rsd"] = len(final_idx)
         df_final = self.loc[final_idx].copy()
 
-        # [FIX]: Intersect to remove features dropped in Stage 2,
+        # Intersect to remove features dropped in Stage 2,
         # then explicitly convert to native lists for safe propagation.
         df_final.attrs["idx_mar"] = idx_mar.intersection(final_idx).tolist()
         df_final.attrs["idx_mnar"] = idx_mnar.intersection(final_idx).tolist()
@@ -844,6 +842,16 @@ class MetaboIntFilter(core_classes.MetaboInt):
                 logger.info(
                     f"Low-quality Filter summary dashboard saved as: {grid_path}"
                 )
+
+            # article_grid = vis.plot_low_quality_filter_article_dashboard()
+            # if article_grid:
+            #     article_path = os.path.join(
+            #         output_dir, "Low_Quality_Filter_Article_Dashboard.svg"
+            #     )
+            #     vis.save_and_show_pw(pw_obj=article_grid, file_path=article_path)
+            #     logger.info(
+            #         f"Low-quality article dashboard saved as: {article_path}"
+            #     )
         except Exception as e:
             logger.error(
                 f"Grid of low-quality features filtering generation failed: {e}"
@@ -918,6 +926,27 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         super().__init__(metabo_obj=engine)
         self.engine = engine
 
+    @staticmethod
+    def _apply_filter_article_panel_format(
+        ax: plt.Axes,
+        title: str,
+    ) -> plt.Axes:
+        """Apply the compact manuscript style without altering dashboard defaults."""
+        MetaboVisualizerFilter._apply_article_panel_format(
+            ax=ax,
+            title=title,
+            tick_fontsize=pu.ARTICLE_AXIS_TICK_FONTSIZE,
+            label_fontsize=pu.ARTICLE_AXIS_LABEL_FONTSIZE,
+            title_fontsize=pu.ARTICLE_TITLE_FONTSIZE,
+            annotation_fontsize=pu.ARTICLE_ANNOTATION_FONTSIZE,
+        )
+        MetaboVisualizerFilter._apply_article_legend_style(
+            ax=ax,
+            fontsize=pu.ARTICLE_LEGEND_FONTSIZE,
+            title_fontsize=pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+        )
+        return ax
+
     # =========================================================================
     # High-Misssing Values Samples Filtering
     # =========================================================================
@@ -940,24 +969,31 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         df_plot = track_df.copy()
 
         color_dict = {
-            t: "tab:red" if "QC" in str(t).upper() else "tab:gray"
+            t: pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0)
+            if "QC" in str(t).upper()
+            else pu.get_equivalent_hex("tab:gray", alpha=1.0)
             for t in df_plot["Sample_Type"].unique()
         }
+        cat_order = df_plot["Sample_Type"].unique().tolist()
+        x_lookup = {cat: idx for idx, cat in enumerate(cat_order)}
+        rng = np.random.default_rng(123)
 
-        sns.stripplot(
-            data=df_plot,
-            x="Sample_Type",
-            y="MV_Rate_Pct",
-            hue="Sample_Type",
-            palette=color_dict,
-            jitter=True,
-            size=7,
-            alpha=0.8,
-            edgecolor="k",
-            linewidth=0.5,
-            ax=current_ax,
-            legend=False,
-        )
+        for sample_type, sub_df in df_plot.groupby("Sample_Type", sort=False):
+            x_base = x_lookup[sample_type]
+            jitter = rng.uniform(-0.18, 0.18, size=len(sub_df))
+            current_ax.scatter(
+                np.full(len(sub_df), x_base) + jitter,
+                sub_df["MV_Rate_Pct"].to_numpy(dtype=float),
+                s=49,
+                marker="o",
+                facecolor=color_dict[sample_type],
+                edgecolor="k",
+                linewidth=0.5,
+                zorder=3,
+                label=str(sample_type),
+            )
+        current_ax.set_xticks(range(len(cat_order)))
+        current_ax.set_xticklabels([str(cat) for cat in cat_order])
 
         # Threshold line
         tol_pct = tol * 100
@@ -968,9 +1004,6 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             linewidth=1.5,
             label=f"Sample MV Tol: {tol_pct:.0f}%",
         )
-
-        # Extract unique categories natively to match x-axis indices
-        cat_order = df_plot["Sample_Type"].unique().tolist()
 
         # Smart Annotation for Outliers
         outliers = df_plot[df_plot["MV_Rate_Pct"] > tol_pct]
@@ -985,7 +1018,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 fontsize=8,
                 color="darkred",
                 fontweight="bold",
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="k", alpha=0.9),
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="k", alpha=1.0),
                 arrowprops=dict(arrowstyle="-", color="k", lw=1.0),
             )
 
@@ -1023,6 +1056,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         active_base_tol: float,
         ax: plt.Axes,
         title: str,
+        article_compact: bool = False,
     ) -> None:
         """Scatter plot visualizing the 2D logic of Group MNAR rescue."""
 
@@ -1030,8 +1064,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             ax.axis("off")
             return
 
-        color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
-        color_pending = "tab:gray"
+        color_mnar = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
+        color_pending = pu.get_equivalent_hex("tab:gray", alpha=1.0)
 
         df_plot = df.copy()
 
@@ -1041,30 +1075,45 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
 
         df_plot = df_plot.sort_values(by="Step_Status", ascending=False)
 
-        sns.scatterplot(
-            data=df_plot,
-            x=max_col,
-            y=min_col,
-            hue="Step_Status",
-            palette={"MNAR (Group)": color_mnar, "Pending": color_pending},
-            style="Step_Status",
-            markers={"MNAR (Group)": "X", "Pending": "o"},
-            alpha=0.8,
-            ax=ax,
-            legend=False,
-            edgecolor="k",
-        )
+        marker_map = {"MNAR (Group)": "X", "Pending": "o"}
+        for status, sub_df in df_plot.groupby("Step_Status", sort=False):
+            ax.scatter(
+                sub_df[max_col].to_numpy(dtype=float),
+                sub_df[min_col].to_numpy(dtype=float),
+                s=6 if article_compact else 42,
+                marker=marker_map[status],
+                facecolor={"MNAR (Group)": color_mnar, "Pending": color_pending}[
+                    status
+                ],
+                edgecolor="k",
+                linewidth=0.15 if article_compact else 0.5,
+                zorder=3,
+            )
 
         tol_max_pct = mnar_group_mv_tol * 100
         tol_min_pct = active_base_tol * 100
 
-        ax.plot([0, 100], [0, 100], color="gray", linestyle="-.", alpha=0.5, zorder=1)
+        ax.plot(
+            [0, 100],
+            [0, 100],
+            color=pu.get_equivalent_hex("tab:gray", alpha=0.5),
+            linestyle="-.",
+            zorder=1,
+        )
 
         ax.axvline(tol_max_pct, color="k", linestyle="--")
         ax.axhline(tol_min_pct, color="k", linestyle=":")
 
-        ax.fill_between(
-            [tol_max_pct, 105], -5, tol_min_pct, color=color_mnar, alpha=0.2, zorder=0
+        ax.add_patch(
+            mpatches.Rectangle(
+                (tol_max_pct, -5),
+                105 - tol_max_pct,
+                tol_min_pct + 5,
+                facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.10),
+                edgecolor="none",
+                zorder=0,
+                clip_on=True,
+            )
         )
 
         ax.set_xlim(-5, 105)
@@ -1080,6 +1129,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 linestyle="",
                 label="MNAR (Group)",
                 markeredgecolor="k",
+                markersize=4.0 if article_compact else 6.0,
+                markeredgewidth=0.5 if article_compact else 1.0,
             ),
             mlines.Line2D(
                 [],
@@ -1089,6 +1140,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 linestyle="",
                 label="Pending",
                 markeredgecolor="k",
+                markersize=4.0 if article_compact else 6.0,
+                markeredgewidth=0.5 if article_compact else 1.0,
             ),
             mlines.Line2D([], [], color="none", label="Thresholds"),
             mlines.Line2D([], [], color="gray", linestyle="-.", label="y=x Limit"),
@@ -1116,6 +1169,19 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             start_bbox=(0.05, 1.0),
             layout_cols=1,
             sublegend_cols=1,
+            **(
+                {
+                    "fontsize": 4.0,
+                    "title_fontsize": 4.4,
+                    "borderaxespad": 0.0,
+                    "handlelength": 1.0,
+                    "handletextpad": 0.3,
+                    "labelspacing": 0.25,
+                    "borderpad": 0.3,
+                }
+                if article_compact
+                else {}
+            ),
         )
         self._apply_standard_format(
             ax=ax,
@@ -1134,6 +1200,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         ax: plt.Axes,
         title: str,
         mnar_intensity_pct: float = 0.1,
+        article_compact: bool = False,
     ) -> None:
         """
         Diagnostic scatter for Step 2 with dual-threshold L-shape.
@@ -1146,14 +1213,13 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             ax.axis("off")
             return
 
-        color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
-        color_blocked = "tab:gray"
-        color_pending = "tab:gray"
-        intensity_label = (
-            f"QC intensity ≤ {_format_percentile_label(mnar_intensity_pct)}"
-        )
-
+        color_mnar = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
+        color_blocked = pu.get_equivalent_hex("tab:gray", alpha=1.0)
+        color_pending = pu.get_equivalent_hex("tab:gray", alpha=1.0)
         df_plot = df.copy()
+        intensity_label = (
+            f"QC intensity <= {pu.format_percentile_label(mnar_intensity_pct)}"
+        )
 
         def _determine_status(row: pd.Series) -> str:
             if "QC" in row["Stage1_Status"]:
@@ -1172,46 +1238,76 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
 
         has_group_info = "Min_Group_MV_Pct" in df_plot.columns
         if has_group_info:
-            sizes = df_plot["Min_Group_MV_Pct"].fillna(0)
-            size_norm = (15, 100)
+            raw_sizes = df_plot["Min_Group_MV_Pct"].fillna(0).to_numpy(dtype=float)
+            size_min, size_max = np.nanmin(raw_sizes), np.nanmax(raw_sizes)
+            if np.isfinite(size_min) and np.isfinite(size_max) and size_max > size_min:
+                marker_min = 2.5 if article_compact else 15
+                marker_span = 10 if article_compact else 85
+                df_plot["_Marker_Size"] = (
+                    marker_min
+                    + (raw_sizes - size_min) / (size_max - size_min) * marker_span
+                )
+            else:
+                df_plot["_Marker_Size"] = 6 if article_compact else 55
         else:
-            sizes = None
-            size_norm = None
+            df_plot["_Marker_Size"] = 6 if article_compact else 42
 
-        sns.scatterplot(
-            data=df_plot,
-            x="Log2_Intensity",
-            y="QC_MV_Pct",
-            hue="Step_Status",
-            size=sizes if has_group_info else None,
-            sizes=size_norm,
-            palette={
-                "MNAR (QC)": color_mnar,
-                "Blocked by Group Valid": color_blocked,
-                "Pending": color_pending,
-            },
-            style="Step_Status",
-            markers={"MNAR (QC)": "X", "Blocked by Group Valid": "v", "Pending": "o"},
-            alpha=0.75,
-            ax=ax,
-            legend=False,
-            edgecolor="k",
-        )
+        color_map = {
+            "MNAR (QC)": color_mnar,
+            "Blocked by Group Valid": color_blocked,
+            "Pending": color_pending,
+        }
+        marker_map = {"MNAR (QC)": "X", "Blocked by Group Valid": "v", "Pending": "o"}
+        for status, sub_df in df_plot.groupby("Step_Status", sort=False):
+            ax.scatter(
+                sub_df["Log2_Intensity"].to_numpy(dtype=float),
+                sub_df["QC_MV_Pct"].to_numpy(dtype=float),
+                s=sub_df["_Marker_Size"].to_numpy(dtype=float),
+                marker=marker_map[status],
+                facecolor=color_map[status],
+                edgecolor="k",
+                linewidth=0.15 if article_compact else 0.5,
+                zorder=3,
+            )
 
-        ax.axhline(mnar_qc_mv_tol * 100, color="k", linestyle=":", label="MV Cutoff")
+        qc_mv_cutoff_pct = mnar_qc_mv_tol * 100
+        ax.axhline(qc_mv_cutoff_pct, color="k", linestyle=":", label="MV Cutoff")
 
         if mnar_int_threshold is not None:
+            finite_x = pd.to_numeric(df_plot["Log2_Intensity"], errors="coerce")
+            finite_x = finite_x[np.isfinite(finite_x)]
+            if finite_x.empty:
+                x_min, x_max = mnar_int_threshold - 1.0, mnar_int_threshold + 1.0
+            else:
+                x_min = min(float(finite_x.min()), float(mnar_int_threshold))
+                x_max = max(float(finite_x.max()), float(mnar_int_threshold))
+                x_padding = max((x_max - x_min) * 0.05, 0.5)
+                x_min -= x_padding
+                x_max += x_padding
+
+            y_min, y_max = -5.0, 105.0
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(y_min, y_max)
+
+            rescue_width = max(float(mnar_int_threshold) - x_min, 0.0)
+            rescue_height = y_max - qc_mv_cutoff_pct
+            if rescue_width > 0 and rescue_height > 0:
+                ax.add_patch(
+                    mpatches.Rectangle(
+                        (x_min, qc_mv_cutoff_pct),
+                        rescue_width,
+                        rescue_height,
+                facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.10),
+                        edgecolor="none",
+                        zorder=0,
+                        clip_on=True,
+                    )
+                )
             ax.axvline(
                 mnar_int_threshold, color="k", linestyle="--", label=intensity_label
             )
-            ax.fill_between(
-                [ax.get_xlim()[0], mnar_int_threshold],
-                mnar_qc_mv_tol * 100,
-                100,
-                color=color_mnar,
-                alpha=0.15,
-                zorder=0,
-            )
+        else:
+            ax.set_ylim(-5.0, 105.0)
 
         handles = [
             mlines.Line2D([], [], color="none", label="Status"),
@@ -1223,6 +1319,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 linestyle="",
                 label="MNAR (QC)",
                 markeredgecolor="k",
+                markersize=4.0 if article_compact else 6.0,
+                markeredgewidth=0.5 if article_compact else 1.0,
             ),
             mlines.Line2D(
                 [],
@@ -1232,6 +1330,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 linestyle="",
                 label="Blocked",
                 markeredgecolor="k",
+                markersize=4.0 if article_compact else 6.0,
+                markeredgewidth=0.5 if article_compact else 1.0,
             ),
             mlines.Line2D(
                 [],
@@ -1241,6 +1341,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 linestyle="",
                 label="Pending",
                 markeredgecolor="k",
+                markersize=4.0 if article_compact else 6.0,
+                markeredgewidth=0.5 if article_compact else 1.0,
             ),
             mlines.Line2D([], [], color="none", label="Thresholds"),
             mlines.Line2D(
@@ -1248,7 +1350,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 [],
                 color="k",
                 linestyle=":",
-                label=f"MV > {mnar_qc_mv_tol * 100:.0f}%",
+                label=f"MV > {qc_mv_cutoff_pct:.0f}%",
             ),
             mlines.Line2D([], [], color="k", linestyle="--", label=intensity_label),
         ]
@@ -1262,10 +1364,11 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                     mlines.Line2D(
                         [],
                         [],
-                        color="none",
+                        color="white",
                         marker="o",
-                        markersize=8,
+                        markersize=4.5 if article_compact else 8,
                         label="Larger =\nHigher Min Group MV",
+                        markerfacecolor="white",
                         markeredgecolor="gray",
                         linestyle="",
                     ),
@@ -1281,6 +1384,19 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             start_bbox=(0.50, 1.0),
             layout_cols=1,
             sublegend_cols=1,
+            **(
+                {
+                    "fontsize": 4.0,
+                    "title_fontsize": 4.4,
+                    "borderaxespad": 0.0,
+                    "handlelength": 1.0,
+                    "handletextpad": 0.3,
+                    "labelspacing": 0.25,
+                    "borderpad": 0.3,
+                }
+                if article_compact
+                else {}
+            ),
         )
 
         self._apply_standard_format(
@@ -1303,26 +1419,46 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         ax: plt.Axes,
         title: str,
         x_label: str,
+        article_compact: bool = False,
     ) -> None:
-        """Generic layered histogram using absolute counts."""
+        """Generic histogram using explicit bar patches for vector editing."""
         if df.empty:
             ax.axis("off")
             return
 
-        sns.histplot(
-            data=df,
-            x=x_col,
-            hue=hue_col,
-            multiple="layer",
-            palette=palette,
-            hue_order=hue_order,
-            bins=np.arange(0, 105, 5),
-            edgecolor="k",
-            alpha=1,
-            ax=ax,
-        )
+        bin_edges = np.arange(0, 105, 5)
+        bin_width = float(np.diff(bin_edges).min())
+        plot_df = df[[x_col, hue_col]].copy()
+        plot_df[x_col] = pd.to_numeric(plot_df[x_col], errors="coerce")
+        plot_df = plot_df.dropna(subset=[x_col])
 
-        ax.axvline(tol * 100, color="k", linestyle=":", lw=1.5)
+        for z_idx, category in enumerate(hue_order, start=2):
+            if category not in palette:
+                continue
+            values = plot_df.loc[plot_df[hue_col] == category, x_col].to_numpy(
+                dtype=float
+            )
+            if values.size == 0:
+                continue
+            counts, _ = np.histogram(values, bins=bin_edges)
+            ax.bar(
+                bin_edges[:-1],
+                counts,
+                width=bin_width,
+                align="edge",
+                color=palette[category],
+                edgecolor="k",
+                linewidth=0.5 if article_compact else 1.0,
+                label=category,
+                zorder=z_idx,
+            )
+
+        ax.axvline(
+            tol * 100,
+            color="k",
+            linestyle=":",
+            lw=0.75 if article_compact else 1.5,
+        )
 
         handles = [mlines.Line2D([], [], color="none", label="Status")]
         handles.extend(
@@ -1348,6 +1484,19 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             start_bbox=(0.5, 1.0),
             layout_cols=1,
             sublegend_cols=1,
+            **(
+                {
+                    "fontsize": 4.0,
+                    "title_fontsize": 4.4,
+                    "borderaxespad": 0.0,
+                    "handlelength": 1.0,
+                    "handletextpad": 0.3,
+                    "labelspacing": 0.25,
+                    "borderpad": 0.3,
+                }
+                if article_compact
+                else {}
+            ),
         )
 
         self._apply_standard_format(
@@ -1391,14 +1540,14 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         ax.set_xlim(0 - margin_left, 33 + margin_right)
         ax.set_ylim(0 - margin_bottom, 10 + margin_top)
 
-        color_mar = "tab:red"
-        color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
+        color_mar = pu.PRIMARY_ACCENT_COLOR
+        color_mnar = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
         color_inv = "tab:gray"
         color_pass = "white"
         box_style = "round,pad=0.12,rounding_size=0.18"
         node_fontsize = 12 if has_group_info else 14
         intensity_label = (
-            f"QC intensity ≤ {_format_percentile_label(mnar_intensity_pct)}"
+            f"QC intensity <= {pu.format_percentile_label(mnar_intensity_pct)}"
         )
 
         def _node(
@@ -1758,10 +1907,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 "Min_Group_MV_Pct",
                 "Stage1_Status",
                 active_base_tol,
-                {"MAR": "tab:red", "INVALID": "tab:gray"},
+                {"MAR": pu.PRIMARY_ACCENT_COLOR, "INVALID": pu.NEUTRAL_COLOR},
                 ["MAR", "INVALID"],
                 ax_base_check,
-                (f"MAR Eligibility Check\nMin group MV ≤ {active_base_tol * 100:.0f}%"),
+                ("MAR Eligibility Check"),
                 "Min Group-level MV (%)",
             )
 
@@ -1806,7 +1955,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 "QC_MV_Pct",
                 "Stage1_Status",
                 active_base_tol,
-                {"MAR": "tab:red", "INVALID": "tab:gray"},
+                {"MAR": pu.PRIMARY_ACCENT_COLOR, "INVALID": pu.NEUTRAL_COLOR},
                 ["MAR", "INVALID"],
                 ax_base_check,
                 "QC-level MV Check",
@@ -1818,10 +1967,120 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             return ax_flow / row_bottom
 
     # =========================================================================
+    # Manuscript-only filtering article dashboards
+    # =========================================================================
+    def plot_high_mv_filter_article_dashboard(self) -> object | None:
+        """Create a compact three-panel summary of high-MV feature screening.
+
+        The manuscript-only layout retains the three decision diagnostics used
+        to classify group-rescued MNAR, QC-rescued MNAR, and MAR features. It
+        is deliberately independent of the full Stage 1 dashboard so the
+        standard report layout and its typography remain unchanged.
+        """
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("patchworklib not found. Skipping article dashboard.")
+            return None
+
+        tracking_df = self.engine.stats.get("stage1_tracking", pd.DataFrame())
+        if tracking_df.empty:
+            logger.warning("Stage 1 tracking data are unavailable for article export.")
+            return None
+
+        has_group_info = (
+            "Max_Group_MV_Pct" in tracking_df.columns
+            and tracking_df["Max_Group_MV_Pct"].notna().any()
+        )
+        if not has_group_info:
+            logger.warning(
+                "Group-level MNAR rescue is unavailable; skipping high-MV article dashboard."
+            )
+            return None
+
+        sample_type = self.engine.attrs.get("sample_type", "Sample Type")
+        sample_dict = self.engine.attrs.get("sample_dict", {})
+        qc_label = sample_dict.get("QC sample", "QC")
+        qc_mask = (
+            self.engine.columns.get_level_values(sample_type) == qc_label
+            if sample_type in self.engine.columns.names
+            else np.zeros(self.engine.shape[1], dtype=bool)
+        )
+        mnar_int_threshold = None
+        if qc_mask.any():
+            mnar_intensity_pct = self.engine.attrs.get("mnar_intensity_pct", 0.1)
+            raw_threshold = self.engine.loc[:, qc_mask].median(axis=1).quantile(
+                mnar_intensity_pct
+            )
+            mnar_int_threshold = np.log2(raw_threshold + 1)
+
+        active_base_tol = self.engine.attrs.get("mv_group_tol", 0.5)
+        mnar_group_mv_tol = self.engine.attrs.get("mnar_group_mv_tol", 0.8)
+        mnar_qc_mv_tol = self.engine.attrs.get("mnar_qc_mv_tol", 0.2)
+        mnar_intensity_pct = self.engine.attrs.get("mnar_intensity_pct", 0.1)
+
+        pw.clear()
+        # Patchworklib adds fixed label/legend padding. This width yields an
+        # approximately 17.7 cm export, within the ACS double-column limit.
+        panel_size = (1.72, 1.72)
+        ax_group = pw.Brick(figsize=panel_size, label="article_group_rescue")
+        ax_qc = pw.Brick(figsize=panel_size, label="article_qc_rescue")
+        ax_mar = pw.Brick(figsize=panel_size, label="article_mar_eligibility")
+
+        self._plot_group_rescue_scatter(
+            tracking_df,
+            "Max_Group_MV_Pct",
+            "Min_Group_MV_Pct",
+            mnar_group_mv_tol,
+            active_base_tol,
+            ax_group,
+            "Group-level MNAR Rescue",
+            article_compact=True,
+        )
+        self._apply_filter_article_panel_format(
+            ax_group, "Group-level MNAR Rescue"
+        )
+
+        after_group = tracking_df[
+            ~tracking_df["Stage1_Status"].str.contains("Group", na=False)
+        ]
+        self._plot_qc_rescue_scatter(
+            after_group,
+            mnar_qc_mv_tol,
+            mnar_int_threshold,
+            ax_qc,
+            "QC-level MNAR Rescue",
+            mnar_intensity_pct=mnar_intensity_pct,
+            article_compact=True,
+        )
+        self._apply_filter_article_panel_format(ax_qc, "QC-level MNAR Rescue")
+
+        after_qc = after_group[
+            ~after_group["Stage1_Status"].str.contains("QC", na=False)
+        ]
+        self._plot_cutoff_histogram(
+            after_qc,
+            "Min_Group_MV_Pct",
+            "Stage1_Status",
+            active_base_tol,
+            {"MAR": pu.PRIMARY_ACCENT_COLOR, "INVALID": pu.NEUTRAL_COLOR},
+            ["MAR", "INVALID"],
+            ax_mar,
+            "MAR Eligibility Check",
+            "Min group MV (%)",
+            article_compact=True,
+        )
+        self._apply_filter_article_panel_format(ax_mar, "MAR Eligibility Check")
+
+        return ax_group | ax_qc | ax_mar
+
+    # =========================================================================
     # Low-quality Features Filtering Unified Summary Dashboard (1+N Layout)
     # =========================================================================
     def _plot_retained_count_steps(
-        self, ax: plt.Axes | None = None
+        self,
+        ax: plt.Axes | None = None,
+        article_compact: bool = False,
     ) -> plt.Figure | plt.Axes:
         """Plot feature attrition cascade stacked bar chart by MAR/MNAR."""
 
@@ -1897,8 +2156,8 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         mnar_counts = mnar_all[valid_idx]
         inv_counts = inv_all[valid_idx]
 
-        color_mar = "tab:red"
-        color_mnar = pu.get_equivalent_hex("tab:red", alpha=0.5)
+        color_mar = pu.PRIMARY_ACCENT_COLOR
+        color_mnar = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
         color_inv = "tab:gray"
 
         x = np.arange(len(labels))
@@ -1916,6 +2175,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 color=color_mar,
                 edgecolor="k",
                 width=width,
+                linewidth=0.5 if article_compact else 1.0,
             )
             current_bottom += mar_counts
 
@@ -1928,6 +2188,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 color=color_mnar,
                 edgecolor="k",
                 width=width,
+                linewidth=0.5 if article_compact else 1.0,
             )
             current_bottom += mnar_counts
 
@@ -1940,6 +2201,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
                 color=color_inv,
                 edgecolor="k",
                 width=width,
+                linewidth=0.5 if article_compact else 1.0,
             )
             current_bottom += inv_counts
 
@@ -1951,7 +2213,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         pu.show_values_on_bars(
             axs=current_ax,
             value_format="{:.0f}",
-            fontsize=8,
+            fontsize=5.2 if article_compact else 8,
             stacked=True,
             skip_zero=True,
             threshold_pct=0.05,
@@ -1970,6 +2232,19 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             group_title="Feature Type",
             loc="upper right",
             bbox_to_anchor=None,
+            **(
+                {
+                    "fontsize": 4.0,
+                    "title_fontsize": 4.4,
+                    "borderaxespad": 0.0,
+                    "handlelength": 1.0,
+                    "handletextpad": 0.3,
+                    "labelspacing": 0.25,
+                    "borderpad": 0.3,
+                }
+                if article_compact
+                else {}
+            ),
         )
 
         max_height = totals.max() if len(totals) > 0 else 1
@@ -1980,7 +2255,10 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         return current_ax
 
     def _plot_qc_blank_scatter(
-        self, ax: plt.Axes | None = None
+        self,
+        ax: plt.Axes | None = None,
+        article_compact: bool = False,
+        legend_inside: bool = False,
     ) -> plt.Figure | plt.Axes | None:
         """Plots Log2 scatter of QC vs Blank intensities."""
         blank_mean = self.engine.stats.get("blank_mean")
@@ -2003,7 +2281,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         if not valid_mnar.empty:
             df_plot.loc[valid_mnar, "Feature Type"] = "MNAR"
 
-        # [CRITICAL FIX]: Use blank_safe for ratio to match engine logic.
+        # Use blank_safe for ratios to match the filtering engine.
         # NaN <= 0.2 evaluates to False, falsely flagging them as Filtered.
         blank_qc_ratio_tol = self.engine.attrs.get("blank_qc_ratio_tol", 0.2)
         qc_safe = qc_mean.replace(0, np.finfo(float).eps).astype(float)
@@ -2012,25 +2290,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             blank_safe / qc_safe <= blank_qc_ratio_tol, "Retained", "Filtered"
         )
 
-        # # ====================================================================
-        # # [DEBUG MODULE]: Print exact coordinates of MNAR points to console
-        # # ====================================================================
-        # mnar_df = df_plot[df_plot["Feature Type"] == "MNAR"]
-        # logger.info(
-        #     f"--- DEBUG: Total MNAR features mapped: {len(mnar_df)} ---")
-
-        # for status in ["Retained", "Filtered"]:
-        #     subset = mnar_df[mnar_df["Status"] == status]
-        #     logger.info(f"DEBUG | MNAR [{status}]: {len(subset)} features.")
-        #     if not subset.empty:
-        #         # Print up to 10 coordinates to avoid terminal flooding
-        #         logger.info(
-        #             f"DEBUG | MNAR [{status}] Coordinates (QC, Blank):\n"
-        #             f"{subset[['QC', 'Blank']].head(10)}"
-        #         )
-        # # ====================================================================
-
-        # [CRITICAL FIX]: Sort DataFrame to ensure MNAR points plot on top.
+        # Sort DataFrame so MNAR points remain visible on top.
         # Alphabetical sorting ("MAR" < "MNAR") pushes MNAR to the bottom of
         # the DataFrame, causing seaborn to render them last and on top.
         df_plot = df_plot.sort_values(by="Feature Type", ascending=True)
@@ -2047,12 +2307,12 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             y="Blank",
             ax=current_ax,
             hue="Status",
-            palette={"Retained": "tab:gray", "Filtered": "tab:red"},
+            palette={"Retained": pu.NEUTRAL_COLOR, "Filtered": pu.PRIMARY_ACCENT_COLOR},
             style="Feature Type",
             markers={"MAR": "o", "MNAR": "X"},
-            s=50,
+            s=6 if article_compact else 50,
             edgecolor="k",
-            linewidth=0.5,
+            linewidth=0.15 if article_compact else 0.5,
         )
 
         lims = [
@@ -2065,7 +2325,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             np.log2(((2**x_line - 1) * blank_qc_ratio_tol) + 1),
             color="k",
             linestyle="--",
-            linewidth=1.5,
+            linewidth=0.75 if article_compact else 1.5,
             label=f"Ratio={blank_qc_ratio_tol}",
         )
 
@@ -2080,10 +2340,29 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         self._format_multi_legends(
             ax=current_ax,
             group_titles=["Status", "Feature Type"],
-            loc="upper left",
-            start_bbox=(1.05, 1.0),
+            loc=(
+                "upper left"
+                if article_compact
+                else ("upper right" if legend_inside else "upper left")
+            ),
+            start_bbox=(0.02, 0.98)
+            if article_compact
+            else ((0.98, 0.98) if legend_inside else (1.05, 1.0)),
             layout_cols=1,
             sublegend_cols=1,
+            **(
+                {
+                    "fontsize": 4.0,
+                    "title_fontsize": 4.4,
+                    "borderaxespad": 0.0,
+                    "handlelength": 1.0,
+                    "handletextpad": 0.3,
+                    "labelspacing": 0.25,
+                    "borderpad": 0.3,
+                }
+                if article_compact
+                else {}
+            ),
         )
 
         if ax is None:
@@ -2091,82 +2370,90 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         return current_ax
 
     def _plot_rsd_dist(
-        self, idx_mnar: pd.Index | list[object], ax: plt.Axes | None = None
+        self,
+        idx_mar: pd.Index | list[object],
+        ax: plt.Axes | None = None,
+        article_compact: bool = False,
     ) -> plt.Figure | plt.Axes | None:
-        """Plot RSD distribution with consistent bins for MAR and MNAR."""
+        """Plot the MAR-only QC-RSD distribution used for reproducibility filtering."""
         qc_rsd_all = self.engine.stats.get("qc_rsd_all")
         if qc_rsd_all is None or qc_rsd_all.empty:
             return None if ax is None else ax
 
-        if not isinstance(idx_mnar, pd.Index):
-            idx_mnar = pd.Index(idx_mnar)
+        if not isinstance(idx_mar, pd.Index):
+            idx_mar = pd.Index(idx_mar)
 
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(4, 4))
         else:
             current_ax = ax
             fig = current_ax.figure
+        pu.mark_preserve_alpha(current_ax)
 
         qc_rsd_tol = self.engine.attrs.get("qc_rsd_tol", 0.3)
-        idx_mnar_valid = qc_rsd_all.index.intersection(idx_mnar)
+        mar_rsd = qc_rsd_all.loc[qc_rsd_all.index.intersection(idx_mar)].dropna()
+        if mar_rsd.empty:
+            current_ax.axis("off")
+            return fig if ax is None else current_ax
 
-        types = pd.Series("MAR", index=qc_rsd_all.index)
-        if not idx_mnar_valid.empty:
-            types.loc[idx_mnar_valid] = "MNAR"
-
-        df_plot = pd.DataFrame({"RSD": qc_rsd_all, "Feature Type": types})
-
-        max_rsd = float(qc_rsd_all.max())
+        max_rsd = float(mar_rsd.max())
         bin_edges = np.linspace(0, max_rsd, 50)
+        mar_color = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0)
 
         sns.histplot(
-            data=df_plot,
-            x="RSD",
-            hue="Feature Type",
-            palette={"MAR": "tab:gray", "MNAR": "tab:red"},
-            hue_order=[
-                t for t in ["MAR", "MNAR"] if t in df_plot["Feature Type"].values
-            ],
+            x=mar_rsd,
+            color=mar_color,
             bins=bin_edges,
             kde=True,
             ax=current_ax,
             legend=False,
             edgecolor="k",
-            alpha=0.6,
+            linewidth=0.5 if article_compact else 1.0,
         )
 
-        current_ax.axvline(x=qc_rsd_tol, color="k", linestyle="--", linewidth=1.5)
+        current_ax.axvline(
+            x=qc_rsd_tol,
+            color="k",
+            linestyle="--",
+            linewidth=0.75 if article_compact else 1.5,
+        )
 
-        handles = []
-        if "MAR" in df_plot["Feature Type"].values:
-            handles.append(
-                mpatches.Patch(
-                    facecolor="tab:gray", edgecolor="k", linewidth=1.0, label="MAR"
-                )
-            )
-        if "MNAR" in df_plot["Feature Type"].values:
-            handles.append(
-                mpatches.Patch(
-                    facecolor="tab:red", edgecolor="k", linewidth=1.0, label="MNAR"
-                )
-            )
-
-        handles.append(
+        handles = [
+            mpatches.Patch(
+                facecolor=mar_color,
+                edgecolor="k",
+                linewidth=0.5 if article_compact else 1.0,
+                label="MAR features",
+            ),
             mlines.Line2D(
                 [],
                 [],
                 color="k",
                 linestyle="--",
                 label=f"MAR Threshold ({qc_rsd_tol})",
-                linewidth=1.0,
+                linewidth=0.5 if article_compact else 1.0,
+            ),
+        ]
+
+        legend_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
+        if article_compact:
+            legend_kwargs.update(
+                {
+                    "fontsize": 4.0,
+                    "title_fontsize": 4.4,
+                    "borderaxespad": 0.0,
+                    "handlelength": 1.0,
+                    "handletextpad": 0.3,
+                    "labelspacing": 0.25,
+                    "borderpad": 0.3,
+                }
             )
-        )
 
         current_ax.legend(
             handles=handles,
-            title="Feature Type",
+            title="QC-RSD filter",
             loc="upper right",
-            **getattr(self, "LEGEND_KWARGS", {}),
+            **legend_kwargs,
         )
 
         self._apply_standard_format(
@@ -2199,7 +2486,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
         blank_mean = self.engine.stats.get("blank_mean")
         has_blanks = blank_mean is not None and not blank_mean.empty
 
-        idx_mnar = self.engine.stats.get("idx_mnar", pd.Index([]))
+        idx_mar = self.engine.stats.get("idx_mar", pd.Index([]))
 
         # 2. Topology A: 1x3 Grid (Blank samples exist)
         if has_blanks:
@@ -2208,7 +2495,7 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             ax3 = pw.Brick(figsize=(4, 4), label="retention")
 
             self._plot_qc_blank_scatter(ax=ax1)
-            self._plot_rsd_dist(idx_mnar=idx_mnar, ax=ax2)
+            self._plot_rsd_dist(idx_mar=idx_mar, ax=ax2)
             self._plot_retained_count_steps(ax=ax3)
 
             return ax1 | ax2 | ax3
@@ -2218,7 +2505,60 @@ class MetaboVisualizerFilter(visualizer_classes.BaseMetaboVisualizer):
             ax2 = pw.Brick(figsize=(4, 4), label="qc_rsd")
             ax3 = pw.Brick(figsize=(4, 4), label="retention")
 
-            self._plot_rsd_dist(idx_mnar=idx_mnar, ax=ax2)
+            self._plot_rsd_dist(idx_mar=idx_mar, ax=ax2)
             self._plot_retained_count_steps(ax=ax3)
 
             return ax2 | ax3
+
+    def plot_low_quality_filter_article_dashboard(self) -> object | None:
+        """Create a compact three-panel summary of low-quality feature filtering.
+
+        The QC-RSD panel deliberately reuses the MAR-only distribution used by
+        the filtering engine. MNAR features remain absent from this diagnostic
+        because they are exempt from the QC-RSD reproducibility filter.
+        """
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("patchworklib not found. Skipping article dashboard.")
+            return None
+
+        blank_mean = self.engine.stats.get("blank_mean")
+        idx_mar = self.engine.stats.get("idx_mar", pd.Index([]))
+        if blank_mean is None or blank_mean.empty or len(idx_mar) == 0:
+            logger.warning(
+                "Blank/QC and MAR QC-RSD inputs are required for the article dashboard."
+            )
+            return None
+
+        pw.clear()
+        # Compensate for the smaller low-quality layout margin so the exported
+        # dashboard matches the high-MV article dashboard at approximately 17.7 cm.
+        panel_size = (1.72, 1.72)
+        ax_blank = pw.Brick(figsize=panel_size, label="article_blank_qc")
+        ax_rsd = pw.Brick(figsize=panel_size, label="article_qc_rsd")
+        ax_retention = pw.Brick(figsize=panel_size, label="article_feature_retention")
+
+        self._plot_qc_blank_scatter(
+            ax=ax_blank,
+            article_compact=True,
+            legend_inside=True,
+        )
+        self._apply_filter_article_panel_format(ax_blank, "Blank/QC Check")
+
+        self._plot_rsd_dist(
+            idx_mar=idx_mar,
+            ax=ax_rsd,
+            article_compact=True,
+        )
+        self._apply_filter_article_panel_format(ax_rsd, "QC-RSD Check")
+
+        self._plot_retained_count_steps(
+            ax=ax_retention,
+            article_compact=True,
+        )
+        self._apply_filter_article_panel_format(
+            ax_retention, "Feature Retention Across Filtering Steps"
+        )
+
+        return ax_blank | ax_rsd | ax_retention

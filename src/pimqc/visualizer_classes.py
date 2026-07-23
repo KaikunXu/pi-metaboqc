@@ -17,6 +17,7 @@ import itertools
 from typing import Optional, Union
 from pathlib import Path
 
+from matplotlib import font_manager
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -28,6 +29,7 @@ from . import plot_utils as pu
 from . import io_utils as iu
 
 logging.getLogger("fontTools").setLevel(logging.WARNING)
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 
 class BaseMetaboVisualizer:
@@ -38,8 +40,22 @@ class BaseMetaboVisualizer:
     targeting Adobe Illustrator compatibility and background consistency.
     """
 
-    FIG_SAVE_FORMAT = ["svg", "pdf"] # or "svg"
+    FIG_SAVE_FORMAT = ["svg", "pdf"]  # or "svg"
     FIG_DISPLAY_FORMAT = "png"
+    VECTOR_FONT_FAMILY = "Helvetica"
+    VECTOR_FONT_FALLBACKS = [
+        "Helvetica",
+        "Arial",
+        "Liberation Sans",
+        "Nimbus Sans",
+        "DejaVu Sans",
+        "sans-serif",
+    ]
+    VECTOR_TEXT_LINEBREAK_MODE = "keep"
+    VECTOR_TEXT_REPLACE_HYPHEN = True
+    VECTOR_TEXT_REPLACE_SPACES = True
+    VECTOR_TEXT_HYPHEN_REPLACEMENT = "\u2013"
+    VECTOR_AUTO_SCI_NOTATION = True
 
     def __init__(
         self,
@@ -57,23 +73,47 @@ class BaseMetaboVisualizer:
         # ==========================================
         # Global Matplotlib & Seaborn Configuration
         # ==========================================
-        # Ensure high-quality vector export across PDF, PS, and SVG formats
+        self.runtime_font_family = self._resolve_runtime_font(
+            self.VECTOR_FONT_FALLBACKS
+        )
+        self.runtime_font_fallbacks = [
+            self.runtime_font_family,
+            *[
+                font_name
+                for font_name in self.VECTOR_FONT_FALLBACKS
+                if font_name != self.runtime_font_family
+            ],
+        ]
+
+        # Ensure high-quality editable vector export across PDF, PS, and SVG.
         plt.rcParams["pdf.fonttype"] = 42
         plt.rcParams["ps.fonttype"] = 42
+        plt.rcParams["pdf.use14corefonts"] = False
         plt.rcParams["svg.fonttype"] = "none"
         plt.rcParams["savefig.dpi"] = 300
         plt.rcParams["savefig.bbox"] = "tight"
+        plt.rcParams["text.usetex"] = False
+        plt.rcParams["axes.unicode_minus"] = False
 
-        # Hard-lock to Arial to prevent AI from throwing DejaVu errors
-        plt.rcParams["font.family"] = "Arial"
-        plt.rcParams["font.sans-serif"] = ["Arial"]
+        # Prefer Helvetica, with broadly available sans-serif fallbacks for
+        # editable vector output across Matplotlib, PDF viewers, and AI.
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = self.runtime_font_fallbacks
+        plt.rcParams["font.stretch"] = "normal"
+        plt.rcParams["font.style"] = "normal"
+        plt.rcParams["font.variant"] = "normal"
+        plt.rcParams["font.weight"] = "normal"
+        plt.rcParams["mathtext.fontset"] = "custom"
+        plt.rcParams["mathtext.rm"] = self.runtime_font_family
+        plt.rcParams["mathtext.it"] = f"{self.runtime_font_family}:italic"
+        plt.rcParams["mathtext.bf"] = f"{self.runtime_font_family}:bold"
 
         # Force white style to ensure background consistency
         sns.set_style("ticks")
         plt.rcParams["axes.facecolor"] = "white"
         plt.rcParams["figure.facecolor"] = "white"
 
-        # [CRITICAL UPDATE]: Comprehensive hook for SVG editability
+        # Configure Axes defaults for editable vector exports.
         import matplotlib.axes
 
         if not hasattr(matplotlib.axes.Axes, "_pi_metaboqc_patched"):
@@ -157,25 +197,41 @@ class BaseMetaboVisualizer:
 
         # Global Palette Definition
         self.pal = {
-            self.qc_lbl: "tab:red",
-            self.act_lbl: "tab:gray",
-            True: "tab:red",
-            False: "tab:gray",
+            self.qc_lbl: pu.PRIMARY_ACCENT_COLOR,
+            self.act_lbl: pu.NEUTRAL_COLOR,
+            True: pu.PRIMARY_ACCENT_COLOR,
+            False: pu.NEUTRAL_COLOR,
         }
 
         # Global Legend Style Configuration
         self.LEGEND_KWARGS = dict(
             frameon=True,
-            shadow=True,
+            shadow=False,
             edgecolor="black",
             fontsize=10,
             title_fontsize=11,
             borderpad=0.4,
             facecolor="white",
+            framealpha=1.0,
         )
 
     @staticmethod
-    def _clean_svg_fonts_for_ai(svg_data: str, target_font: str = "Arial") -> str:
+    def _resolve_runtime_font(font_candidates: list[str]) -> str:
+        """Return the first installed sans-serif font from a candidate list."""
+        for font_name in font_candidates:
+            if font_name == "sans-serif":
+                continue
+            try:
+                font_manager.findfont(font_name, fallback_to_default=False)
+                return font_name
+            except ValueError:
+                continue
+        return "DejaVu Sans"
+
+    @staticmethod
+    def _clean_svg_fonts_for_ai(
+        svg_input: str | Path, target_font: str = "Helvetica"
+    ) -> str:
         """Purify SVG font definitions safely for Adobe Illustrator compatibility.
 
         This method removes all fallback font declarations generated by Matplotlib
@@ -183,33 +239,95 @@ class BaseMetaboVisualizer:
         ensure the underlying XML/SVG tree structure remains completely intact.
 
         Args:
-            svg_data: The raw SVG XML string to be cleaned.
-            target_font: The desired font family name. Defaults to "Arial".
+            svg_input: Raw SVG XML string or path to an SVG file.
+            target_font: The desired font family name or CSS fallback stack.
 
         Returns:
             The purified SVG XML string.
         """
+        svg_text = str(svg_input)
+        is_svg_path = False
+        if not svg_text.lstrip().startswith("<"):
+            svg_path = Path(svg_text)
+            if svg_path.exists() and svg_path.suffix.lower() == ".svg":
+                svg_text = svg_path.read_text(encoding="utf-8")
+                is_svg_path = True
 
         # 1. Clean inline CSS styles (e.g., style="font-family: 'DejaVu Sans';").
         # The regex matches "font-family:" followed by any whitespace, and then
         # consumes all characters until it hits a semicolon (;) or a double
         # quote ("). This safely removes single-quoted fallback fonts without
         # corrupting surrounding HTML attributes or XML tags.
-        svg_data = re.sub(
-            r'font-family:\s*[^;"]+', f"font-family: {target_font}", svg_data
+        svg_text = re.sub(
+            r'font-family:\s*[^;"]+', f"font-family: {target_font}", svg_text
         )
+        svg_text = re.sub(r'font-stretch:\s*[^;"]+', "font-stretch: normal", svg_text)
+        svg_text = re.sub(r'font-style:\s*[^;"]+', "font-style: normal", svg_text)
 
         # 2. Clean standard XML attributes (e.g., font-family="DejaVu Sans").
-        svg_data = re.sub(
-            r'font-family="[^"]+"', f'font-family="{target_font}"', svg_data
+        svg_text = re.sub(
+            r'font-family="[^"]+"', f'font-family="{target_font}"', svg_text
         )
+        svg_text = re.sub(r'font-stretch="[^"]+"', 'font-stretch="normal"', svg_text)
+        svg_text = re.sub(r'font-style="[^"]+"', 'font-style="normal"', svg_text)
 
         # 3. Clean single-quoted attributes (e.g., font-family='DejaVu Sans').
-        svg_data = re.sub(
-            r"font-family='[^']+'", f"font-family='{target_font}'", svg_data
+        svg_text = re.sub(
+            r"font-family='[^']+'", f"font-family='{target_font}'", svg_text
+        )
+        svg_text = re.sub(r"font-stretch='[^']+'", "font-stretch='normal'", svg_text)
+        svg_text = re.sub(r"font-style='[^']+'", "font-style='normal'", svg_text)
+
+        if is_svg_path:
+            svg_path.write_text(svg_text, encoding="utf-8")
+
+        return svg_text
+
+    def _svg_font_family_stack(self) -> str:
+        """Return a CSS-compatible SVG font-family fallback stack."""
+        return ", ".join(self.VECTOR_FONT_FALLBACKS)
+
+    def _prepare_figure_for_vector_export(
+        self,
+        fig: plt.Figure,
+        linebreak_mode: str | None = None,
+    ) -> None:
+        """Normalize text and numeric axes before editable vector export."""
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+
+        pu.normalize_figure_text_for_vector_export(
+            fig=fig,
+            target_font=self.runtime_font_fallbacks,
+            replace_hyphen=self.VECTOR_TEXT_REPLACE_HYPHEN,
+            replace_spaces=self.VECTOR_TEXT_REPLACE_SPACES,
+            linebreak_mode=linebreak_mode or self.VECTOR_TEXT_LINEBREAK_MODE,
+            hyphen_replacement=self.VECTOR_TEXT_HYPHEN_REPLACEMENT,
         )
 
-        return svg_data
+        if self.VECTOR_AUTO_SCI_NOTATION:
+            for ax in fig.axes:
+                pu.apply_smart_axis_notation(ax=ax, axis="xy")
+
+        pu.solidify_figure_alpha(fig=fig, bg_color="white")
+
+        try:
+            fig.canvas.draw()
+        except Exception:
+            pass
+
+    def _prepare_open_figures_for_vector_export(
+        self,
+        linebreak_mode: str | None = None,
+    ) -> None:
+        """Apply vector-export preparation to all currently open figures."""
+        for fig_num in plt.get_fignums():
+            self._prepare_figure_for_vector_export(
+                fig=plt.figure(fig_num),
+                linebreak_mode=linebreak_mode,
+            )
 
     def _apply_standard_format(
         self,
@@ -247,6 +365,28 @@ class BaseMetaboVisualizer:
             if stage_label and f"[{stage_label}]" not in title:
                 title = f"{title}\n[{stage_label}]"
 
+        title = pu.normalize_vector_text(
+            title,
+            replace_hyphen=self.VECTOR_TEXT_REPLACE_HYPHEN,
+            replace_spaces=self.VECTOR_TEXT_REPLACE_SPACES,
+            linebreak_mode="keep",
+            hyphen_replacement=self.VECTOR_TEXT_HYPHEN_REPLACEMENT,
+        )
+        xlabel = pu.normalize_vector_text(
+            xlabel,
+            replace_hyphen=self.VECTOR_TEXT_REPLACE_HYPHEN,
+            replace_spaces=self.VECTOR_TEXT_REPLACE_SPACES,
+            linebreak_mode="keep",
+            hyphen_replacement=self.VECTOR_TEXT_HYPHEN_REPLACEMENT,
+        )
+        ylabel = pu.normalize_vector_text(
+            ylabel,
+            replace_hyphen=self.VECTOR_TEXT_REPLACE_HYPHEN,
+            replace_spaces=self.VECTOR_TEXT_REPLACE_SPACES,
+            linebreak_mode="keep",
+            hyphen_replacement=self.VECTOR_TEXT_HYPHEN_REPLACEMENT,
+        )
+
         ax.set_title(title)
         if xlabel:
             ax.set_xlabel(xlabel)
@@ -266,6 +406,99 @@ class BaseMetaboVisualizer:
             axis="xy",
         )
 
+        if self.VECTOR_AUTO_SCI_NOTATION:
+            pu.apply_smart_axis_notation(ax=ax, axis="xy")
+
+    @staticmethod
+    def _apply_article_panel_format(
+        ax: plt.Axes,
+        title: str | None = None,
+        tick_fontsize: float = pu.ARTICLE_AXIS_TICK_FONTSIZE,
+        label_fontsize: float = pu.ARTICLE_AXIS_LABEL_FONTSIZE,
+        title_fontsize: float = pu.ARTICLE_TITLE_FONTSIZE,
+        annotation_fontsize: float = pu.ARTICLE_ANNOTATION_FONTSIZE,
+    ) -> plt.Axes:
+        """Compress an axis for a dense manuscript composite without changing defaults."""
+        if title is not None:
+            ax.set_title(title, fontsize=title_fontsize, fontweight="bold", pad=2.0)
+        else:
+            ax.title.set_fontsize(title_fontsize)
+            ax.title.set_fontweight("bold")
+            ax.title.set_pad(2.0)
+
+        pu.change_fontsize(
+            ax=ax,
+            axis_ticks_fontsize=tick_fontsize,
+            axis_label_fontsize=label_fontsize,
+            title_fontsize=title_fontsize,
+        )
+        ax.tick_params(axis="both", pad=1.0, length=2.0, width=0.6)
+        for label in [ax.xaxis.get_offset_text(), ax.yaxis.get_offset_text()]:
+            label.set_fontsize(tick_fontsize)
+        for text_artist in ax.texts:
+            text_artist.set_fontsize(annotation_fontsize)
+        BaseMetaboVisualizer._apply_article_legend_style(
+            ax=ax,
+            fontsize=pu.ARTICLE_LEGEND_FONTSIZE,
+            title_fontsize=pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+        )
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+        return ax
+
+    @staticmethod
+    def _apply_article_legend_style(
+        ax: plt.Axes,
+        fontsize: float = pu.ARTICLE_LEGEND_FONTSIZE,
+        title_fontsize: float = pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+        frame_linewidth: float = 0.5,
+        handle_linewidth: float = 0.5,
+        marker_edgewidth: float = 0.5,
+    ) -> None:
+        """Apply a restrained, vector-friendly style to article-only legends.
+
+        ``_format_multi_legends`` stores all but the final sublegend in
+        ``ax.artists``. Styling both locations keeps grouped standalone legends
+        visually consistent without changing the standard dashboard defaults.
+        """
+        legend_candidates = [ax.get_legend(), *ax.artists]
+        seen: set[int] = set()
+        for legend in legend_candidates:
+            if legend is None or not hasattr(legend, "get_texts"):
+                continue
+            legend_id = id(legend)
+            if legend_id in seen:
+                continue
+            seen.add(legend_id)
+
+            for legend_text in legend.get_texts():
+                legend_text.set_fontsize(fontsize)
+                legend_text.set_ha("left")
+                legend_text.set_multialignment("left")
+            legend_title = legend.get_title()
+            if legend_title is not None:
+                legend_title.set_fontsize(title_fontsize)
+                legend_title.set_ha("left")
+                legend_title.set_multialignment("left")
+
+            try:
+                legend._legend_box.align = "left"
+            except Exception:
+                pass
+
+            frame = legend.get_frame()
+            if frame is not None:
+                frame.set_linewidth(frame_linewidth)
+
+            handles = getattr(
+                legend, "legend_handles", getattr(legend, "legendHandles", [])
+            )
+            for handle in handles:
+                if hasattr(handle, "set_linewidth"):
+                    handle.set_linewidth(handle_linewidth)
+                if hasattr(handle, "set_markeredgewidth"):
+                    handle.set_markeredgewidth(marker_edgewidth)
+
     def _format_single_legend(
         self,
         ax: plt.Axes,
@@ -273,7 +506,7 @@ class BaseMetaboVisualizer:
         bbox_to_anchor: tuple[float, float] | None = (1.05, 1.0),
         group_title: str | None = None,
         legend_cols: int | None = None,
-        max_item_rows: int | None = None,
+        max_item_rows: int | None = 6,
         **kwargs: object,
     ) -> None:
         """
@@ -332,21 +565,40 @@ class BaseMetaboVisualizer:
             legend_kwargs["title"] = group_title
 
         # 5. Generate the new stylized legend and bind it to the Axes
-        ax.legend(
+        legend = ax.legend(
             handles, labels, loc=loc, bbox_to_anchor=bbox_to_anchor, **legend_kwargs
         )
+        self._center_legend_title(legend)
+
+    @staticmethod
+    def _center_legend_title(legend: object | None) -> None:
+        """Left-align a Matplotlib legend title and entries when present."""
+        if legend is None:
+            return
+        try:
+            title = legend.get_title()
+            if title is not None:
+                title.set_ha("left")
+                title.set_multialignment("left")
+            for legend_text in legend.get_texts():
+                legend_text.set_ha("left")
+                legend_text.set_multialignment("left")
+            legend._legend_box.align = "left"
+        except Exception:
+            return
 
     def _format_multi_legends(
         self,
         ax: plt.Axes,
         group_titles: list[str],
+        group_header_labels: list[str] | None = None,
         loc: str = "upper left",
         start_bbox: tuple[float, float] = (1.05, 1.0),
         row_gap: float = 0.04,
         layout_cols: int = 1,
         column_gap: float = 0.15,
         sublegend_cols: Optional[Union[int, dict[str, int]]] = None,
-        max_item_rows: Optional[int] = None,
+        max_item_rows: Optional[int] = 6,
         **kwargs: object,
     ) -> list[object]:
         """
@@ -371,7 +623,13 @@ class BaseMetaboVisualizer:
         if not handles or not group_titles:
             return []
 
-        title_idx = [i for i, label in enumerate(labels) if label in group_titles]
+        header_labels = group_header_labels or group_titles
+        if len(header_labels) != len(group_titles):
+            raise ValueError(
+                "group_header_labels must contain exactly one entry for each group title."
+            )
+
+        title_idx = [i for i, label in enumerate(labels) if label in header_labels]
         if not title_idx:
             return []
         title_idx.append(len(labels))
@@ -462,12 +720,12 @@ class BaseMetaboVisualizer:
                 sub_h = handles[s_idx + 1 : e_idx]
                 sub_l = labels[s_idx + 1 : e_idx]
 
-                global_grp_idx += 1
-
                 if not sub_h:
+                    global_grp_idx += 1
                     continue
 
-                group_title = labels[s_idx]
+                group_title = group_titles[global_grp_idx]
+                global_grp_idx += 1
                 sub_ncol = _group_item_ncols(group_title, len(sub_h))
                 new_leg = ax.legend(
                     sub_h,
@@ -478,8 +736,9 @@ class BaseMetaboVisualizer:
                     ncol=sub_ncol,
                     **leg_kwargs,
                 )
+                self._center_legend_title(new_leg)
 
-                # [CRITICAL]: add_artist trick.
+                # Keep each legend attached to the parent Axes for patchwork layouts.
                 # Leave the final legend as ax.legend_ to force PW bbox expansion
                 if global_grp_idx < n_groups:
                     ax.add_artist(new_leg)
@@ -525,6 +784,73 @@ class BaseMetaboVisualizer:
 
         return created
 
+    def _plot_grouped_standalone_legends(
+        self,
+        ax: plt.Axes,
+        legend_groups: list[tuple[str, list[object]]],
+        loc: str = "upper left",
+        start_bbox: tuple[float, float] = (0.0, 1.0),
+        row_gap: float = 0.04,
+        layout_cols: int = 1,
+        column_gap: float = 0.15,
+        sublegend_cols: Optional[Union[int, dict[str, int]]] = None,
+        max_item_rows: Optional[int] = 6,
+        **kwargs: object,
+    ) -> list[object]:
+        """Draw grouped legends inside a standalone axis with adaptive spacing."""
+        import matplotlib.patches as mpatches
+
+        ax.axis("off")
+        dummy = mpatches.Rectangle(
+            (0, 0), 1, 1, fill=False, edgecolor="none", visible=False
+        )
+        seed_handles: list[object] = []
+        seed_labels: list[str] = []
+        group_titles: list[str] = []
+        group_header_labels: list[str] = []
+
+        for group_index, (group_title, group_handles) in enumerate(legend_groups):
+            clean_handles = [handle for handle in group_handles if handle is not None]
+            if not clean_handles:
+                continue
+
+            group_titles.append(group_title)
+            # Matplotlib suppresses labels beginning with an underscore, even
+            # when handles are passed explicitly.  Use a private-looking but
+            # renderable sentinel so _format_multi_legends can recover every
+            # group reliably before the temporary legend is removed.
+            header_label = f"PIMQC_LEGEND_HEADER_{group_index}"
+            group_header_labels.append(header_label)
+            seed_handles.append(dummy)
+            seed_labels.append(header_label)
+            for handle in clean_handles:
+                seed_handles.append(handle)
+                seed_labels.append(str(handle.get_label()))
+
+        if not group_titles:
+            return []
+
+        ax.legend(
+            seed_handles,
+            seed_labels,
+            loc=loc,
+            bbox_to_anchor=start_bbox,
+            frameon=False,
+        )
+        return self._format_multi_legends(
+            ax=ax,
+            group_titles=group_titles,
+            group_header_labels=group_header_labels,
+            loc=loc,
+            start_bbox=start_bbox,
+            row_gap=row_gap,
+            layout_cols=layout_cols,
+            column_gap=column_gap,
+            sublegend_cols=sublegend_cols,
+            max_item_rows=max_item_rows,
+            **kwargs,
+        )
+
     def _format_unified_multi_legends(
         self,
         ax: plt.Axes,
@@ -533,7 +859,7 @@ class BaseMetaboVisualizer:
         start_bbox: tuple[float, float] = (1.05, 1.0),
         group_title: str | None = None,
         legend_cols: int | None = None,
-        max_item_rows: int | None = None,
+        max_item_rows: int | None = 6,
         **kwargs: object,
     ) -> list[object]:
         """
@@ -609,6 +935,7 @@ class BaseMetaboVisualizer:
         final_leg = ax.legend(
             combined_h, combined_l, loc=loc, bbox_to_anchor=start_bbox, **leg_kwargs
         )
+        self._center_legend_title(final_leg)
 
         return [final_leg]
 
@@ -618,7 +945,7 @@ class BaseMetaboVisualizer:
         is_patchwork: bool,
         display_format: str = "svg",
         width: Optional[Union[int, str]] = "60%",
-        transparent: bool = True,
+        transparent: bool = False,
     ) -> None:
         """Render plots within a Jupyter Notebook with explicit format control.
 
@@ -642,8 +969,7 @@ class BaseMetaboVisualizer:
         display_fmt = display_format.lower()
         if display_fmt not in ["svg", "png"]:
             logger.warning(
-                f"Unsupported display format: '{display_format}'. "
-                "Defaulting to 'svg'."
+                f"Unsupported display format: '{display_format}'. Defaulting to 'svg'."
             )
             display_fmt = "svg"
 
@@ -657,14 +983,17 @@ class BaseMetaboVisualizer:
         )
 
         if is_patchwork:
-            # Isolate Patchworklib rendering in a secure temporary directory
+            # Isolate Patchworklib rendering in a runtime work directory.
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_path = os.path.join(tmpdir, f"preview.{display_fmt}")
 
                 if display_fmt == "svg":
+                    self._prepare_open_figures_for_vector_export()
                     # Maintain SVG transparency for HTML rendering
                     obj.savefig(tmp_path, transparent=transparent)
-                    self._clean_svg_fonts_for_ai(tmp_path)
+                    self._clean_svg_fonts_for_ai(
+                        tmp_path, target_font=self._svg_font_family_stack()
+                    )
 
                     with open(tmp_path, "r", encoding="utf-8") as f:
                         raw_svg = f.read()
@@ -686,7 +1015,7 @@ class BaseMetaboVisualizer:
                     display(HTML(f'<div style="{container_style}">{preview_svg}</div>'))
 
                 elif display_fmt == "png":
-                    # Force white background and opaque rendering for the temporary
+                    # Force white background and opaque rendering for the runtime
                     # preview image to ensure visibility in dark-themed IDEs
                     obj.savefig(tmp_path, transparent=False, facecolor="white")
                     with open(tmp_path, "rb") as f:
@@ -698,8 +1027,12 @@ class BaseMetaboVisualizer:
             # Native matplotlib figure pipeline via raw BytesIO memory buffers
             buf = io.BytesIO()
             if display_fmt == "svg":
+                self._prepare_figure_for_vector_export(obj)
                 obj.savefig(buf, format="svg", transparent=transparent)
                 svg_data = buf.getvalue().decode("utf-8")
+                svg_data = self._clean_svg_fonts_for_ai(
+                    svg_data, target_font=self._svg_font_family_stack()
+                )
 
                 svg_data = re.sub(
                     r'(<svg[^>]*?\s)width="[^"]+"', r'\1width="100%"', svg_data, count=1
@@ -737,7 +1070,7 @@ class BaseMetaboVisualizer:
         save_format: Optional[str] = None,
         display_format: Optional[str] = None,
         width: Optional[Union[int, str]] = "30%",
-        transparent: bool = True,
+        transparent: bool = False,
     ) -> None:
         """Save a Matplotlib figure and manage targeted Jupyter display.
 
@@ -776,6 +1109,11 @@ class BaseMetaboVisualizer:
                 if isinstance(actual_save_fmt, str)
                 else list(actual_save_fmt)
             )
+            vector_formats = {"svg", "pdf"}
+            if any(
+                str(fmt).lower().strip(".") in vector_formats for fmt in format_list
+            ):
+                self._prepare_figure_for_vector_export(fig)
 
             for fmt in format_list:
                 clean_fmt = fmt.lower().strip(".")
@@ -784,7 +1122,9 @@ class BaseMetaboVisualizer:
                 fig.savefig(out_path, transparent=transparent, format=clean_fmt)
 
                 if clean_fmt == "svg":
-                    self._clean_svg_fonts_for_ai(out_path)
+                    self._clean_svg_fonts_for_ai(
+                        out_path, target_font=self._svg_font_family_stack()
+                    )
 
         plt.close(fig)
 
@@ -796,7 +1136,7 @@ class BaseMetaboVisualizer:
         save_format: Optional[str] = None,
         display_format: Optional[str] = None,
         width: Optional[Union[int, str]] = "60%",
-        transparent: bool = True,
+        transparent: bool = False,
     ) -> None:
         """Save a Patchworklib brick composite and route targeted display.
 
@@ -844,6 +1184,11 @@ class BaseMetaboVisualizer:
                 if isinstance(actual_save_fmt, str)
                 else list(actual_save_fmt)
             )
+            vector_formats = {"svg", "pdf"}
+            if any(
+                str(fmt).lower().strip(".") in vector_formats for fmt in format_list
+            ):
+                self._prepare_open_figures_for_vector_export()
 
             for fmt in format_list:
                 clean_fmt = fmt.lower().strip(".")
@@ -852,7 +1197,11 @@ class BaseMetaboVisualizer:
                 pw_obj.savefig(out_path, transparent=transparent)
 
                 if clean_fmt == "svg":
-                    self._clean_svg_fonts_for_ai(out_path)
+                    self._clean_svg_fonts_for_ai(
+                        out_path, target_font=self._svg_font_family_stack()
+                    )
 
-        # Secure teardown barrier
-        plt.close("all")
+        # Avoid invalid Tk toolbar handles when multiple patchworklib figures are
+        # created and saved sequentially in the same Windows session.
+        if "tk" not in plt.get_backend().lower():
+            plt.close("all")

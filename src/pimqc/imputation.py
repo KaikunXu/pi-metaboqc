@@ -6,7 +6,8 @@ execute_imputation() reads MAR/MNAR feature labels from MetaboInt attributes,
 log-transforms the working matrix, imputes MNAR features with QRILC or
 LOD-style constants, and handles MAR features with Median, MinProb, KNN, LLS,
 BPCA, or AUTO selection. AUTO mode masks observed values, benchmarks candidates
-with stratified NRMSE, and applies the selected algorithm feature-wise.
+with stratified NRMSE and distribution-preservation metrics, and applies the
+selected algorithm feature-wise.
 The method reconstructs the original intensity scale, preserves metadata,
 stores candidate and QA metrics, writes the imputed matrix, and renders KDE
 and NRMSE diagnostics.
@@ -179,11 +180,7 @@ class BayesianPCAImputer:
         t_mat /= rows
         tr_s /= rows
 
-        dw = (
-            rx_inv
-            + tau * t_mat.T @ pa @ rx_inv
-            + np.diag(model["alpha"]) / rows
-        )
+        dw = rx_inv + tau * t_mat.T @ pa @ rx_inv + np.diag(model["alpha"]) / rows
         dw_inv = self._safe_inverse(dw)
 
         pa_new = t_mat @ dw_inv
@@ -355,19 +352,22 @@ class MetaboIntImputer(core_classes.MetaboInt):
     # ====================================================================
     def calc_imp_quality_metrics(
         self, raw_obj: core_classes.MetaboInt, imp_obj: core_classes.MetaboInt
-    ) -> tuple[dict[str, Any], pd.DataFrame]:
-        """Calculate QA metrics (JSD) and prepare KDE plotting data.
+    ) -> dict[str, Any]:
+        """Calculate post-imputation distribution QA metrics for the passport.
 
-        Computes Jensen-Shannon Divergence for dual combinations and
-        constructs a long-form DataFrame for KDE plotting.
+        Computes Jensen-Shannon and Wasserstein distances for final QC and sample
+        matrices separately. These values are retained as post-imputation QA
+        diagnostics; AUTO selection instead uses masked-value metrics.
 
         Returns:
-            metrics (dict): Contains the quantified JSD evaluation scores.
-            df_kde (pd.DataFrame): Long-form DataFrame strictly for plotting.
+            Contains the quantified post-imputation QA metrics.
         """
-        metrics = {"JSD": {"QC": {}, "Sample": {}}}
-        dfs = []
-
+        metrics = {
+            "JSD": {"QC": {}, "Sample": {}},
+            "Wasserstein": {"QC": {}, "Sample": {}},
+            "JSD_Score": {"QC": {}, "Sample": {}},
+            "Wasserstein_Score": {"QC": {}, "Sample": {}},
+        }
         raw_log = np.log2(raw_obj.astype(float).replace({0: np.nan}) + 1.0)
         imp_log = np.log2(imp_obj.astype(float) + 1.0)
 
@@ -393,57 +393,36 @@ class MetaboIntImputer(core_classes.MetaboInt):
             imp_only = imp_only[~np.isnan(imp_only)]
 
             if len(obs) > 0 and len(imp_all) > 0:
-                jsd_1 = su.calc_jsd_similarity(obs, imp_all)
-                val_1 = (
-                    jsd_1.get("JSD", jsd_1.get("jsd", np.nan))
-                    if isinstance(jsd_1, dict)
-                    else jsd_1
-                )
-                metrics["JSD"][grp]["Before vs After (All)"] = float(val_1)
+                dist_1 = su.calc_distribution_distance_metrics(obs, imp_all)
+                jsd_val = su.finite_or_nan(dist_1.get("jsd"))
+                wd_val = su.finite_or_nan(dist_1.get("wasserstein_normalized"))
+                metrics["JSD"][grp]["Before vs After (All)"] = jsd_val
+                metrics["Wasserstein"][grp]["Before vs After (All)"] = wd_val
+                if np.isfinite(jsd_val):
+                    metrics["JSD_Score"][grp]["Before vs After (All)"] = float(
+                        np.clip(1.0 - jsd_val, 0.0, 1.0)
+                    )
+                if np.isfinite(wd_val):
+                    metrics["Wasserstein_Score"][grp][
+                        "Before vs After (All)"
+                    ] = float(1.0 / (1.0 + max(wd_val, 0.0)))
 
             if len(obs) > 0 and len(imp_only) > 0:
-                jsd_2 = su.calc_jsd_similarity(obs, imp_only)
-                val_2 = (
-                    jsd_2.get("JSD", jsd_2.get("jsd", np.nan))
-                    if isinstance(jsd_2, dict)
-                    else jsd_2
-                )
-                metrics["JSD"][grp]["Before vs Imputed Only"] = float(val_2)
+                dist_2 = su.calc_distribution_distance_metrics(obs, imp_only)
+                jsd_val = su.finite_or_nan(dist_2.get("jsd"))
+                wd_val = su.finite_or_nan(dist_2.get("wasserstein_normalized"))
+                metrics["JSD"][grp]["Before vs Imputed Only"] = jsd_val
+                metrics["Wasserstein"][grp]["Before vs Imputed Only"] = wd_val
+                if np.isfinite(jsd_val):
+                    metrics["JSD_Score"][grp]["Before vs Imputed Only"] = float(
+                        np.clip(1.0 - jsd_val, 0.0, 1.0)
+                    )
+                if np.isfinite(wd_val):
+                    metrics["Wasserstein_Score"][grp][
+                        "Before vs Imputed Only"
+                    ] = float(1.0 / (1.0 + max(wd_val, 0.0)))
 
-            # Compile plotting data
-            if len(obs) > 0:
-                dfs.append(
-                    pd.DataFrame(
-                        {
-                            "Log2_Intensity": obs,
-                            "Group": grp,
-                            "Type": "Before Imputation",
-                        }
-                    )
-                )
-            if len(imp_all) > 0:
-                dfs.append(
-                    pd.DataFrame(
-                        {
-                            "Log2_Intensity": imp_all,
-                            "Group": grp,
-                            "Type": "After Imputation",
-                        }
-                    )
-                )
-            if len(imp_only) > 0:
-                dfs.append(
-                    pd.DataFrame(
-                        {
-                            "Log2_Intensity": imp_only,
-                            "Group": grp,
-                            "Type": "Imputed Data",
-                        }
-                    )
-                )
-
-        df_kde = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-        return metrics, df_kde
+        return metrics
 
     # ====================================================================
     # Core Algorithms (Log2 Space)
@@ -550,7 +529,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
     @staticmethod
     def impute_by_knn(df_log: pd.DataFrame, n_neighbors: int = 5) -> pd.DataFrame:
         """Impute missing values using K-Nearest Neighbors algorithm."""
-        # [CRITICAL FIX]: Dynamic neighbor scaling for isolated small groups
+        # Scale neighbor count for isolated small groups.
         n_samples = df_log.shape[1]
         safe_k = min(n_neighbors, n_samples - 1)
 
@@ -582,7 +561,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         # Fallback: If dataset is too sparse and lacks complete features
         if n_complete < 2:
             logger.debug(
-                "Insufficient complete features for LLS." "Falling back to median."
+                "Insufficient complete features for LLS. Falling back to median."
             )
             return df_log.apply(lambda x: x.fillna(x.median()), axis=1).fillna(0.0)
 
@@ -712,7 +691,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
             # Draw random values simulating noise below the detection limit
             drawn = rng.normal(loc=shift_mean, scale=shift_std, size=s.isna().sum())
 
-            # [CRITICAL FIX]: Prevent negative intensities in linear space
+            # Prevent negative intensities in linear space.
             # Log2 values must be >= 0 so that exp2(x) - 1.0 >= 0
             drawn = np.clip(drawn, a_min=0.0, a_max=None)
             res_df.loc[s.isna(), col] = drawn
@@ -762,36 +741,6 @@ class MetaboIntImputer(core_classes.MetaboInt):
     # ====================================================================
     # Evaluation Logic (Hybrid Masking & Stratified NRMSE)
     # ====================================================================
-
-    # @staticmethod
-    # def generate_abundance_mask(df_log, mask_ratio, noise_factor=1.0):
-    #     """Generate an abundance-dependent mask for MNAR simulation."""
-    #     np.random.seed(42)
-    #     shape = df_log.shape
-    #     valid_mask = ~df_log.isna()
-    #     target_nas = int(valid_mask.values.sum() * mask_ratio)
-
-    #     if target_nas == 0:
-    #         return pd.DataFrame(
-    #             False, index=df_log.index, columns=df_log.columns
-    #         )
-
-    #     feat_meds = df_log.median(axis=1).fillna(0)
-    #     log_meds = np.log2(feat_meds + 1.0)
-    #     max_v = log_meds.max() if log_meds.max() > 0 else 1.0
-    #     rel_abd = log_meds / max_v
-
-    #     # Base probability weight is inversely proportional to abundance
-    #     weight_mat = np.tile((1.0 - rel_abd).values[:, None], (1, shape[1]))
-    #     final_score = weight_mat + np.random.uniform(0, noise_factor, shape)
-    #     final_score[~valid_mask.values] = -1.0
-
-    #     cutoff = np.sort(final_score.flatten())[-target_nas]
-    #     mask_arr = (final_score >= cutoff) & valid_mask.values
-
-    #     return pd.DataFrame(
-    #         mask_arr, index=df_log.index, columns=df_log.columns
-    #     )
 
     @staticmethod
     def generate_gmm_noise_mask(
@@ -923,7 +872,31 @@ class MetaboIntImputer(core_classes.MetaboInt):
         # 2. Return exactly 3 objects to match the unpacking logic
         return metrics, t_all, p_all
 
-    def run_benchmark_simulation(
+    @staticmethod
+    def _low_value_reference_impute(masked_df: pd.DataFrame) -> pd.DataFrame:
+        """Fill missing entries with one-half of the global observed minimum."""
+        observed = masked_df.to_numpy(dtype=float)
+        observed = observed[np.isfinite(observed)]
+        if observed.size == 0:
+            fill_value = 0.0
+        else:
+            linear_observed = np.exp2(observed) - 1.0
+            positive_values = linear_observed[
+                np.isfinite(linear_observed) & (linear_observed > 0)
+            ]
+            if positive_values.size == 0:
+                fill_value = float(np.nanmin(observed))
+            else:
+                fill_value = float(np.log2(np.nanmin(positive_values) * 0.5 + 1.0))
+        return masked_df.fillna(fill_value)
+
+    @staticmethod
+    def _reference_improvement_score(reference: object, value: object) -> float:
+        """Score improvement over a lower-is-better reference metric."""
+        score = su.relative_change_lower_better(reference, value)
+        return float(np.clip(score, 0.0, 1.0)) if np.isfinite(score) else float("nan")
+
+    def _evaluate_imputation_candidate(
         self,
         df_log: pd.DataFrame,
         idx_mar: pd.Index,
@@ -933,11 +906,10 @@ class MetaboIntImputer(core_classes.MetaboInt):
         global_seed: int = 123,
         batch_array: Optional[np.ndarray] = None,
     ) -> tuple:
-        """Runs MNAR/MAR mask simulation strictly on MAR features."""
-        # 1. Isolate the MAR subset for benchmarking
+        """Evaluate one MAR imputation candidate on an artificial mask."""
         mar_data = df_log.loc[idx_mar, target_cols].astype(float)
+        mar_data.attrs["is_logged"] = True
 
-        # 2. Generate the boolean mask with batch-awareness
         mask = self.generate_gmm_noise_mask(
             mar_data,
             ratio,
@@ -946,12 +918,13 @@ class MetaboIntImputer(core_classes.MetaboInt):
             batch_array=batch_array,
         )
 
-        # 3. Apply the mask to create the simulated missing dataset
         masked_df = mar_data.copy()
         masked_df[mask] = np.nan
 
-        # 4. Execute imputation on the masked subset with absolute isolation
-        if method in ("Prob", "prob", "MinProb", "minprob"):
+        method_key = str(method).replace(" ", "").replace("-", "").upper()
+        if method_key in ("HALFGLOBALMIN", "HALFGLOBALMINREFERENCE", "LOWVALUEREF"):
+            imp_res = self._low_value_reference_impute(masked_df)
+        elif method in ("Prob", "prob", "MinProb", "minprob"):
             imp_res = self._apply_isolated(
                 masked_df, self.impute_by_minprob, global_seed=global_seed
             )
@@ -973,21 +946,136 @@ class MetaboIntImputer(core_classes.MetaboInt):
                 max_iter=self.attrs.get("bpca_max_iter", 100),
                 threshold=self.attrs.get("bpca_tol", 1e-4),
             )
+        elif method_key in ("QRILC", "QRLIC"):
+            imp_res = self._apply_isolated(
+                masked_df,
+                self.impute_by_qrilc,
+                global_seed=global_seed,
+            )
         else:
             imp_res = self._apply_isolated(
                 masked_df, lambda df: df.apply(lambda x: x.fillna(x.median()), axis=1)
             )
+        imp_res.attrs["is_logged"] = True
 
-        # 5. Compute fidelity strictly on the artificially masked locations
         eval_met, t_vals, p_vals = self.compute_stratified_nrmse(
             mar_data, imp_res, mask
         )
+        dist_metrics = su.calc_distribution_distance_metrics(t_vals, p_vals)
+        structure_metrics = su.calc_sample_structure_preservation(
+            raw_obj=mar_data,
+            transformed_obj=imp_res,
+            sample_cols=target_cols,
+            max_features=5000,
+            seed=global_seed,
+        )
+        eval_met.update(
+            {
+                "JSD_Total": dist_metrics["jsd"],
+                "Wasserstein_Total": dist_metrics["wasserstein"],
+                "Wasserstein_Normalized": dist_metrics["wasserstein_normalized"],
+                "Sample_Structure_Score": structure_metrics[
+                    "sample_structure_composite_preservation"
+                ],
+                "Trustworthiness": structure_metrics[
+                    "sample_structure_trustworthiness"
+                ],
+                "Distance_Rank_Preservation": structure_metrics[
+                    "sample_structure_rank_preservation"
+                ],
+                "Distance_Scale_Preservation": structure_metrics[
+                    "sample_structure_scale_preservation"
+                ],
+            }
+        )
         return eval_met, t_vals, p_vals
 
-    # ====================================================================
-    # Execution & Auto-Selection
-    # ====================================================================
-    def select_best_algorithm(
+    @staticmethod
+    def _score_imputation_candidates(
+        cache: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        reference_metrics: dict[str, float],
+    ) -> pd.DataFrame:
+        """Score MAR candidates against a half-global-min reference."""
+        rows = []
+        for method, (metrics, _, _) in cache.items():
+            rows.append(
+                {
+                    "method": method,
+                    "nrmse_total": metrics.get("NRMSE_Total"),
+                    "nrmse_low": metrics.get("NRMSE_Low"),
+                    "jsd_total": metrics.get("JSD_Total"),
+                    "wasserstein_normalized": metrics.get(
+                        "Wasserstein_Normalized"
+                    ),
+                    "sample_structure_score": metrics.get("Sample_Structure_Score"),
+                }
+            )
+        score_df = pd.DataFrame(rows)
+        if score_df.empty:
+            return score_df
+
+        ref_nrmse_total = reference_metrics.get("NRMSE_Total")
+        ref_nrmse_low = reference_metrics.get("NRMSE_Low")
+        ref_jsd = reference_metrics.get("JSD_Total")
+        ref_wasserstein = reference_metrics.get("Wasserstein_Normalized")
+
+        score_df["nrmse_total_score"] = score_df["nrmse_total"].apply(
+            lambda value: MetaboIntImputer._reference_improvement_score(
+                ref_nrmse_total, value
+            )
+        )
+        score_df["nrmse_low_score"] = score_df["nrmse_low"].apply(
+            lambda value: MetaboIntImputer._reference_improvement_score(
+                ref_nrmse_low, value
+            )
+        )
+        score_df["jsd_score"] = score_df["jsd_total"].apply(
+            lambda value: MetaboIntImputer._reference_improvement_score(
+                ref_jsd, value
+            )
+        )
+        score_df["wasserstein_score"] = score_df["wasserstein_normalized"].apply(
+            lambda value: MetaboIntImputer._reference_improvement_score(
+                ref_wasserstein, value
+            )
+        )
+
+        reconstruction_scores = []
+        distribution_scores = []
+        auto_scores = []
+        for row in score_df.itertuples():
+            reconstruction_score = su.weighted_mean_score(
+                [
+                    (row.nrmse_total_score, 0.70),
+                    (row.nrmse_low_score, 0.30),
+                ]
+            )
+            distribution_score = su.weighted_mean_score(
+                [
+                    (row.jsd_score, 0.50),
+                    (row.wasserstein_score, 0.50),
+                ]
+            )
+            auto_score = su.weighted_mean_score(
+                [
+                    (reconstruction_score, 0.65),
+                    (distribution_score, 0.20),
+                    (row.sample_structure_score, 0.15),
+                ]
+            )
+            reconstruction_scores.append(reconstruction_score)
+            distribution_scores.append(distribution_score)
+            auto_scores.append(auto_score)
+
+        score_df["reconstruction_score"] = reconstruction_scores
+        score_df["distribution_preservation_score"] = distribution_scores
+        score_df["sample_structure_score"] = pd.to_numeric(
+            score_df["sample_structure_score"], errors="coerce"
+        )
+        score_df["auto_score"] = auto_scores
+        return score_df
+
+    def _select_best_imputation_method(
         self,
         df_log: pd.DataFrame,
         idx_mar: pd.Index,
@@ -996,15 +1084,23 @@ class MetaboIntImputer(core_classes.MetaboInt):
         global_seed: int = 123,
         batch_array: Optional[np.ndarray] = None,
     ) -> tuple:
-        """Autonomously selects the best algorithm using MAR-only subset."""
-        candidates = ["KNN", "MinProb", "Median", "LLS", "BPCA"]
+        """Select the best MAR imputer from masked-reconstruction benchmarks."""
+        candidates = ["KNN", "MinProb", "QRILC", "Median", "LLS", "BPCA"]
         best_method = "KNN"
-        best_nrmse = float("inf")
         cache = {}
+        reference_metrics, _, _ = self._evaluate_imputation_candidate(
+            df_log=df_log,
+            idx_mar=idx_mar,
+            target_cols=target_cols,
+            method="HalfGlobalMinReference",
+            ratio=ratio,
+            global_seed=global_seed,
+            batch_array=batch_array,
+        )
 
         for cand in candidates:
             logger.info(f'Simulating "{cand}" on MAR subset...')
-            emet, tv, pv = self.run_benchmark_simulation(
+            emet, tv, pv = self._evaluate_imputation_candidate(
                 df_log=df_log,
                 idx_mar=idx_mar,
                 target_cols=target_cols,
@@ -1015,12 +1111,50 @@ class MetaboIntImputer(core_classes.MetaboInt):
             )
             cache[cand] = (emet, tv, pv)
 
-            nrmse_total = emet.get("NRMSE_Total", float("inf"))
-            if nrmse_total < best_nrmse:
-                best_nrmse = nrmse_total
-                best_method = cand
+        score_df = self._score_imputation_candidates(cache, reference_metrics)
+        if not score_df.empty and score_df["auto_score"].notna().any():
+            score_df = score_df.sort_values(
+                by=["auto_score", "nrmse_total", "method"],
+                ascending=[False, True, True],
+            )
+            best_method = str(score_df.iloc[0]["method"])
+            for row in score_df.itertuples():
+                metrics = cache[row.method][0]
+                metrics["Reconstruction_Score"] = su.finite_or_nan(
+                    row.reconstruction_score
+                )
+                metrics["Distribution_Preservation_Score"] = su.finite_or_nan(
+                    row.distribution_preservation_score
+                )
+                metrics["JSD_Score"] = su.finite_or_nan(row.jsd_score)
+                metrics["Wasserstein_Score"] = su.finite_or_nan(row.wasserstein_score)
+                metrics["Sample_Structure_Score"] = su.finite_or_nan(
+                    row.sample_structure_score
+                )
+                metrics["Auto_Score"] = su.finite_or_nan(row.auto_score)
+                metrics["Low_Value_Reference_NRMSE_Total"] = su.finite_or_nan(
+                    reference_metrics.get("NRMSE_Total")
+                )
+                metrics["Low_Value_Reference_NRMSE_Low"] = su.finite_or_nan(
+                    reference_metrics.get("NRMSE_Low")
+                )
+                metrics["Low_Value_Reference_JSD_Total"] = su.finite_or_nan(
+                    reference_metrics.get("JSD_Total")
+                )
+                metrics["Low_Value_Reference_Wasserstein_Normalized"] = (
+                    su.finite_or_nan(reference_metrics.get("Wasserstein_Normalized"))
+                )
+        else:
+            best_method = min(
+                cache,
+                key=lambda method: cache[method][0].get("NRMSE_Total", float("inf")),
+            )
 
-        logger.info(f"Optimal MAR algorithm selected: {best_method}")
+        best_score = cache[best_method][0].get("Auto_Score", float("nan"))
+        logger.info(
+            f"Optimal MAR algorithm selected: {best_method} "
+            f"(score={best_score:.3f})"
+        )
         return best_method, cache
 
     @cached_property
@@ -1228,12 +1362,12 @@ class MetaboIntImputer(core_classes.MetaboInt):
 
         if len(idx_mar) > 0:
             if is_auto:
-                _mar, cache = self.select_best_algorithm(
+                _mar, cache = self._select_best_imputation_method(
                     df_log, idx_mar, target_cols, _ratio, _seed, batch_array
                 )
                 eval_met, t_vals, p_vals = cache[_mar]
             else:
-                eval_met, t_vals, p_vals = self.run_benchmark_simulation(
+                eval_met, t_vals, p_vals = self._evaluate_imputation_candidate(
                     df_log, idx_mar, target_cols, _mar, _ratio, _seed, batch_array
                 )
 
@@ -1260,6 +1394,12 @@ class MetaboIntImputer(core_classes.MetaboInt):
                     max_iter=_bpca_max_iter,
                     threshold=_bpca_tol,
                 )
+            elif str(_mar).upper() in ("QRILC", "QRLIC"):
+                mar_imp = self._apply_isolated(
+                    mar_slice,
+                    self.impute_by_qrilc,
+                    global_seed=_seed,
+                )
             else:
                 mar_imp = self._apply_isolated(
                     mar_slice,
@@ -1280,19 +1420,47 @@ class MetaboIntImputer(core_classes.MetaboInt):
 
         imputed_obj.attrs["pipeline_stage"] = "Imputation"
         imputed_obj.attrs["imputation_status"] = "Completed"
-        imputed_obj.attrs["selected_mar_method"] = _mar
+        display_mar_method = MetaboVisualizerImputer._format_imputation_method_label(
+            str(_mar)
+        )
+        imputed_obj.attrs["selected_mar_method"] = display_mar_method
         imputed_obj.attrs["mar_requested"] = mar_method or self.attrs.get(
             "mar_method", "auto"
         )
         imputed_obj.attrs["mnar_method"] = _mnar
         imputed_obj.attrs["mnar_fraction"] = _frac
 
+        eval_source = cache if cache else {display_mar_method: (eval_met, t_vals, p_vals)}
         cand_mets = {}
-        for m_name, (m_eval, _, _) in cache.items():
+        for m_name, (m_eval, _, _) in eval_source.items():
             cand_mets[m_name] = {
                 "nrmse_low": m_eval.get("NRMSE_Low", float("nan")),
                 "nrmse_high": m_eval.get("NRMSE_High", float("nan")),
                 "nrmse_total": m_eval.get("NRMSE_Total", float("nan")),
+                "jsd_total": m_eval.get("JSD_Total", float("nan")),
+                "wasserstein_total": m_eval.get("Wasserstein_Total", float("nan")),
+                "wasserstein_normalized": m_eval.get(
+                    "Wasserstein_Normalized", float("nan")
+                ),
+                "reconstruction_score": m_eval.get(
+                    "Reconstruction_Score", float("nan")
+                ),
+                "distribution_preservation_score": m_eval.get(
+                    "Distribution_Preservation_Score", float("nan")
+                ),
+                "jsd_score": m_eval.get("JSD_Score", float("nan")),
+                "wasserstein_score": m_eval.get("Wasserstein_Score", float("nan")),
+                "sample_structure_score": m_eval.get(
+                    "Sample_Structure_Score", float("nan")
+                ),
+                "trustworthiness": m_eval.get("Trustworthiness", float("nan")),
+                "distance_rank_preservation": m_eval.get(
+                    "Distance_Rank_Preservation", float("nan")
+                ),
+                "distance_scale_preservation": m_eval.get(
+                    "Distance_Scale_Preservation", float("nan")
+                ),
+                "auto_score": m_eval.get("Auto_Score", float("nan")),
             }
         imputed_obj.attrs["candidate_metrics"] = cand_mets
 
@@ -1300,7 +1468,7 @@ class MetaboIntImputer(core_classes.MetaboInt):
         # 5. EXPORT & VISUALIZATIONS
         # ====================================================================
         logger.info("Calculating imputation-related metrics...")
-        qa_metrics, df_kde = self.calc_imp_quality_metrics(
+        qa_metrics = self.calc_imp_quality_metrics(
             raw_obj=self, imp_obj=imputed_obj
         )
         imputed_obj.attrs["imputation_qa_metrics"] = qa_metrics
@@ -1310,28 +1478,105 @@ class MetaboIntImputer(core_classes.MetaboInt):
             imputed_obj.to_csv(os.path.join(output_dir, f"Imputed_Data_{_mar}.csv"))
 
             logger.info("Generating diagnostic plots for imputation...")
-            vis = MetaboVisualizerImputer(
-                raw_obj=self, imp_obj=imputed_obj, df_kde=df_kde
-            )
+            vis = MetaboVisualizerImputer(raw_obj=self, imp_obj=imputed_obj)
 
-            if len(idx_mar) > 0 and cache:
+            if len(idx_mar) > 0:
+                benchmark_results = (
+                    cache if cache else {_mar: (eval_met, t_vals, p_vals)}
+                )
                 if is_auto:
-                    fig_cands = vis.plot_multi_nrmse_scatters(cache)
+                    fig_grid = vis.plot_imputation_auto_dashboard(
+                        benchmark_results, best_method=_mar
+                    )
+                else:
+                    fig_grid = vis.plot_imputation_method_dashboard(
+                        metrics=eval_met,
+                        true_vals=t_vals,
+                        pred_vals=p_vals,
+                        method_name=display_mar_method,
+                    )
+                if fig_grid is not None:
+                    grid_path = os.path.join(
+                        output_dir, f"Imputation_Dashboard_{display_mar_method}.svg"
+                    )
                     vis.save_and_show_pw(
-                        pw_obj=fig_cands,
-                        file_path=os.path.join(output_dir, "Imputer_Candidates"),
+                        pw_obj=fig_grid,
+                        file_path=grid_path,
+                        width="60%" if is_auto else "45%",
+                    )
+                    logger.info(f"Imputation dashboard saved as: {grid_path}")
+
+                fig_candidates = (
+                    vis.plot_imputation_nrmse_appendix_grid(benchmark_results)
+                    if is_auto and cache
+                    else None
+                )
+                if fig_candidates is not None:
+                    candidate_path = os.path.join(
+                        output_dir,
+                        f"Imputation_Candidate_Dashboard_{display_mar_method}.svg",
+                    )
+                    vis.save_and_show_pw(
+                        pw_obj=fig_candidates,
+                        file_path=candidate_path,
                         width="60%",
                     )
-
-                fig_grid = vis.plot_imputation_summary_grid(
-                    t_vals, p_vals, eval_met, _mar, metrics=qa_metrics
-                )
-                if fig_grid:
-                    grid_path = os.path.join(
-                        output_dir, f"Imputation_Dashboard_{_mar}.svg"
+                    logger.info(
+                        "Imputer candidate NRMSE grid saved as: "
+                        f"{candidate_path}"
                     )
-                    vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
-                    logger.info(f"Imputer summary dashboard saved as: {grid_path}")
+
+                # Manuscript-only article dashboards are retained for manual
+                # figure assembly and are not generated by routine execution.
+                # if is_auto:
+                #     reconstruction_article = (
+                #         vis.plot_imputation_reconstruction_article_dashboard(
+                #             results_dict=benchmark_results,
+                #             best_method=_mar,
+                #         )
+                #     )
+                #     if reconstruction_article is not None:
+                #         reconstruction_path = os.path.join(
+                #             output_dir,
+                #             (
+                #                 "Imputation_Reconstruction_Article_Dashboard_"
+                #                 f"{display_mar_method}.svg"
+                #             ),
+                #         )
+                #         vis.save_and_show_pw(
+                #             pw_obj=reconstruction_article,
+                #             file_path=reconstruction_path,
+                #             width="45%",
+                #         )
+                #         logger.info(
+                #             "Imputation reconstruction article dashboard saved as: "
+                #             f"{reconstruction_path}"
+                #         )
+
+                # if is_auto:
+                #     preservation_article = (
+                #         vis.plot_imputation_preservation_article_dashboard(
+                #             results_dict=benchmark_results,
+                #             best_method=_mar,
+                #         )
+                #     )
+                #     if preservation_article is not None:
+                #         preservation_path = os.path.join(
+                #             output_dir,
+                #             (
+                #                 "Imputation_Preservation_Article_Dashboard_"
+                #                 f"{display_mar_method}.svg"
+                #             ),
+                #         )
+                #         vis.save_and_show_pw(
+                #             pw_obj=preservation_article,
+                #             file_path=preservation_path,
+                #             width="45%",
+                #         )
+                #         logger.info(
+                #             "Imputation preservation article dashboard saved as: "
+                #             f"{preservation_path}"
+                #         )
 
         logger.success("Missing value imputation completed successfully.")
         return imputed_obj
@@ -1344,192 +1589,220 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
         self,
         raw_obj: core_classes.MetaboInt,
         imp_obj: core_classes.MetaboInt,
-        df_kde: pd.DataFrame | None = None,
     ) -> None:
-        """Initialize the visualizer with pre-calculated KDE data arrays."""
+        """Initialize the imputation visualizer."""
         super().__init__(metabo_obj=imp_obj)
         self.raw_obj = raw_obj.astype(float).replace({0: np.nan})
         self.imp_obj = imp_obj.astype(float)
-        self.df_kde = df_kde if df_kde is not None else pd.DataFrame()
 
-    def _plot_imputed_kde_overlay(
+    def _plot_masked_distribution_fidelity(
         self,
-        metrics: dict[str, Any] | None = None,
-        ax_qc: plt.Axes | None = None,
-        ax_sample: plt.Axes | None = None,
-    ) -> plt.Figure | tuple[plt.Axes, plt.Axes]:
-        """Plot KDE overlay with independent styling and precise Z-orders."""
+        true_vals: np.ndarray,
+        pred_vals: np.ndarray,
+        metrics: dict[str, float] | None = None,
+        ax: plt.Axes | None = None,
+        compact_title: bool = False,
+        article_compact: bool = False,
+        show_legend: bool = False,
+    ) -> plt.Figure | plt.Axes:
+        """Plot score-aligned density fidelity for pooled masked nonblank values."""
         from scipy.stats import gaussian_kde
-        import matplotlib.colors as mcolors  # 引入颜色解析模块
 
-        return_fig = False
+        return_fig = ax is None
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(5.0, 4.0))
 
-        if self.df_kde.empty:
-            if ax_qc is None or ax_sample is None:
-                fig, ax = plt.subplots()
-                ax.text(0.5, 0.5, "No valid data to plot.", ha="center")
-                return fig
-            return ax_qc, ax_sample
+        truth = np.asarray(true_vals, dtype=float)
+        reconstruction = np.asarray(pred_vals, dtype=float)
+        truth = truth[np.isfinite(truth)]
+        reconstruction = reconstruction[np.isfinite(reconstruction)]
 
-        if ax_qc is None or ax_sample is None:
-            fig, (ax_qc, ax_sample) = plt.subplots(
-                1, 2, figsize=(11, 4), gridspec_kw={"width_ratios": [1, 1]}
+        if truth.size < 2 or reconstruction.size < 2:
+            ax.text(
+                0.5,
+                0.5,
+                "Insufficient masked values for density estimation.",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                bbox=pu.ai_ready_text_bbox(),
+                zorder=10,
             )
-            return_fig = True
-
-        layer_styles = {
-            "Before Imputation": {
-                "color": "black",
-                "fill": True,
-                "alpha": 0.2,
-                "ls": "--",
-                "lw": 1.5,
-                "z": 1,
-            },
-            "After Imputation": {
-                "color": "tab:gray",
-                "fill": False,
-                "alpha": 1.0,
-                "ls": "-",
-                "lw": 2.0,
-                "z": 2,
-            },
-            "Imputed Data": {
-                "color": "tab:red",
-                "fill": False,
-                "alpha": 1.0,
-                "ls": "-",
-                "lw": 2.0,
-                "z": 3,
-            },
-        }
-
-        plot_order = ["Before Imputation", "After Imputation", "Imputed Data"]
-
-        for grp, ax in [("QC", ax_qc), ("Sample", ax_sample)]:
-            subset_grp = self.df_kde[self.df_kde["Group"] == grp]
-
-            if subset_grp.empty:
-                ax.text(0.5, 0.5, f"No {grp} data available.", ha="center")
-                self._apply_standard_format(ax=ax, title=f"Density Overlay ({grp})")
-                continue
-
-            x_min = subset_grp["Log2_Intensity"].min()
-            x_max = subset_grp["Log2_Intensity"].max()
-            x_margin = (x_max - x_min) * 0.1 if x_max > x_min else 1.0
-            x_grid = np.linspace(x_min - x_margin, x_max + x_margin, 500)
-
-            total_baseline = len(subset_grp[subset_grp["Type"] == "After Imputation"])
-
-            for t in plot_order:
-                subset = subset_grp[subset_grp["Type"] == t]
-                if len(subset) > 1 and total_baseline > 0:
-                    vals = subset["Log2_Intensity"].values
-
-                    if np.std(vals) < 1e-6:
-                        rng = np.random.default_rng(123)
-                        vals = vals + rng.normal(0, 1e-4, size=len(vals))
-
-                    kde = gaussian_kde(vals)
-                    y_scaled = kde(x_grid) * (len(subset) / total_baseline)
-
-                    cfg = layer_styles[t]
-                    if cfg["fill"]:
-                        ax.fill_between(
-                            x_grid,
-                            y_scaled,
-                            color=cfg["color"],
-                            alpha=cfg["alpha"],
-                            zorder=cfg["z"],
-                            linewidth=0,
-                        )
-                        ax.plot(
-                            x_grid,
-                            y_scaled,
-                            color=cfg["color"],
-                            linestyle=cfg["ls"],
-                            linewidth=cfg["lw"],
-                            zorder=cfg["z"],
-                        )
-                        # [核心修复区] 彻底解耦图例背景与边框的透明度
-                        fc = mcolors.to_rgba(cfg["color"], alpha=cfg["alpha"])
-                        ec = mcolors.to_rgba(cfg["color"], alpha=1.0)
-
-                        ax.fill_between(
-                            [],
-                            [],
-                            facecolor=fc,
-                            edgecolor=ec,
-                            linestyle=cfg["ls"],
-                            linewidth=cfg["lw"],
-                            label=t,
-                        )
-                    else:
-                        ax.plot(
-                            x_grid,
-                            y_scaled,
-                            color=cfg["color"],
-                            linestyle=cfg["ls"],
-                            linewidth=cfg["lw"],
-                            alpha=cfg["alpha"],
-                            zorder=cfg["z"],
-                            label=t,
-                        )
-
-            if metrics and "JSD" in metrics and grp in metrics["JSD"]:
-                m_grp = metrics["JSD"][grp]
-                jsd_1 = m_grp.get("Before vs After (All)", np.nan)
-                jsd_2 = m_grp.get("Before vs Imputed Only", np.nan)
-
-                lines = ["Jensen-Shannon Divergence:"]
-                if not pd.isna(jsd_1):
-                    lines.append(f"Before vs After: {float(jsd_1):.3f}")
-                if not pd.isna(jsd_2):
-                    lines.append(f"Before vs Imputed: {float(jsd_2):.3f}")
-
-                if len(lines) > 1:
-                    annot_text = "\n".join(lines)
-                    ax.text(
-                        0.96,
-                        0.96,
-                        annot_text,
-                        transform=ax.transAxes,
-                        fontsize=9,
-                        verticalalignment="top",
-                        horizontalalignment="right",
-                        clip_on=False,
-                        bbox=dict(
-                            boxstyle="round,pad=0.4",
-                            facecolor="white",
-                            edgecolor="none",
-                            alpha=0.6,
-                        ),
-                    )
-
             self._apply_standard_format(
                 ax=ax,
-                title=f"Density Overlay ({grp})",
+                title="Distribution Fidelity"
+                if compact_title
+                else "Masked-Value Distribution Fidelity",
                 xlabel="Log2 Intensity",
                 ylabel="Relative Density",
                 append_stage=False,
             )
+            return fig if return_fig else ax
 
-            if ax.get_legend():
-                ax.get_legend().remove()
+        x_min = min(float(np.min(truth)), float(np.min(reconstruction)))
+        x_max = max(float(np.max(truth)), float(np.max(reconstruction)))
+        margin = (x_max - x_min) * 0.10 if x_max > x_min else 1.0
+        x_grid = np.linspace(x_min - margin, x_max + margin, 500)
 
-            if grp == "Sample":
-                self._format_single_legend(
-                    ax=ax,
-                    group_title="Data Type",
-                    bbox_to_anchor=(1.05, 1),
-                    loc="upper left",
+        def _evaluate_kde(values: np.ndarray, seed: int) -> np.ndarray:
+            kde_values = values.copy()
+            if np.nanstd(kde_values) < 1e-6:
+                rng = np.random.default_rng(seed)
+                kde_values += rng.normal(0.0, 1e-4, size=kde_values.size)
+            return gaussian_kde(kde_values)(x_grid)
+
+        truth_density = _evaluate_kde(truth, seed=123)
+        reconstruction_density = _evaluate_kde(reconstruction, seed=456)
+        y_max = max(
+            float(np.nanmax(truth_density)), float(np.nanmax(reconstruction_density))
+        )
+
+        pu.mark_preserve_alpha(ax)
+        ax.fill_between(
+            x_grid,
+            truth_density,
+            color="tab:gray",
+            alpha=0.20,
+            linewidth=0.0,
+            zorder=1,
+        )
+        ax.plot(
+            x_grid,
+            truth_density,
+            color="black",
+            linestyle="--",
+            linewidth=0.75 if article_compact else 1.5,
+            zorder=2,
+        )
+        ax.plot(
+            x_grid,
+            reconstruction_density,
+            color=pu.PRIMARY_ACCENT_COLOR,
+            linewidth=1.0 if article_compact else 2.0,
+            zorder=3,
+        )
+        ax.set_ylim(0.0, y_max * 1.35)
+
+        if metrics:
+            jsd = su.finite_or_nan(metrics.get("JSD_Total"))
+            wasserstein = su.finite_or_nan(
+                metrics.get("Wasserstein_Normalized")
+            )
+            annotation_lines = []
+            if np.isfinite(jsd):
+                annotation_lines.append(
+                    f"JSD: {jsd:.3f}"
+                    if article_compact
+                    else f"Jensen-Shannon distance: {jsd:.3f}"
+                )
+            if np.isfinite(wasserstein):
+                annotation_lines.append(
+                    f"W: {wasserstein:.3f}"
+                    if article_compact
+                    else f"Normalized Wasserstein distance: {wasserstein:.3f}"
+                )
+            if annotation_lines:
+                ax.text(
+                    0.96,
+                    0.96,
+                    "\n".join(annotation_lines),
+                    transform=ax.transAxes,
+                    fontsize=4.25 if article_compact else pu.DEFAULT_ANNOTATION_FONTSIZE,
+                    horizontalalignment="right",
+                    verticalalignment="top",
+                    bbox=pu.ai_ready_text_bbox(pad=0.25 if article_compact else 0.4),
+                    zorder=10,
                 )
 
-        if return_fig:
-            plt.tight_layout()
-            return fig
+        if show_legend:
+            import matplotlib.lines as mlines
 
-        return ax_qc, ax_sample
+            ax.legend(
+                handles=[
+                    mlines.Line2D(
+                        [],
+                        [],
+                        color="black",
+                        linestyle="--",
+                        linewidth=0.75 if article_compact else 1.5,
+                        label="Known masked values",
+                    ),
+                    mlines.Line2D(
+                        [],
+                        [],
+                        color=pu.PRIMARY_ACCENT_COLOR,
+                        linewidth=1.0 if article_compact else 2.0,
+                        label="Reconstructed values",
+                    ),
+                ]
+            )
+            self._format_single_legend(
+                ax=ax,
+                group_title="Masked-value density",
+                loc="lower right",
+                bbox_to_anchor=None,
+                max_item_rows=6,
+            )
+
+        self._apply_standard_format(
+            ax=ax,
+            title="Distribution Fidelity"
+            if compact_title
+            else "Masked-Value Distribution Fidelity",
+            xlabel="Log2 Intensity",
+            ylabel="Relative Density",
+            append_stage=False,
+        )
+        return fig if return_fig else ax
+
+    def _plot_kde_standalone_legend(
+        self,
+        ax: plt.Axes,
+        legend_cols: int = 3,
+        loc: str = "upper left",
+        bbox_to_anchor: tuple[float, float] | None = (0.0, 1.0),
+    ) -> plt.Axes:
+        """Draw a standalone legend for masked-density fidelity overlays."""
+        import matplotlib.lines as mlines
+
+        ax.axis("off")
+        handles = [
+            mlines.Line2D(
+                [],
+                [],
+                color="black",
+                linestyle="--",
+                linewidth=1.5,
+                label="Known masked values",
+            ),
+            mlines.Line2D(
+                [],
+                [],
+                color=pu.PRIMARY_ACCENT_COLOR,
+                linestyle="-",
+                linewidth=2.0,
+                label="Reconstructed values",
+            ),
+        ]
+        ax.legend(
+            handles=handles,
+            title="Masked-value density",
+            loc=loc,
+            bbox_to_anchor=bbox_to_anchor,
+            ncol=legend_cols,
+            frameon=True,
+            edgecolor="k",
+            borderaxespad=0.0,
+        )
+        self._format_single_legend(
+            ax=ax,
+            group_title="Masked-value density",
+            loc=loc,
+            bbox_to_anchor=bbox_to_anchor,
+            legend_cols=legend_cols,
+            borderaxespad=0.0,
+        )
+        return ax
 
     def _plot_nrmse_scatter(
         self,
@@ -1538,6 +1811,10 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
         metrics: dict[str, float],
         method_name: str = "",
         axis_lims: tuple[float, float] | None = None,
+        compact_title: bool = False,
+        show_method_in_title: bool = True,
+        show_colorbar: bool = True,
+        article_compact: bool = False,
         ax: plt.Axes | None = None,
     ) -> plt.Figure | plt.Axes:
         """Plot hexbin scatter of true vs imputed values from mask test."""
@@ -1560,7 +1837,10 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             extent = (lim_min, lim_max, lim_min, lim_max)
 
         color_map = pu.custom_linear_cmap(
-            color_list=["white", "tab:red"], n_colors=256, cmin=0.1, cmax=1.0
+            color_list=["white", pu.PRIMARY_ACCENT_COLOR],
+            n_colors=256,
+            cmin=0.1,
+            cmax=1.0,
         )
 
         hb = current_ax.hexbin(
@@ -1577,23 +1857,30 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             [lim_min, lim_max],
             color="tab:gray",
             linestyle="--",
-            linewidth=1.0,
+            linewidth=0.6 if article_compact else 1.0,
             zorder=3,
         )
 
         threshold = metrics.get("Threshold")
         if threshold is not None:
             current_ax.axvline(
-                x=threshold, color="tab:gray", linestyle="--", linewidth=1.0, alpha=0.8
+                x=threshold,
+                color="tab:gray",
+                linestyle="--",
+                linewidth=0.6 if article_compact else 1.0,
             )
             current_ax.axhline(
-                y=threshold, color="tab:gray", linestyle="--", linewidth=1.0, alpha=0.8
+                y=threshold,
+                color="tab:gray",
+                linestyle="--",
+                linewidth=0.6 if article_compact else 1.0,
             )
 
+        nrmse_total = float(metrics.get("NRMSE_Total", np.nan))
+        nrmse_low = float(metrics.get("NRMSE_Low", np.nan))
         annot_text = (
-            f"NRMSE_Total: {metrics['NRMSE_Total']:.4f}\n"
-            f"NRMSE_Low:   {metrics['NRMSE_Low']:.4f}\n"
-            f"NRMSE_High:  {metrics['NRMSE_High']:.4f}"
+            f"NRMSE Total: {nrmse_total:.4f}\n"
+            f"NRMSE Low: {nrmse_low:.4f}"
         )
 
         current_ax.text(
@@ -1601,26 +1888,35 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             0.02,
             annot_text,
             transform=current_ax.transAxes,
-            fontsize=9,
+            fontsize=4.25 if article_compact else pu.DEFAULT_ANNOTATION_FONTSIZE,
             verticalalignment="bottom",
             horizontalalignment="right",
             clip_on=False,
-            bbox=dict(
-                boxstyle="round,pad=0.4", facecolor="white", edgecolor="none", alpha=0.6
-            ),
+            bbox=pu.ai_ready_text_bbox(pad=0.25 if article_compact else 0.4),
+            zorder=10,
         )
 
         title_str = "MAR Masked Simulation"
         if method_name:
-            clean_name = method_name.replace("*", "")
-            if clean_name.upper() in ("KNN", "LLS", "BPCA"):
-                display = method_name.upper()
-            elif clean_name in ("MinProb", "minprob", "Prob", "prob"):
-                display = method_name
+            is_selected = method_name.strip().startswith("*")
+            clean_name = method_name.replace("*", "").strip()
+            clean_upper = clean_name.upper()
+            if clean_upper in ("KNN", "LLS", "BPCA"):
+                display = clean_upper
+            elif clean_upper in ("QRILC", "QRLIC"):
+                display = "QRILC"
+            elif clean_upper in ("MINPROB", "PROB"):
+                display = "MinProb"
+            elif clean_upper == "MEDIAN":
+                display = "Median"
             else:
-                display = method_name.title()
+                display = clean_name.title()
 
-            title_str += f"\n({display})"
+            if is_selected:
+                display = f"* {display}"
+
+            if show_method_in_title:
+                title_str = display if compact_title else f"{title_str} ({display})"
 
         self._apply_standard_format(
             ax=current_ax,
@@ -1634,119 +1930,1122 @@ class MetaboVisualizerImputer(visualizer_classes.BaseMetaboVisualizer):
             current_ax.set_xlim(ax_min, ax_max)
             current_ax.set_ylim(ax_min, ax_max)
 
-        cb = fig.colorbar(hb, ax=current_ax)
-        cb.set_label("Log10(Count)")
+        if show_colorbar:
+            cb = fig.colorbar(hb, ax=current_ax)
+            cb.set_label("Log10(Count)")
 
         if ax is None:
             return fig
         return current_ax
 
-    def plot_multi_nrmse_scatters(
-        self, results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]]
-    ) -> object | None:
-        """
-        Plot a dynamically sized grid of NRMSE scatter plots for all candidates.
-        """
+    @staticmethod
+    def _format_imputation_method_label(method_name: str) -> str:
+        """Return a compact display label for an imputation method."""
+        method_map = {
+            "KNN": "KNN",
+            "LLS": "LLS",
+            "BPCA": "BPCA",
+            "QRILC": "QRILC",
+            "MINPROB": "MinProb",
+            "PROB": "MinProb",
+            "MEDIAN": "Median",
+        }
+        return method_map.get(str(method_name).upper(), str(method_name))
+
+    @staticmethod
+    def _method_key(method_name: str) -> str:
+        """Normalize imputation method labels for robust matching."""
+        return str(method_name).replace(" ", "").replace("-", "").upper()
+
+    def plot_imputation_score_summary(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+        ax: plt.Axes | None = None,
+        show_legend: bool = False,
+    ) -> plt.Axes:
+        """Plot MAR imputation AUTO score components."""
         try:
-            import math
-            import operator
-            from functools import reduce
+            import patchworklib as pw
+            import matplotlib.patches as mpatches
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        if ax is None:
+            current_ax = pw.Brick(figsize=(4, 4), label="imputation_nrmse_summary")
+        else:
+            current_ax = ax
+
+        summary_rows = []
+        best_key = self._method_key(best_method)
+        for method_name, (metrics, _, _) in results_dict.items():
+            nrmse_total = float(metrics.get("NRMSE_Total", np.nan))
+            summary_rows.append(
+                {
+                    "method": method_name,
+                    "label": self._format_imputation_method_label(method_name),
+                    "nrmse_total": nrmse_total,
+                    "reconstruction_score": metrics.get("Reconstruction_Score"),
+                    "distribution_preservation_score": metrics.get(
+                        "Distribution_Preservation_Score"
+                    ),
+                    "sample_structure_score": metrics.get("Sample_Structure_Score"),
+                    "auto_score": metrics.get("Auto_Score"),
+                    "selected": self._method_key(method_name) == best_key,
+                }
+            )
+
+        summary_df = pd.DataFrame(summary_rows)
+        summary_df = summary_df.replace([np.inf, -np.inf], np.nan)
+        has_auto_score = summary_df["auto_score"].notna().any()
+        if has_auto_score:
+            summary_df = summary_df.dropna(subset=["auto_score"])
+            summary_df = summary_df.sort_values(
+                by=["auto_score", "nrmse_total", "label"],
+                ascending=[False, True, True],
+            ).reset_index(drop=True)
+        else:
+            summary_df = summary_df.dropna(subset=["nrmse_total"])
+            summary_df = summary_df.sort_values(
+                by=["nrmse_total", "label"], ascending=[False, True]
+            ).reset_index(drop=True)
+
+        if summary_df.empty:
+            current_ax.axis("off")
+            return current_ax
+
+        y_pos = np.arange(len(summary_df))
+        if has_auto_score:
+            score_cols = [
+                "reconstruction_score",
+                "distribution_preservation_score",
+                "sample_structure_score",
+            ]
+            weights = {
+                "reconstruction_score": 0.65,
+                "distribution_preservation_score": 0.20,
+                "sample_structure_score": 0.15,
+            }
+            label_map = {
+                "reconstruction_score": "Masked reconstruction",
+                "distribution_preservation_score": "Distribution fidelity",
+                "sample_structure_score": "Sample structure preservation",
+            }
+            color_map = {
+                "reconstruction_score": pu.get_equivalent_hex(
+                    pu.PRIMARY_ACCENT_COLOR, alpha=1.0
+                ),
+                "distribution_preservation_score": pu.get_equivalent_hex(
+                    "tab:gray", alpha=0.75
+                ),
+                "sample_structure_score": pu.get_equivalent_hex(
+                    "tab:gray", alpha=0.45
+                ),
+            }
+            left = np.zeros(len(summary_df), dtype=float)
+            for score_col in score_cols:
+                left_start = left.copy()
+                values = []
+                for _, row in summary_df.iterrows():
+                    available_weight = sum(
+                        weights[col]
+                        for col in score_cols
+                        if np.isfinite(su.finite_or_nan(row.get(col)))
+                    )
+                    if available_weight <= 0:
+                        values.append(0.0)
+                        continue
+                    score_value = np.clip(
+                        su.finite_or_nan(row.get(score_col)), 0.0, 1.0
+                    )
+                    values.append(score_value * weights[score_col] / available_weight)
+                values_arr = np.asarray(values, dtype=float)
+                current_ax.barh(
+                    y_pos,
+                    values_arr,
+                    left=left,
+                    color=color_map[score_col],
+                    edgecolor="k",
+                    linewidth=0.5,
+                    height=0.58,
+                    label=label_map[score_col],
+                )
+                for y_idx, row in enumerate(summary_df.itertuples()):
+                    score_value = su.finite_or_nan(getattr(row, score_col))
+                    if values_arr[y_idx] < 0.10 or not np.isfinite(score_value):
+                        continue
+                    face_color = color_map[score_col]
+                    current_ax.text(
+                        left_start[y_idx] + values_arr[y_idx] / 2.0,
+                        y_idx,
+                        f"{score_value:.2f}",
+                        va="center",
+                        ha="center",
+                        fontsize=9.5,
+                        color=pu.get_contrast_color(face_color),
+                        clip_on=True,
+                    )
+                left += values_arr
+
+        else:
+            selected_color = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0)
+            background_color = pu.get_equivalent_hex("tab:gray", alpha=0.75)
+            bar_colors = [
+                selected_color if bool(row.selected) else background_color
+                for row in summary_df.itertuples()
+            ]
+            current_ax.barh(
+                y_pos,
+                summary_df["nrmse_total"],
+                color=bar_colors,
+                edgecolor="k",
+                linewidth=0.5,
+                height=0.58,
+            )
+            left = summary_df["nrmse_total"].to_numpy(dtype=float)
+
+        y_labels = [
+            f"* {row.label}" if bool(row.selected) else str(row.label)
+            for row in summary_df.itertuples()
+        ]
+        current_ax.set_yticks(y_pos)
+        current_ax.set_yticklabels(y_labels)
+        current_ax.invert_yaxis()
+
+        if has_auto_score:
+            x_upper = float(np.nanmax(left)) if left.size else 1.0
+            x_upper = min(1.08, max(x_upper + 0.08, x_upper * 1.10, 0.20))
+            current_ax.set_xlim(0, x_upper)
+            label_values = summary_df["auto_score"].to_numpy(dtype=float)
+        else:
+            xmax = float(summary_df["nrmse_total"].max())
+            current_ax.set_xlim(0, xmax * 1.2 if xmax > 0 else 1)
+            label_values = summary_df["nrmse_total"].to_numpy(dtype=float)
+
+        for y_idx, row in enumerate(summary_df.itertuples()):
+            value = float(label_values[y_idx])
+            label_x = float(left[y_idx])
+            current_ax.text(
+                min(label_x + 0.015, current_ax.get_xlim()[1] * 0.97),
+                y_idx,
+                f"{value:.3f}" if has_auto_score else f"{value:.4f}",
+                va="center",
+                ha="left",
+                fontsize=10.5,
+            )
+
+        title = (
+            "Auto Imputation Method Selection"
+            if has_auto_score
+            else "MAR Imputer Ranking"
+        )
+        if show_legend and has_auto_score:
+            legend_handles = [
+                mpatches.Patch(
+                    facecolor=color_map[score_col],
+                    edgecolor="k",
+                    linewidth=0.5,
+                    label=label_map[score_col],
+                )
+                for score_col in score_cols
+            ]
+            current_ax.legend(handles=legend_handles)
+            self._format_single_legend(
+                ax=current_ax,
+                group_title="AUTO imputation score components",
+                loc="lower right",
+                bbox_to_anchor=None,
+                max_item_rows=6,
+            )
+        self._apply_standard_format(
+            ax=current_ax,
+            title=title,
+            xlabel=(
+                "Weighted contribution to overall score"
+                if has_auto_score
+                else "NRMSE Total"
+            ),
+            append_stage=False,
+        )
+        current_ax.tick_params(axis="y", length=0)
+        return current_ax
+
+    def plot_imputation_score_legend(
+        self,
+        ax: plt.Axes,
+        legend_cols: int | None = None,
+        fontsize: float = 9.0,
+        title_fontsize: float = 10.0,
+        article_compact: bool = False,
+    ) -> plt.Axes:
+        """Draw a standalone legend for MAR imputation score components."""
+        import matplotlib.patches as mpatches
+
+        ax.axis("off")
+        legend_linewidth = 0.5 if article_compact else 1.0
+        handles = [
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Masked reconstruction",
+            ),
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=0.75),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Distribution fidelity",
+            ),
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=0.45),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Sample structure preservation",
+            ),
+        ]
+        ax.legend(handles=handles)
+        self._format_single_legend(
+            ax=ax,
+            group_title="AUTO imputation score components",
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            legend_cols=legend_cols,
+            max_item_rows=6,
+            borderaxespad=0.0,
+            handlelength=1.0 if article_compact else 1.8,
+            handletextpad=0.3 if article_compact else 0.8,
+            labelspacing=0.25 if article_compact else 0.5,
+            borderpad=0.3 if article_compact else 0.4,
+            fontsize=fontsize,
+            title_fontsize=title_fontsize,
+        )
+        if article_compact:
+            self._apply_article_legend_style(
+                ax=ax,
+                fontsize=fontsize,
+                title_fontsize=title_fontsize,
+            )
+        return ax
+
+    def plot_imputation_dashboard_legend(
+        self,
+        ax: plt.Axes,
+        fontsize: float = 9.0,
+        title_fontsize: float = 10.0,
+    ) -> plt.Axes:
+        """Draw score-component and masked-density legends in one panel."""
+        import matplotlib.lines as mlines
+        import matplotlib.patches as mpatches
+
+        score_handles = [
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0),
+                edgecolor="k",
+                linewidth=1.0,
+                label="Masked reconstruction",
+            ),
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=0.75),
+                edgecolor="k",
+                linewidth=1.0,
+                label="Distribution fidelity",
+            ),
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=0.45),
+                edgecolor="k",
+                linewidth=1.0,
+                label="Sample structure preservation",
+            ),
+        ]
+        density_handles = [
+            mlines.Line2D(
+                [],
+                [],
+                color="black",
+                linestyle="--",
+                linewidth=1.5,
+                label="Known masked values",
+            ),
+            mlines.Line2D(
+                [],
+                [],
+                color=pu.PRIMARY_ACCENT_COLOR,
+                linestyle="-",
+                linewidth=2.0,
+                label="Reconstructed values",
+            ),
+        ]
+
+        self._plot_grouped_standalone_legends(
+            ax=ax,
+            legend_groups=[
+                ("AUTO imputation score components", score_handles),
+                ("Masked-value density reference", density_handles),
+            ],
+            loc="upper left",
+            start_bbox=(0.0, 1.0),
+            row_gap=0.04,
+            max_item_rows=6,
+            borderaxespad=0.0,
+            fontsize=fontsize,
+            title_fontsize=title_fontsize,
+        )
+        return ax
+
+    def plot_imputation_article_score_legend(self, ax: plt.Axes) -> plt.Axes:
+        """Draw a right-side score legend for the imputation article panel."""
+        return self.plot_imputation_score_legend(
+            ax=ax,
+            fontsize=pu.ARTICLE_LEGEND_FONTSIZE,
+            title_fontsize=pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+            article_compact=True,
+        )
+
+    def plot_imputation_article_density_legend(self, ax: plt.Axes) -> plt.Axes:
+        """Draw a right-side density legend for the imputation article panel."""
+        import matplotlib.lines as mlines
+
+        ax.axis("off")
+        density_handles = [
+            mlines.Line2D(
+                [],
+                [],
+                color="black",
+                linestyle="--",
+                linewidth=0.75,
+                label="Known masked values",
+            ),
+            mlines.Line2D(
+                [],
+                [],
+                color=pu.PRIMARY_ACCENT_COLOR,
+                linestyle="-",
+                linewidth=1.0,
+                label="Reconstructed values",
+            ),
+        ]
+        ax.legend(handles=density_handles)
+        self._format_single_legend(
+            ax=ax,
+            group_title="Masked-value density reference",
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            max_item_rows=6,
+            borderaxespad=0.0,
+            fontsize=pu.ARTICLE_LEGEND_FONTSIZE,
+            title_fontsize=pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+            handlelength=1.0,
+            handletextpad=0.3,
+            labelspacing=0.25,
+            borderpad=0.3,
+        )
+        self._apply_article_legend_style(
+            ax=ax,
+            fontsize=pu.ARTICLE_LEGEND_FONTSIZE,
+            title_fontsize=pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+        )
+        return ax
+
+    def _resolve_article_benchmark_item(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+    ) -> tuple[str, tuple[dict[str, float], np.ndarray, np.ndarray]] | None:
+        """Return the selected AUTO benchmark tuple without changing candidate order."""
+        selected_key = self._method_key(best_method)
+        for method_name, item in results_dict.items():
+            if self._method_key(method_name) == selected_key:
+                return method_name, item
+        return next(iter(results_dict.items()), None)
+
+    def plot_imputation_reconstruction_article_dashboard(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+    ) -> object | None:
+        """Create a compact AUTO selection and masked-reconstruction manuscript panel."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("patchworklib not found. Skipping imputation article panel.")
+            return None
+
+        best_item = self._resolve_article_benchmark_item(results_dict, best_method)
+        if best_item is None:
+            return None
+
+        method_name, (metrics, true_vals, pred_vals) = best_item
+        pw.clear()
+        panel_height = 1.75
+
+        summary_ax = pw.Brick(
+            figsize=(1.85, panel_height), label="article_imputation_summary"
+        )
+        self.plot_imputation_score_summary(
+            results_dict=results_dict,
+            best_method=best_method,
+            ax=summary_ax,
+            show_legend=False,
+        )
+        self._apply_article_panel_format(
+            summary_ax,
+            title="Auto Imputation Method Selection",
+        )
+
+        scatter_ax = pw.Brick(
+            figsize=(1.85, panel_height), label="article_imputation_masked_nrmse"
+        )
+        self._plot_nrmse_scatter(
+            true_vals=true_vals,
+            pred_vals=pred_vals,
+            metrics=metrics,
+            method_name=self._format_imputation_method_label(method_name),
+            compact_title=False,
+            show_method_in_title=False,
+            show_colorbar=False,
+            article_compact=True,
+            ax=scatter_ax,
+        )
+        self._apply_article_panel_format(
+            scatter_ax,
+            title="MAR Masked Simulation",
+        )
+        scatter_ax.set_xlabel("True log2 intensity")
+        scatter_ax.set_ylabel("Reconstructed log2 intensity")
+
+        legend_ax = pw.Brick(
+            figsize=(1.30, panel_height), label="article_imputation_score_legend"
+        )
+        self.plot_imputation_article_score_legend(ax=legend_ax)
+        return summary_ax | scatter_ax | legend_ax
+
+    def plot_imputation_preservation_article_dashboard(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+    ) -> object | None:
+        """Create a compact fidelity and sample-structure manuscript panel."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("patchworklib not found. Skipping imputation article panel.")
+            return None
+
+        best_item = self._resolve_article_benchmark_item(results_dict, best_method)
+        if best_item is None:
+            return None
+
+        _, (metrics, true_vals, pred_vals) = best_item
+        pw.clear()
+        panel_height = 1.75
+
+        density_ax = pw.Brick(
+            figsize=(1.85, panel_height), label="article_imputation_density"
+        )
+        self._plot_masked_distribution_fidelity(
+            true_vals=true_vals,
+            pred_vals=pred_vals,
+            metrics=metrics,
+            ax=density_ax,
+            compact_title=False,
+            article_compact=True,
+            show_legend=False,
+        )
+        self._apply_article_panel_format(
+            density_ax,
+            title="Distribution Fidelity",
+        )
+
+        sample_ax = pw.Brick(
+            figsize=(1.85, panel_height), label="article_imputation_sample_structure"
+        )
+        pu.plot_sample_structure_change_map(
+            ax=sample_ax,
+            raw_obj=self.raw_obj,
+            transformed_obj=self.imp_obj,
+            structure_metrics=metrics,
+            title="Sample Structure Change Map",
+            compact_style=True,
+        )
+        self._apply_article_panel_format(
+            sample_ax,
+            title="Sample Structure Change Map",
+        )
+
+        legend_ax = pw.Brick(
+            figsize=(1.30, panel_height), label="article_imputation_density_legend"
+        )
+        self.plot_imputation_article_density_legend(ax=legend_ax)
+        return density_ax | sample_ax | legend_ax
+
+    def plot_imputation_structure_metrics(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+        metric_group: str = "structure",
+        ax: plt.Axes | None = None,
+    ) -> plt.Axes:
+        """Plot preservation metrics for MAR imputation candidates."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        if ax is None:
+            current_ax = pw.Brick(figsize=(4.0, 4.0), label="imputation_structure")
+        else:
+            current_ax = ax
+
+        rows = []
+        best_key = self._method_key(best_method)
+        for method_name, (metrics, _, _) in results_dict.items():
+            rows.append(
+                {
+                    "method": method_name,
+                    "label": self._format_imputation_method_label(method_name),
+                    "Jensen-Shannon preservation": metrics.get("JSD_Score"),
+                    "Wasserstein preservation": metrics.get("Wasserstein_Score"),
+                    "Trustworthiness": metrics.get("Trustworthiness"),
+                    "Distance rank preservation": metrics.get(
+                        "Distance_Rank_Preservation"
+                    ),
+                    "Distance scale preservation": metrics.get(
+                        "Distance_Scale_Preservation"
+                    ),
+                    "auto_score": metrics.get("Auto_Score"),
+                    "selected": self._method_key(method_name) == best_key,
+                }
+            )
+
+        group_key = str(metric_group).lower().strip()
+        if group_key in {"distribution", "dist"}:
+            metric_cols = [
+                "Jensen-Shannon preservation",
+                "Wasserstein preservation",
+            ]
+            metric_labels = [
+                "Jensen-Shannon\npreservation",
+                "Wasserstein\npreservation",
+            ]
+            title = "Distribution Preservation"
+        elif group_key in {"structure", "sample", "sample_structure"}:
+            metric_cols = [
+                "Trustworthiness",
+                "Distance rank preservation",
+                "Distance scale preservation",
+            ]
+            metric_labels = [
+                "Trustworthiness",
+                "Distance-rank\npreservation",
+                "Distance-scale\npreservation",
+            ]
+            title = "Sample Structure Preservation"
+        else:
+            raise ValueError(
+                "metric_group must be 'distribution' or 'structure'."
+            )
+
+        metric_df = pd.DataFrame(rows).replace([np.inf, -np.inf], np.nan)
+        for col in ["auto_score", *metric_cols]:
+            metric_df[col] = pd.to_numeric(metric_df[col], errors="coerce")
+        metric_df = metric_df.dropna(subset=metric_cols, how="all")
+        metric_df = metric_df.sort_values(
+            by=["auto_score", "label"], ascending=[False, True]
+        ).reset_index(drop=True)
+
+        if metric_df.empty:
+            current_ax.axis("off")
+            return current_ax
+
+        matrix = metric_df[metric_cols].to_numpy(dtype=float)
+        cmap = pu.score_heatmap_cmap()
+        annot_size = pu.heatmap_annotation_fontsize(
+            current_ax,
+            n_rows=matrix.shape[0],
+            n_cols=matrix.shape[1],
+            default_size=11.0,
+            max_size=12.0,
+            min_size=6.0,
+        )
+        current_ax.imshow(
+            np.ma.masked_invalid(matrix),
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            aspect="auto",
+        )
+        current_ax.set_xticks(np.arange(len(metric_cols)))
+        current_ax.set_xticklabels(metric_labels)
+        current_ax.set_yticks(np.arange(len(metric_df)))
+        current_ax.set_yticklabels(
+            [
+                f"* {row.label}" if bool(row.selected) else str(row.label)
+                for row in metric_df.itertuples()
+            ]
+        )
+        current_ax.set_xticks(np.arange(-0.5, len(metric_cols), 1), minor=True)
+        current_ax.set_yticks(np.arange(-0.5, len(metric_df), 1), minor=True)
+        grid_lw = 1.0
+        current_ax.grid(which="minor", color="k", linestyle="-", linewidth=grid_lw)
+        current_ax.tick_params(which="minor", bottom=False, left=False)
+
+        for y_idx in range(matrix.shape[0]):
+            for x_idx in range(matrix.shape[1]):
+                value = matrix[y_idx, x_idx]
+                if not np.isfinite(value):
+                    label = "NA"
+                    color = "0.35"
+                else:
+                    label = f"{value:.2f}"
+                    color = pu.get_contrast_color(cmap(value))
+                current_ax.text(
+                    x_idx,
+                    y_idx,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=annot_size,
+                    color=color,
+                )
+
+        self._apply_standard_format(
+            ax=current_ax,
+            title=title,
+            xlabel="",
+            ylabel="",
+            append_stage=False,
+        )
+        pu.rotate_xticks_if_overlapping(current_ax)
+        for spine in current_ax.spines.values():
+            spine.set_visible(False)
+        current_ax.tick_params(axis="both", length=0)
+        return current_ax
+
+    def plot_imputation_preservation_scorecard(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+        ax: plt.Axes | None = None,
+    ) -> plt.Axes:
+        """Plot distribution and sample-structure preservation scores together."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        if ax is None:
+            current_ax = pw.Brick(figsize=(4.8, 4.0), label="imputation_scorecard")
+        else:
+            current_ax = ax
+
+        best_key = self._method_key(best_method)
+        rows = []
+        for method_name, (metrics, _, _) in results_dict.items():
+            rows.append(
+                {
+                    "method": method_name,
+                    "label": self._format_imputation_method_label(method_name),
+                    "Jensen-Shannon preservation": metrics.get("JSD_Score"),
+                    "Wasserstein preservation": metrics.get("Wasserstein_Score"),
+                    "Trustworthiness": metrics.get("Trustworthiness"),
+                    "Distance rank preservation": metrics.get(
+                        "Distance_Rank_Preservation"
+                    ),
+                    "Distance scale preservation": metrics.get(
+                        "Distance_Scale_Preservation"
+                    ),
+                    "auto_score": metrics.get("Auto_Score"),
+                    "selected": self._method_key(method_name) == best_key,
+                }
+            )
+
+        metric_cols = [
+            "Jensen-Shannon preservation",
+            "Wasserstein preservation",
+            "Trustworthiness",
+            "Distance rank preservation",
+            "Distance scale preservation",
+        ]
+        metric_labels = [
+            "Jensen-Shannon\npreservation",
+            "Wasserstein\npreservation",
+            "Trustworthiness",
+            "Distance-rank\npreservation",
+            "Distance-scale\npreservation",
+        ]
+        metric_df = pd.DataFrame(rows).replace([np.inf, -np.inf], np.nan)
+        for col in ["auto_score", *metric_cols]:
+            metric_df[col] = pd.to_numeric(metric_df[col], errors="coerce")
+        metric_df = metric_df.dropna(subset=metric_cols, how="all")
+        metric_df = metric_df.sort_values(
+            by=["auto_score", "label"], ascending=[False, True]
+        ).reset_index(drop=True)
+
+        if metric_df.empty:
+            current_ax.axis("off")
+            return current_ax
+
+        matrix = metric_df[metric_cols].to_numpy(dtype=float)
+        cmap = pu.score_heatmap_cmap()
+        annot_size = pu.heatmap_annotation_fontsize(
+            current_ax,
+            n_rows=matrix.shape[0],
+            n_cols=matrix.shape[1],
+            default_size=11.0,
+            max_size=12.0,
+            min_size=6.0,
+        )
+        current_ax.imshow(
+            np.ma.masked_invalid(matrix),
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            aspect="auto",
+        )
+        current_ax.set_xticks(np.arange(len(metric_cols)))
+        current_ax.set_xticklabels(metric_labels)
+        current_ax.set_yticks(np.arange(len(metric_df)))
+        current_ax.set_yticklabels(
+            [
+                f"* {row.label}" if bool(row.selected) else str(row.label)
+                for row in metric_df.itertuples()
+            ]
+        )
+        n_rows, n_cols = matrix.shape
+        for x_pos in np.arange(-0.5, n_cols, 1.0):
+            current_ax.plot(
+                [x_pos, x_pos],
+                [-0.5, n_rows - 0.5],
+                color="k",
+                linewidth=1.0,
+                zorder=3,
+            )
+        for y_pos in np.arange(-0.5, n_rows, 1.0):
+            current_ax.plot(
+                [-0.5, n_cols - 0.5],
+                [y_pos, y_pos],
+                color="k",
+                linewidth=1.0,
+                zorder=3,
+            )
+
+        for y_idx in range(matrix.shape[0]):
+            for x_idx in range(matrix.shape[1]):
+                value = matrix[y_idx, x_idx]
+                if not np.isfinite(value):
+                    label = "NA"
+                    color = "0.35"
+                else:
+                    label = f"{value:.2f}"
+                    color = pu.get_contrast_color(cmap(value))
+                current_ax.text(
+                    x_idx,
+                    y_idx,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=annot_size,
+                    color=color,
+                )
+
+        dist_color = pu.get_equivalent_hex("tab:gray", alpha=0.75)
+        struct_color = pu.get_equivalent_hex("tab:gray", alpha=0.45)
+        group_specs = [
+            (-0.5, 2.0, "Distribution fidelity", dist_color),
+            (1.5, 3.0, "Sample structure preservation", struct_color),
+        ]
+        for x_start, width, label, face_color in group_specs:
+            current_ax.add_patch(
+                plt.Rectangle(
+                    (x_start, -1.05),
+                    width,
+                    0.38,
+                    facecolor=face_color,
+                    edgecolor="k",
+                    linewidth=1.0,
+                    zorder=5,
+                    clip_on=False,
+                )
+            )
+            current_ax.text(
+                x_start + width / 2.0,
+                -0.86,
+                label,
+                ha="center",
+                va="center",
+                fontsize=9.5,
+                color=pu.get_contrast_color(face_color),
+                zorder=6,
+                clip_on=False,
+            )
+
+        current_ax.set_ylim(len(metric_df) - 0.5, -1.18)
+        self._apply_standard_format(
+            ax=current_ax,
+            title="Candidate Preservation Scorecard",
+            xlabel="",
+            ylabel="",
+            append_stage=False,
+            tick_fontsize=12,
+        )
+        pu.rotate_xticks_if_overlapping(current_ax)
+        for spine in current_ax.spines.values():
+            spine.set_visible(False)
+        current_ax.tick_params(axis="both", length=0)
+        return current_ax
+
+    def plot_imputation_auto_dashboard(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+        best_method: str,
+    ) -> object | None:
+        """Create the final MAR imputation Auto-selection dashboard."""
+        try:
             import patchworklib as pw
         except ImportError:
             logger.warning("Module 'patchworklib' not found. Skipping grid.")
             return None
 
-        n_plots = len(results_dict)
-        if n_plots == 0:
+        if not results_dict:
             return None
 
-        # 1. Dynamically calculate optimal column count
-        layout_map = {1: 1, 2: 2, 3: 3, 4: 4, 5: 3, 6: 3, 7: 4, 8: 4, 9: 5}
-        # Fallback to square root logic for >9 plots, capped at 4 columns
-        n_cols = layout_map.get(n_plots, min(4, math.ceil(math.sqrt(n_plots))))
-
-        # 2. Determine global axis limits and identify the best method
         g_min, g_max = float("inf"), float("-inf")
-        best_method = None
-        best_nrmse = float("inf")
+        sorted_items = sorted(
+            results_dict.items(),
+            key=lambda item: (
+                float(item[1][0].get("Auto_Score", np.nan)),
+                -float(item[1][0].get("NRMSE_Total", np.nan)),
+                self._format_imputation_method_label(item[0]),
+            ),
+            reverse=True,
+        )
 
-        for method_name, (metrics, true_vals, pred_vals) in results_dict.items():
+        for _, (_, true_vals, pred_vals) in sorted_items:
             g_min = min(g_min, true_vals.min(), pred_vals.min())
             g_max = max(g_max, true_vals.max(), pred_vals.max())
 
-            if metrics["NRMSE_Total"] < best_nrmse:
-                best_nrmse = metrics["NRMSE_Total"]
-                best_method = method_name
+        margin = (g_max - g_min) * 0.05
+        shared_lims = (g_min - margin, g_max + margin)
+        best_key = self._method_key(best_method)
+        best_item = next(
+            (
+                item
+                for item in sorted_items
+                if self._method_key(item[0]) == best_key
+            ),
+            sorted_items[0],
+        )
+
+        pw.clear()
+        ax_summary = pw.Brick(figsize=(4.3, 4.0), label="imputation_score_summary")
+        self.plot_imputation_score_summary(
+            results_dict=results_dict,
+            best_method=best_method,
+            ax=ax_summary,
+        )
+        ax_scorecard = pw.Brick(figsize=(6.0, 4.0), label="imputation_scorecard")
+        self.plot_imputation_preservation_scorecard(
+            results_dict=results_dict,
+            best_method=best_method,
+            ax=ax_scorecard,
+        )
+        ax_legend = pw.Brick(figsize=(2.2, 4.0), label="imputation_dashboard_legend")
+        self.plot_imputation_dashboard_legend(ax=ax_legend)
+
+        method_name, (metrics, true_vals, pred_vals) = best_item
+        ax_best_scatter = pw.Brick(figsize=(4.0, 4.0), label="best_nrmse_scatter")
+        self._plot_nrmse_scatter(
+            true_vals,
+            pred_vals,
+            metrics,
+            method_name=self._format_imputation_method_label(method_name),
+            axis_lims=shared_lims,
+            compact_title=False,
+            show_method_in_title=False,
+            ax=ax_best_scatter,
+        )
+
+        ax_density = pw.Brick(
+            figsize=(4.25, 4.0), label="imputation_masked_density"
+        )
+        self._plot_masked_distribution_fidelity(
+            true_vals=true_vals,
+            pred_vals=pred_vals,
+            metrics=metrics,
+            ax=ax_density,
+            compact_title=False,
+        )
+        ax_sample_structure = pw.Brick(
+            figsize=(4.25, 4.0), label="imputation_sample_structure_preservation"
+        )
+        pu.plot_sample_structure_change_map(
+            ax=ax_sample_structure,
+            raw_obj=self.raw_obj,
+            transformed_obj=self.imp_obj,
+            structure_metrics=metrics,
+            title="Sample Structure Change Map",
+        )
+
+        top_row = ax_summary | ax_scorecard | ax_legend
+        diagnostic_row = ax_best_scatter | ax_density | ax_sample_structure
+
+        return top_row / diagnostic_row
+
+    def plot_imputation_method_dashboard(
+        self,
+        metrics: dict[str, float],
+        true_vals: np.ndarray,
+        pred_vals: np.ndarray,
+        method_name: str,
+    ) -> object | None:
+        """Create a fixed-method imputation dashboard without Auto score panels."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("Module 'patchworklib' not found. Skipping grid.")
+            return None
+
+        if true_vals is None or pred_vals is None or len(true_vals) == 0:
+            return None
+
+        d_min = min(float(np.nanmin(true_vals)), float(np.nanmin(pred_vals)))
+        d_max = max(float(np.nanmax(true_vals)), float(np.nanmax(pred_vals)))
+        margin = (d_max - d_min) * 0.05 if d_max > d_min else 1.0
+        shared_lims = (d_min - margin, d_max + margin)
+
+        pw.clear()
+        ax_scatter = pw.Brick(figsize=(4.0, 4.0), label="method_nrmse_scatter")
+        self._plot_nrmse_scatter(
+            true_vals,
+            pred_vals,
+            metrics,
+            method_name=self._format_imputation_method_label(method_name),
+            axis_lims=shared_lims,
+            compact_title=False,
+            show_method_in_title=False,
+            ax=ax_scatter,
+        )
+
+        ax_density = pw.Brick(figsize=(4.0, 4.0), label="method_masked_density")
+        self._plot_masked_distribution_fidelity(
+            true_vals=true_vals,
+            pred_vals=pred_vals,
+            metrics=metrics,
+            ax=ax_density,
+            compact_title=False,
+        )
+
+        ax_sample_structure = pw.Brick(
+            figsize=(4.0, 4.0), label="method_sample_structure_preservation"
+        )
+        pu.plot_sample_structure_change_map(
+            ax=ax_sample_structure,
+            raw_obj=self.raw_obj,
+            transformed_obj=self.imp_obj,
+            structure_metrics=metrics,
+            title="Sample Structure Change Map",
+        )
+
+        ax_legend = pw.Brick(figsize=(1.2, 8.0), label="method_kde_legend")
+        self._plot_kde_standalone_legend(
+            ax=ax_legend,
+            legend_cols=1,
+            loc="center left",
+            bbox_to_anchor=(0.0, 0.5),
+        )
+
+        return ax_scatter | ax_density | ax_sample_structure | ax_legend
+
+    def plot_imputation_nrmse_appendix_grid(
+        self,
+        results_dict: dict[str, tuple[dict[str, float], np.ndarray, np.ndarray]],
+    ) -> object | None:
+        """Create a 2 x 3 appendix grid of candidate masked-reconstruction plots."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("Module 'patchworklib' not found. Skipping grid.")
+            return None
+
+        if not results_dict:
+            return None
+
+        sorted_items = sorted(
+            results_dict.items(),
+            key=lambda item: (
+                float(item[1][0].get("Auto_Score", np.nan)),
+                -float(item[1][0].get("NRMSE_Total", np.nan)),
+                self._format_imputation_method_label(item[0]),
+            ),
+            reverse=True,
+        )
+        g_min, g_max = float("inf"), float("-inf")
+        for _, (_, true_vals, pred_vals) in sorted_items:
+            g_min = min(g_min, true_vals.min(), pred_vals.min())
+            g_max = max(g_max, true_vals.max(), pred_vals.max())
 
         margin = (g_max - g_min) * 0.05
         shared_lims = (g_min - margin, g_max + margin)
+        best_key = self._method_key(sorted_items[0][0])
 
-        # 3. Generate individual scatter plots (Bricks)
         pw.clear()
-        bricks = []
-
-        for method_name, (metrics, true_vals, pred_vals) in results_dict.items():
-            ax = pw.Brick(figsize=(4, 4), label=f"nrmse_{method_name}")
-
-            # Highlight the best performing method with an asterisk
-            display_name = (
-                f"*{method_name}" if method_name == best_method else method_name
+        scatter_bricks: list[object] = []
+        for idx, (method_name, (metrics, true_vals, pred_vals)) in enumerate(
+            sorted_items[:6]
+        ):
+            ax_scatter = pw.Brick(
+                figsize=(3.6, 3.6), label=f"nrmse_appendix_scatter_{idx + 1}"
             )
-
+            display_method = self._format_imputation_method_label(method_name)
+            if self._method_key(method_name) == best_key:
+                display_method = f"* {display_method}"
             self._plot_nrmse_scatter(
                 true_vals,
                 pred_vals,
                 metrics,
-                method_name=display_name,
+                method_name=display_method,
                 axis_lims=shared_lims,
-                ax=ax,
+                compact_title=False,
+                ax=ax_scatter,
             )
-            bricks.append(ax)
+            scatter_bricks.append(ax_scatter)
 
-        # 4. Pad the last row with empty placeholders to maintain grid structure
-        while len(bricks) % n_cols != 0:
-            empty_ax = pw.Brick(figsize=(4, 4), label=f"empty_{len(bricks)}")
-            empty_ax.axis("off")
-            bricks.append(empty_ax)
+        while len(scatter_bricks) < 6:
+            ax_blank = pw.Brick(
+                figsize=(3.6, 3.6),
+                label=f"nrmse_appendix_scatter_blank_{len(scatter_bricks)}",
+            )
+            ax_blank.axis("off")
+            scatter_bricks.append(ax_blank)
 
-        # 5. Dynamically stitch the grid using reduce
-        rows = []
-        for i in range(0, len(bricks), n_cols):
-            row_bricks = bricks[i : i + n_cols]
-            # Equivalent to: row_bricks[0] | row_bricks[1] | ... | row_bricks[n]
-            row_grid = reduce(operator.or_, row_bricks)
-            rows.append(row_grid)
+        return (
+            scatter_bricks[0] | scatter_bricks[1] | scatter_bricks[2]
+        ) / (scatter_bricks[3] | scatter_bricks[4] | scatter_bricks[5])
 
-        # Equivalent to: rows[0] / rows[1] / ... / rows[n]
-        final_grid = reduce(operator.truediv, rows)
-
-        return final_grid
-
-    def plot_imputation_summary_grid(
+    def plot_imputation_density_overlay(
         self,
-        t: np.ndarray,
-        p: np.ndarray,
-        met: dict[str, float],
-        method: str,
-        metrics: dict[str, Any] | None = None,
+        true_vals: np.ndarray,
+        pred_vals: np.ndarray,
+        metrics: dict[str, float] | None = None,
     ) -> object | None:
-        """Combine NRMSE scatter and split KDE density subplots."""
+        """Create a standalone score-aligned masked-density fidelity panel."""
         try:
             import patchworklib as pw
         except ImportError:
-            logger.warning("patchworklib not found. Skipping summary grid.")
+            logger.warning("patchworklib not found. Skipping density overlay.")
             return None
 
         pw.clear()
 
-        ax1 = pw.Brick(figsize=(4, 4), label="NRMSE")
-        self._plot_nrmse_scatter(t, p, met, method, ax=ax1)
-
-        ax_qc = pw.Brick(figsize=(4, 4), label="KDE_QC")
-        ax_sample = pw.Brick(figsize=(4, 4), label="KDE_Sample")
-
-        self._plot_imputed_kde_overlay(
-            metrics=metrics, ax_qc=ax_qc, ax_sample=ax_sample
+        ax_density = pw.Brick(figsize=(5.0, 4.0), label="masked_density_fidelity")
+        self._plot_masked_distribution_fidelity(
+            true_vals=true_vals,
+            pred_vals=pred_vals,
+            metrics=metrics,
+            ax=ax_density,
+            compact_title=False,
         )
+        ax_legend = pw.Brick(figsize=(2.2, 4), label="masked_density_legend")
+        self._plot_kde_standalone_legend(ax=ax_legend, legend_cols=1)
 
-        return ax1 | ax_qc | ax_sample
+        return ax_density | ax_legend

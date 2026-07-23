@@ -157,15 +157,6 @@ class MetaboInt(pd.DataFrame):
         """Override constructor to return MetaboInt."""
         return MetaboInt
 
-    # def __finalize__(
-    #     self, other: Any, method: Optional[str] = None, **kwargs: Any
-    # ) -> "MetaboInt":
-    #     """Copy custom attributes during object creation."""
-    #     super().__finalize__(other, method=method, **kwargs)
-    #     if hasattr(other, "attrs"):
-    #         self.attrs = copy.deepcopy(other.attrs)
-    #     return self
-
     def __finalize__(
         self, other: object, method: Optional[str] = None, **kwargs: object
     ) -> "MetaboInt":

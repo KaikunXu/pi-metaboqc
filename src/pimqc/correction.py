@@ -4,9 +4,10 @@ Script purpose: Execute technical signal correction and method selection.
 
 execute_signal_correction() casts the matrix to float, builds QC, batch, and
 injection-order arrays, then evaluates the configured correction method or an
-AUTO panel of QC-RLSC, QC-RFSC, QC-SVR, SERRF, RUV-III, and WaveICA 2.0. It compares
-candidate outputs with QC RSD metrics, selects the best method when needed, and
-records the selected stage data in the MetaboInt attributes.
+AUTO panel of QC-RLSC, QC-RFSC, QC-SVR, SERRF, RUV-III, and WaveICA 2.0. It ranks
+candidate outputs using median and feature-wise QC-RSD improvement together
+with actual-sample structure preservation, selects the best method when needed,
+and records the selected stage data in the MetaboInt attributes.
 WaveICA 2.0 removes injection-order-associated independent components from
 multiscale signals and is evaluated with full-data QC RSD in AUTO mode.
 The workflow exports corrected matrices, QC fitted baselines, RSD evaluation
@@ -43,6 +44,7 @@ from . import io_utils as iu
 from . import plot_utils as pu
 from . import core_classes
 from . import visualizer_classes
+from . import stat_utils as su
 
 FitPredictCallable = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 CorrectionModel = (
@@ -394,7 +396,7 @@ class RegressionCorrector:
                     for i in range(len(feat_idx))
                 )
 
-                # [FIX]: Use patched joblib context manager
+                # Use the configured joblib context for parallel regressions.
                 with iu.tqdm_joblib_env(total=len(feat_idx), desc=f"SC [{batch_id}]"):
                     results = Parallel(
                         n_jobs=n_jobs_conf,
@@ -634,7 +636,7 @@ class SERRFCorrector:
             else:
                 joblib_batch_size = int(joblib_batch_size)
 
-        # [FIX]: Use patched joblib context manager for SERRF
+        # Use the configured joblib context for SERRF feature models.
         with iu.tqdm_joblib_env(total=n_features, desc="SERRF"):
             results = Parallel(
                 n_jobs=safe_n_jobs,
@@ -1264,6 +1266,59 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             return float("nan")
         return float(rsd_series.median())
 
+    @staticmethod
+    def calculate_featurewise_qc_rsd_improvement(
+        before_obj: core_classes.MetaboInt,
+        after_obj: core_classes.MetaboInt,
+    ) -> dict[str, Any]:
+        """Calculate paired feature-wise QC-RSD improvement diagnostics."""
+        before_rsd = MetaboIntCorrector.extract_qc_rsd_series(before_obj)
+        after_rsd = MetaboIntCorrector.extract_qc_rsd_series(after_obj)
+        common_idx = before_rsd.index.intersection(after_rsd.index, sort=False)
+        if common_idx.empty:
+            return {
+                "score": float("nan"),
+                "median": float("nan"),
+                "values": pd.Series(dtype=float),
+            }
+
+        before_vals = pd.to_numeric(before_rsd.loc[common_idx], errors="coerce")
+        after_vals = pd.to_numeric(after_rsd.loc[common_idx], errors="coerce")
+        valid = (
+            np.isfinite(before_vals.to_numpy(dtype=float))
+            & np.isfinite(after_vals.to_numpy(dtype=float))
+            & (before_vals.to_numpy(dtype=float) > np.finfo(float).eps)
+        )
+        if not np.any(valid):
+            return {
+                "score": float("nan"),
+                "median": float("nan"),
+                "values": pd.Series(dtype=float),
+            }
+
+        before_vals = before_vals.iloc[np.flatnonzero(valid)]
+        after_vals = after_vals.iloc[np.flatnonzero(valid)]
+        signed_improvement = (before_vals - after_vals) / before_vals
+        signed_improvement = signed_improvement.replace([np.inf, -np.inf], np.nan)
+        signed_improvement = signed_improvement.dropna()
+        if signed_improvement.empty:
+            return {
+                "score": float("nan"),
+                "median": float("nan"),
+                "values": pd.Series(dtype=float),
+            }
+
+        clipped_improvement = signed_improvement.clip(lower=0.0, upper=1.0)
+        winsor_low, winsor_high = np.nanpercentile(
+            clipped_improvement.to_numpy(dtype=float), [5.0, 95.0]
+        )
+        winsorized = clipped_improvement.clip(lower=winsor_low, upper=winsor_high)
+        return {
+            "score": float(np.nanmean(winsorized.to_numpy(dtype=float))),
+            "median": float(np.nanmedian(signed_improvement.to_numpy(dtype=float))),
+            "values": signed_improvement,
+        }
+
     def _calculate_qc_baseline_means(
         self, batch_col: str, sample_type_col: str, qc_label: str
     ) -> pd.DataFrame:
@@ -1327,7 +1382,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         )
         return valid_ctl
 
-    def _evaluate_all_methods(
+    def _evaluate_correction_candidates(
         self,
         methods_to_run: list,
         batch_array: np.ndarray,
@@ -1337,7 +1392,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         sample_type_col: str,
         qc_label: str,
     ) -> Dict[str, Any]:
-        """Execute core computation and metrics extraction for all methods."""
+        """Evaluate configured correction candidates and collect selection metrics."""
         results_store = {}
         for raw_method in methods_to_run:
             method = _normalize_correction_method(raw_method)
@@ -1449,6 +1504,56 @@ class MetaboIntCorrector(core_classes.MetaboInt):
             final_stage = list(stage_dfs.keys())[-1]
             final_full = rsd_hist_full[final_stage]
             final_oof = rsd_hist_oof.get(final_stage)
+            full_only_methods = ("RUV-III", "WaveICA 2.0")
+            eval_rsd = final_full if method in full_only_methods else final_oof
+            if eval_rsd is None:
+                eval_rsd = final_full
+
+            median_qc_rsd_improvement_score = float(
+                np.clip(
+                    su.relative_change_lower_better(raw_rsd, eval_rsd),
+                    0.0,
+                    1.0,
+                )
+            )
+            final_corrected_df = stage_dfs[final_stage]
+            eval_corrected_df = (
+                stage_oof_dfs.get(final_stage)
+                if method not in full_only_methods
+                else final_corrected_df
+            )
+            if eval_corrected_df is None:
+                eval_corrected_df = final_corrected_df
+            featurewise_improvement = (
+                MetaboIntCorrector.calculate_featurewise_qc_rsd_improvement(
+                    before_obj=self,
+                    after_obj=eval_corrected_df,
+                )
+            )
+            featurewise_qc_rsd_improvement_score = su.finite_or_nan(
+                featurewise_improvement.get("score")
+            )
+            structure_metrics = su.calc_sample_structure_preservation(
+                raw_obj=self,
+                transformed_obj=final_corrected_df,
+                max_features=5000,
+                seed=int(self.attrs.get("global_seed", 123)),
+            )
+            sample_structure_score = su.finite_or_nan(
+                structure_metrics.get("sample_structure_composite_preservation")
+            )
+            sample_structure_score = (
+                float(np.clip(sample_structure_score, 0.0, 1.0))
+                if np.isfinite(sample_structure_score)
+                else float("nan")
+            )
+            auto_score = su.weighted_mean_score(
+                [
+                    (median_qc_rsd_improvement_score, 0.35),
+                    (featurewise_qc_rsd_improvement_score, 0.35),
+                    (sample_structure_score, 0.30),
+                ],
+            )
 
             results_store[method] = {
                 "stage_dfs": stage_dfs,
@@ -1456,39 +1561,78 @@ class MetaboIntCorrector(core_classes.MetaboInt):
                 "pred_df": pred_df,
                 "final_rsd_full": final_full,
                 "final_rsd_oof": final_oof,
+                "eval_rsd": eval_rsd,
+                "median_qc_rsd_improvement_score": median_qc_rsd_improvement_score,
+                "featurewise_qc_rsd_improvement_score": (
+                    featurewise_qc_rsd_improvement_score
+                ),
+                "featurewise_qc_rsd_improvement_median": (
+                    featurewise_improvement.get("median")
+                ),
+                "featurewise_qc_rsd_improvement_values": (
+                    featurewise_improvement.get("values")
+                ),
+                "sample_structure_score": sample_structure_score,
+                "sample_structure_metrics": structure_metrics,
+                "auto_score": auto_score,
             }
 
-            full_only_methods = ("RUV-III", "WaveICA 2.0")
-            log_rsd = final_full if method in full_only_methods else final_oof
+            log_rsd = eval_rsd
             if log_rsd is not None:
                 logger.info(f"{method} Eval QC RSD: {log_rsd * 100:.2f}%")
 
         return results_store
 
-    def _find_best_correction(self, results_store: Dict[str, Any]) -> str:
+    def _select_best_correction_method(self, results_store: Dict[str, Any]) -> str:
         """
-        Identify the optimal correction method based on QC RSD.
+        Identify the optimal correction method using Auto score.
 
-        RUV-III and WaveICA 2.0 evaluate using the full dataset RSD.
-        All other methods rely on the Out-Of-Fold (OOF) cross-validated
-        RSD to prevent overfitting.
+        The AUTO score combines median QC-RSD improvement, feature-wise
+        QC-RSD improvement, and actual-sample structure preservation.
+        RUV-III and WaveICA 2.0 use global-model QC-RSD evaluation; methods
+        with OOF support use the OOF metric.
         """
         best_method = ""
+        best_score = float("-inf")
         min_rsd = float("inf")
 
         for method, res in results_store.items():
-            if method in ("RUV-III", "WaveICA 2.0"):
-                eval_rsd = res.get("final_rsd_full", float("inf"))
-            else:
-                eval_rsd = res.get("final_rsd_oof")
-                if eval_rsd is None:
-                    eval_rsd = res.get("final_rsd_full", float("inf"))
+            auto_score = su.finite_or_nan(res.get("auto_score"))
+            if not np.isfinite(auto_score):
+                auto_score = float("-inf")
+            eval_rsd = self._get_correction_eval_rsd(method=method, result=res)
 
-            if eval_rsd < min_rsd:
+            if (
+                auto_score > best_score
+                or (auto_score == best_score and eval_rsd < min_rsd)
+            ):
+                best_score = auto_score
                 min_rsd = eval_rsd
                 best_method = method
 
+        if not best_method:
+            for method, res in results_store.items():
+                eval_rsd = self._get_correction_eval_rsd(method=method, result=res)
+                if eval_rsd < min_rsd:
+                    min_rsd = eval_rsd
+                    best_method = method
+
         return best_method
+
+    @staticmethod
+    def _get_correction_eval_rsd(method: str, result: dict[str, Any]) -> float:
+        """Return the QC-RSD metric used for correction-method selection."""
+        cached_eval = su.finite_or_nan(result.get("eval_rsd"))
+        if np.isfinite(cached_eval):
+            return cached_eval
+
+        if method in ("RUV-III", "WaveICA 2.0"):
+            return float(result.get("final_rsd_full", float("inf")))
+
+        eval_rsd = result.get("final_rsd_oof")
+        if eval_rsd is None:
+            eval_rsd = result.get("final_rsd_full", float("inf"))
+        return float(eval_rsd)
 
     # =========================================================================
     # Core Pipeline Execution Flow
@@ -1496,8 +1640,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
     @iu._exe_time
     def execute_signal_correction(self, output_dir: str) -> Dict[str, Any]:
         """Execute complete signal correction workflow dynamically."""
-        # [NEW FIX] Preemptively cast the entire internal matrix to float
-        # to guarantee safe inplace assignments during regression steps.
+        # Cast the internal matrix to float for safe in-place regression updates.
         self._update_inplace(self.astype(float))
 
         self.attrs["pipeline_stage"] = "Original"
@@ -1535,7 +1678,7 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         # ---------------------------------------------------------------------
         # 1. Computation & Evaluation Phase
         # ---------------------------------------------------------------------
-        results_store = self._evaluate_all_methods(
+        results_store = self._evaluate_correction_candidates(
             methods_to_run=methods_to_run,
             batch_array=batch_array,
             qc_mask=qc_mask,
@@ -1548,17 +1691,17 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         # ---------------------------------------------------------------------
         # 2. Selection Phase
         # ---------------------------------------------------------------------
-        best_method = self._find_best_correction(results_store)
+        best_method = self._select_best_correction_method(results_store)
 
         if req_method == "AUTO":
-            if best_method in ("RUV-III", "WaveICA 2.0"):
-                best_rsd = results_store[best_method]["final_rsd_full"]
-            else:
-                best_rsd = results_store[best_method]["final_rsd_oof"]
+            best_rsd = self._get_correction_eval_rsd(
+                method=best_method, result=results_store[best_method]
+            )
+            best_score = su.finite_or_nan(results_store[best_method].get("auto_score"))
 
             logger.success(
                 f"Auto selection: {_format_correction_method_label(best_method)} is optimal "
-                f"(Eval QC RSD = {best_rsd * 100:.2f}%)."
+                f"(score = {best_score:.3f}, Eval QC RSD = {best_rsd * 100:.2f}%)."
             )
             # Update metric tracker to reflect dynamically chosen algorithm
             self.attrs["base_est"] = best_method
@@ -1571,32 +1714,63 @@ class MetaboIntCorrector(core_classes.MetaboInt):
         # 3. Visualization Routing Phase
         # ---------------------------------------------------------------------
         vis = MetaboVisualizerCorrector(self)
+        best_method_file_label = _format_correction_method_file_label(best_method)
+        best_dashboard_file_label = best_method_file_label.replace(" ", "_")
 
-        # Auto mode: Generate the comprehensive comparison grid
+        logger.info("Assembling correction diagnostic dashboard...")
+        grid_obj = vis.plot_correction_dashboard(
+            results_store,
+            best_method,
+            include_auto_summary=req_method == "AUTO" and len(results_store) > 1,
+        )
+        if grid_obj is not None:
+            vis.save_and_show_pw(
+                pw_obj=grid_obj,
+                width="60%",
+                file_path=os.path.join(
+                    output_dir,
+                    f"Correction_Dashboard_{best_dashboard_file_label}.svg",
+                ),
+            )
+
         if req_method == "AUTO" and len(results_store) > 1:
-            logger.info("Assembling evaluation grid for all methods...")
-            grid_obj = vis.plot_correction_dashboard(results_store, best_method)
-
-            if grid_obj is not None:
+            candidate_obj = vis.plot_correction_candidate_grid(
+                results_store=results_store,
+                best_method=best_method,
+            )
+            if candidate_obj is not None:
+                candidate_path = os.path.join(
+                    output_dir,
+                    f"Correction_Candidate_Dashboard_{best_dashboard_file_label}.svg",
+                )
                 vis.save_and_show_pw(
-                    pw_obj=grid_obj,
+                    pw_obj=candidate_obj,
                     width="60%",
-                    file_path=os.path.join(output_dir, "QC_RSD_Evaluation_Grid.svg"),
+                    file_path=candidate_path,
+                )
+                logger.info(
+                    f"Correction candidate dashboard saved as: {candidate_path}"
                 )
 
-        # Standard behavior: Generate the specific plot for the chosen method
+            # article_obj = vis.plot_correction_article_dashboard(
+            #     results_store=results_store,
+            #     best_method=best_method,
+            # )
+            # if article_obj is not None:
+            #     article_path = os.path.join(
+            #         output_dir,
+            #         f"Correction_Article_Dashboard_{best_dashboard_file_label}.svg",
+            #     )
+            #     vis.save_and_show_pw(
+            #         pw_obj=article_obj,
+            #         width="60%",
+            #         file_path=article_path,
+            #     )
+            #     logger.info(
+            #         f"Correction article dashboard saved as: {article_path}"
+            #     )
+
         best_method_label = _format_correction_method_label(best_method)
-        best_method_file_label = _format_correction_method_file_label(best_method)
-        logger.info(f"Generating specific RSD plot for: {best_method_label}")
-        m_res = results_store[best_method]
-        fig_rsd = vis.plot_corr_rsd(
-            stage_dfs=m_res["stage_dfs"], stage_oof_dfs=m_res.get("stage_oof_dfs", {})
-        )
-        vis.save_and_show_pw(
-            pw_obj=fig_rsd,
-            width="20%",
-            file_path=os.path.join(output_dir, f"QC_RSD_{best_method_file_label}.svg"),
-        )
 
         # ---------------------------------------------------------------------
         # 4. File Export Phase (Exclusive to the optimal method)
@@ -1797,7 +1971,9 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         self,
         ax: plt.Axes | None = None,
         show_cv: bool = True,
+        loc: str = "center left",
         bbox_to_anchor: tuple[float, float] = (0.1, 0.5),
+        legend_cols: int | None = None,
     ) -> plt.Axes:
         """Create a standalone legend for RSD plots using explicit Patches."""
         if ax is None:
@@ -1813,14 +1989,10 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
 
         from matplotlib.patches import Patch
 
-        c_base = pu.get_equivalent_hex("tab:gray", alpha=1)
-        c_cv = pu.get_equivalent_hex("tab:red", alpha=0.5)
-        c_full = pu.get_equivalent_hex("tab:red", alpha=1)
+        c_base = pu.get_equivalent_hex("tab:gray", alpha=1.0)
+        c_cv = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.33)
+        c_full = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0)
 
-        # Explicitly construct legend patches in memory.
-        # Since the updated _format_single_legend can now extract handles
-        # from an active legend before clearing it, we no longer need
-        # empty proxy bars or invisible zero-dimension shapes.
         legend_elements = [
             Patch(facecolor=c_base, edgecolor="k", linewidth=1.0, label="Baseline")
         ]
@@ -1838,20 +2010,18 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             Patch(facecolor=c_full, edgecolor="k", linewidth=1.0, label="Global model")
         )
 
-        # Step 1: Bind the explicit handles to a temporary legend object
         current_ax.legend(handles=legend_elements)
 
-        # Step 2: Pass to the updated robust base formatter for styling
         self._format_single_legend(
             ax=current_ax,
-            group_title="Correction Mode",
-            loc="center left",
+            group_title="Correction evaluation",
+            loc=loc,
             bbox_to_anchor=bbox_to_anchor,
+            legend_cols=legend_cols,
+            borderaxespad=0.0,
         )
 
-        # --- CRITICAL PATCHWORKLIB FIX ---
-        # Bring the promoted figure-level legend back down to the Axes layer
-        # to guarantee that patchworklib doesn't drop it during layout binding.
+        # Keep patchworklib-compatible legends attached to the legend axis.
         if hasattr(current_ax.figure, "legends"):
             for leg in list(current_ax.figure.legends):
                 current_ax.add_artist(leg)
@@ -1859,12 +2029,114 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
 
         return current_ax
 
+    def _collect_corr_rsd_series(
+        self,
+        stage_dfs: dict[str, pd.DataFrame],
+        stage_oof_dfs: dict[str, pd.DataFrame] | None = None,
+    ) -> list[np.ndarray]:
+        """Collect finite feature-wise QC RSD arrays from correction stages."""
+        rsd_arrays: list[np.ndarray] = []
+        for df_obj in stage_dfs.values():
+            rsd = self.corr.extract_qc_rsd_series(df_obj)
+            if not rsd.empty:
+                values = rsd.to_numpy(dtype=float)
+                values = values[np.isfinite(values)]
+                if values.size:
+                    rsd_arrays.append(values)
+
+        for df_obj in (stage_oof_dfs or {}).values():
+            rsd = self.corr.extract_qc_rsd_series(df_obj)
+            if not rsd.empty:
+                values = rsd.to_numpy(dtype=float)
+                values = values[np.isfinite(values)]
+                if values.size:
+                    rsd_arrays.append(values)
+
+        return rsd_arrays
+
+    @staticmethod
+    def _boxplot_visible_limits(values: np.ndarray) -> tuple[float, float] | None:
+        """Return Tukey boxplot whisker limits for finite raw-ratio RSD values."""
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            return None
+
+        q1, q3 = np.nanpercentile(finite_values, [25, 75])
+        iqr = q3 - q1
+        if not np.isfinite(iqr) or iqr <= 0:
+            return float(np.nanmin(finite_values)), float(np.nanmax(finite_values))
+
+        lower_fence = q1 - 1.5 * iqr
+        upper_fence = q3 + 1.5 * iqr
+        visible_values = finite_values[
+            (finite_values >= lower_fence) & (finite_values <= upper_fence)
+        ]
+        if visible_values.size == 0:
+            visible_values = finite_values
+        return float(np.nanmin(visible_values)), float(np.nanmax(visible_values))
+
+    @staticmethod
+    def _resolve_corr_rsd_ylim_from_values(
+        rsd_arrays: list[np.ndarray],
+        top_margin: float = 0.32,
+    ) -> tuple[float, float] | None:
+        """Resolve QC RSD y-axis range from visible boxplot whisker limits."""
+        visible_limits = [
+            MetaboVisualizerCorrector._boxplot_visible_limits(values)
+            for values in rsd_arrays
+        ]
+        visible_limits = [limits for limits in visible_limits if limits is not None]
+        if not visible_limits:
+            return None
+
+        data_min = min(limit[0] for limit in visible_limits)
+        data_max = max(limit[1] for limit in visible_limits)
+        lower = min(0.0, data_min)
+        span = max(data_max - lower, abs(data_max) * 0.10, 0.02)
+        upper = data_max + max(span * top_margin, 0.02)
+        if upper <= lower:
+            upper = lower + 0.1
+        return lower, upper
+
+    def _resolve_corr_rsd_ylim(
+        self,
+        stage_dfs: dict[str, pd.DataFrame],
+        stage_oof_dfs: dict[str, pd.DataFrame] | None = None,
+        top_margin: float = 0.32,
+    ) -> tuple[float, float] | None:
+        """Resolve a QC RSD y-axis range with room for top annotations."""
+        rsd_arrays = self._collect_corr_rsd_series(stage_dfs, stage_oof_dfs)
+        return self._resolve_corr_rsd_ylim_from_values(
+            rsd_arrays=rsd_arrays,
+            top_margin=top_margin,
+        )
+
+    def _resolve_dashboard_corr_rsd_ylim(
+        self,
+        results_store: dict[str, dict[str, Any]],
+    ) -> tuple[float, float] | None:
+        """Resolve a shared QC RSD y-axis range for all correction candidates."""
+        all_rsd_arrays: list[np.ndarray] = []
+        for result in results_store.values():
+            stage_dfs = result.get("stage_dfs", {})
+            stage_oof_dfs = result.get("stage_oof_dfs", {})
+            all_rsd_arrays.extend(
+                self._collect_corr_rsd_series(stage_dfs, stage_oof_dfs)
+            )
+
+        if not all_rsd_arrays:
+            return None
+
+        return self._resolve_corr_rsd_ylim_from_values(all_rsd_arrays)
+
     def plot_corr_rsd(
         self,
         stage_dfs: dict[str, pd.DataFrame],
         stage_oof_dfs: dict[str, pd.DataFrame],
         ax: plt.Axes | None = None,
         show_legend: bool = True,
+        y_limits: tuple[float, float] | None = None,
+        article_compact: bool = False,
     ) -> plt.Axes:
         """Plot dual-mode RSD boxplots with dynamic width and annotations."""
         box_data = []
@@ -1875,9 +2147,9 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         tick_labels = []
         medians_text = []
 
-        c_base = pu.get_equivalent_hex("tab:gray", alpha=1)
-        c_cv = pu.get_equivalent_hex("tab:red", alpha=0.5)
-        c_full = pu.get_equivalent_hex("tab:red", alpha=1)
+        c_base = pu.get_equivalent_hex("tab:gray", alpha=1.0)
+        c_cv = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.33)
+        c_full = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0)
 
         # Retrieve the key of the final stage to mark the selection metric
         stage_keys = list(stage_dfs.keys())
@@ -1950,11 +2222,13 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         else:
             current_ax = ax
 
-        # Boxplot rendered with increased width (0.50 up from 0.35)
+        box_linewidth = 0.5 if article_compact else 1.0
+        median_linewidth = 0.7 if article_compact else 1.5
+        box_width = 0.38 if article_compact else 0.50
         bp = current_ax.boxplot(
             box_data,
             positions=positions,
-            widths=0.50,
+            widths=box_width,
             patch_artist=True,
             showfliers=False,
         )
@@ -1962,39 +2236,92 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
         for i in range(len(box_data)):
             bp["boxes"][i].set_facecolor(box_colors[i])
             bp["boxes"][i].set_edgecolor("k")
-            bp["boxes"][i].set_linewidth(1.0)
+            bp["boxes"][i].set_linewidth(box_linewidth)
             bp["boxes"][i].set_linestyle(box_styles[i])
 
             bp["medians"][i].set_color("k")
-            bp["medians"][i].set_linewidth(1.5)
+            bp["medians"][i].set_linewidth(median_linewidth)
             bp["medians"][i].set_linestyle(box_styles[i])
 
             for j in range(2):
                 idx = i * 2 + j
                 bp["whiskers"][idx].set_color("k")
-                bp["whiskers"][idx].set_linewidth(1.0)
+                bp["whiskers"][idx].set_linewidth(box_linewidth)
                 bp["whiskers"][idx].set_linestyle(box_styles[i])
 
                 bp["caps"][idx].set_color("k")
-                bp["caps"][idx].set_linewidth(1.0)
+                bp["caps"][idx].set_linewidth(box_linewidth)
                 bp["caps"][idx].set_linestyle(box_styles[i])
 
         current_ax.set_xticks(tick_pos)
         current_ax.set_xticklabels(tick_labels)
 
-        annot_text = "Median QC RSD:\n" + "\n".join(medians_text)
+        if show_legend:
+            from matplotlib.patches import Patch
+
+            legend_elements = [
+                Patch(
+                    facecolor=c_base,
+                    edgecolor="k",
+                    linewidth=box_linewidth,
+                    label="Baseline",
+                ),
+                Patch(
+                    facecolor=c_cv,
+                    edgecolor="k",
+                    linewidth=box_linewidth,
+                    linestyle="--",
+                    label="OOF model",
+                ),
+                Patch(
+                    facecolor=c_full,
+                    edgecolor="k",
+                    linewidth=box_linewidth,
+                    label="Global model",
+                ),
+            ]
+            current_ax.legend(handles=legend_elements)
+            self._format_single_legend(
+                ax=current_ax,
+                group_title="Correction evaluation",
+                loc="lower right",
+                bbox_to_anchor=None,
+                max_item_rows=6,
+            )
+
+        resolved_y_limits = y_limits or self._resolve_corr_rsd_ylim(
+            stage_dfs=stage_dfs,
+            stage_oof_dfs=stage_oof_dfs,
+        )
+        if resolved_y_limits is not None:
+            current_ax.set_ylim(*resolved_y_limits)
+
+        if article_compact:
+            compact_lines = (
+                [medians_text[0], *medians_text[-2:]] if medians_text else []
+            )
+            compact_lines = list(dict.fromkeys(compact_lines))
+            compact_lines = [
+                line.replace("Before correction", "Before")
+                .replace("Intra-batch corrected", "Intra")
+                .replace("Inter-batch corrected", "Inter")
+                .replace(" (Global)", " Global")
+                for line in compact_lines
+            ]
+            annot_text = "Median QC-RSD\n" + "\n".join(compact_lines)
+        else:
+            annot_text = "Median QC RSD:\n" + "\n".join(medians_text)
         current_ax.text(
             0.96,
             0.98,
             annot_text,
             transform=current_ax.transAxes,
-            fontsize=10,
+            fontsize=4.25 if article_compact else pu.DEFAULT_ANNOTATION_FONTSIZE,
             verticalalignment="top",
             horizontalalignment="right",
             clip_on=False,
-            bbox=dict(
-                boxstyle="round,pad=0.4", facecolor="white", edgecolor="none", alpha=0.6
-            ),
+            bbox=pu.ai_ready_text_bbox(pad=0.25 if article_compact else 0.4),
+            zorder=10,
         )
 
         self._apply_standard_format(current_ax, ylabel="QC RSD (%)", append_stage=False)
@@ -2002,80 +2329,763 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
 
         return current_ax
 
-    def plot_correction_dashboard(
-        self, results_store: dict[str, dict[str, Any]], best_method: str
+    def plot_correction_score_summary(
+        self,
+        results_store: dict[str, dict[str, Any]],
+        best_method: str,
+        ax: plt.Axes | None = None,
+        show_legend: bool = True,
+    ) -> plt.Axes:
+        """Plot weighted AUTO correction score components."""
+        try:
+            import patchworklib as pw
+            import matplotlib.patches as mpatches
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        if ax is None:
+            current_ax = pw.Brick(figsize=(9.0, 3.0), label="correction_eval_summary")
+        else:
+            current_ax = ax
+
+        summary_rows = []
+        for method, result in results_store.items():
+            method_label = _format_correction_method_label(method)
+            summary_rows.append(
+                {
+                    "method": method,
+                    "label": method_label,
+                    "selected": method == best_method,
+                    "eval_rsd": result.get("eval_rsd"),
+                    "median_qc_rsd_improvement_score": result.get(
+                        "median_qc_rsd_improvement_score"
+                    ),
+                    "featurewise_qc_rsd_improvement_score": result.get(
+                        "featurewise_qc_rsd_improvement_score"
+                    ),
+                    "sample_structure_score": result.get("sample_structure_score"),
+                    "auto_score": result.get("auto_score"),
+                }
+            )
+
+        summary_df = pd.DataFrame(summary_rows)
+        summary_df = summary_df.replace([np.inf, -np.inf], np.nan)
+        summary_df = summary_df.dropna(subset=["auto_score"])
+        summary_df = summary_df.sort_values(
+            by=["auto_score", "label"], ascending=[False, True]
+        ).reset_index(drop=True)
+
+        if summary_df.empty:
+            current_ax.axis("off")
+            return current_ax
+
+        score_cols = [
+            "median_qc_rsd_improvement_score",
+            "featurewise_qc_rsd_improvement_score",
+            "sample_structure_score",
+        ]
+        weights = {
+            "median_qc_rsd_improvement_score": 0.35,
+            "featurewise_qc_rsd_improvement_score": 0.35,
+            "sample_structure_score": 0.30,
+        }
+        label_map = {
+            "median_qc_rsd_improvement_score": "Median QC-RSD improvement",
+            "featurewise_qc_rsd_improvement_score": "Feature-wise QC-RSD improvement",
+            "sample_structure_score": "Sample structure preservation",
+        }
+        color_map = {
+            "median_qc_rsd_improvement_score": pu.get_equivalent_hex(
+                pu.PRIMARY_ACCENT_COLOR, alpha=1.0
+            ),
+            "featurewise_qc_rsd_improvement_score": pu.get_equivalent_hex(
+                pu.PRIMARY_ACCENT_COLOR, alpha=0.67
+            ),
+            "sample_structure_score": pu.get_equivalent_hex(
+                "tab:gray", alpha=0.6
+            ),
+        }
+
+        y_pos = np.arange(len(summary_df))
+        left = np.zeros(len(summary_df), dtype=float)
+        for score_col in score_cols:
+            left_start = left.copy()
+            values = []
+            for _, row in summary_df.iterrows():
+                available_weight = sum(
+                    weights[col]
+                    for col in score_cols
+                    if np.isfinite(su.finite_or_nan(row.get(col)))
+                )
+                if available_weight <= 0:
+                    values.append(0.0)
+                    continue
+                score_value = np.clip(su.finite_or_nan(row.get(score_col)), 0.0, 1.0)
+                values.append(score_value * weights[score_col] / available_weight)
+
+            values_arr = np.asarray(values, dtype=float)
+            current_ax.barh(
+                y_pos,
+                values_arr,
+                left=left,
+                color=color_map[score_col],
+                edgecolor="k",
+                linewidth=0.5,
+                height=0.58,
+                label=label_map[score_col],
+            )
+            for y_idx, row in enumerate(summary_df.itertuples()):
+                score_value = su.finite_or_nan(getattr(row, score_col))
+                if values_arr[y_idx] < 0.11 or not np.isfinite(score_value):
+                    continue
+                face_color = color_map[score_col]
+                current_ax.text(
+                    left_start[y_idx] + values_arr[y_idx] / 2.0,
+                    y_idx,
+                    f"{score_value:.2f}",
+                    va="center",
+                    ha="center",
+                    fontsize=9.5,
+                    color=pu.get_contrast_color(face_color),
+                    clip_on=True,
+                )
+            left += values_arr
+
+        y_labels = [
+            f"* {row.label}" if bool(row.selected) else str(row.label)
+            for row in summary_df.itertuples()
+        ]
+        current_ax.set_yticks(y_pos)
+        current_ax.set_yticklabels(y_labels)
+        current_ax.invert_yaxis()
+
+        x_upper = float(np.nanmax(left)) if left.size else 1.0
+        x_upper = min(1.08, max(x_upper + 0.08, x_upper * 1.10, 0.20))
+        current_ax.set_xlim(0, x_upper)
+        for y_idx, row in enumerate(summary_df.itertuples()):
+            score = su.finite_or_nan(row.auto_score)
+            current_ax.text(
+                min(float(left[y_idx]) + 0.015, x_upper * 0.97),
+                y_idx,
+                f"{score:.3f}",
+                va="center",
+                ha="left",
+                fontsize=10.5,
+            )
+
+        self._apply_standard_format(
+            current_ax,
+            title="Auto Correction Method Selection",
+            xlabel="Weighted contribution to overall score",
+            append_stage=False,
+        )
+        if show_legend:
+            legend_handles = [
+                mpatches.Patch(
+                    facecolor=color_map[col],
+                    edgecolor="k",
+                    linewidth=0.5,
+                    label=label_map[col],
+                )
+                for col in score_cols
+            ]
+            current_ax.legend(handles=legend_handles)
+            self._format_single_legend(
+                ax=current_ax,
+                group_title="AUTO correction score components",
+                loc="lower right",
+                bbox_to_anchor=None,
+                max_item_rows=6,
+            )
+        current_ax.tick_params(axis="y", length=0)
+
+        return current_ax
+
+    def plot_correction_dashboard_legend(
+        self,
+        ax: plt.Axes,
+        show_cv: bool = True,
+        fontsize: float = 9.0,
+        title_fontsize: float = 10.0,
+        article_compact: bool = False,
+    ) -> plt.Axes:
+        """Draw grouped score-component and correction-mode legends."""
+        import matplotlib.patches as mpatches
+
+        legend_linewidth = 0.5 if article_compact else 1.0
+
+        score_handles = [
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Median QC-RSD improvement",
+            ),
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex(
+                    pu.PRIMARY_ACCENT_COLOR, alpha=0.67
+                ),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Feature-wise QC-RSD improvement",
+            ),
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=0.6),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Sample structure",
+            ),
+        ]
+
+        mode_handles = [
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=1.0),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Baseline",
+            )
+        ]
+        if show_cv:
+            mode_handles.append(
+                mpatches.Patch(
+                    facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.33),
+                    edgecolor="k",
+                    linewidth=legend_linewidth,
+                    linestyle="--",
+                    label="OOF model",
+                )
+            )
+        mode_handles.append(
+            mpatches.Patch(
+                facecolor=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0),
+                edgecolor="k",
+                linewidth=legend_linewidth,
+                label="Global model",
+            )
+        )
+
+        self._plot_grouped_standalone_legends(
+            ax=ax,
+            legend_groups=[
+                ("AUTO correction score components", score_handles),
+                ("QC-RSD evaluation stage", mode_handles),
+            ],
+            loc="upper left",
+            start_bbox=(0.0, 1.0),
+            row_gap=0.04,
+            max_item_rows=6,
+            borderaxespad=0.0,
+            handlelength=1.0 if article_compact else 1.8,
+            handletextpad=0.3 if article_compact else 0.8,
+            labelspacing=0.25 if article_compact else 0.5,
+            borderpad=0.3 if article_compact else 0.4,
+            fontsize=fontsize,
+            title_fontsize=title_fontsize,
+        )
+        if article_compact:
+            self._apply_article_legend_style(
+                ax=ax,
+                fontsize=fontsize,
+                title_fontsize=title_fontsize,
+            )
+        return ax
+
+    def plot_featurewise_qc_rsd_improvement_ecdf(
+        self,
+        result: dict[str, Any],
+        ax: plt.Axes | None = None,
+        article_compact: bool = False,
+    ) -> plt.Axes:
+        """Plot ECDF of paired feature-wise QC-RSD relative improvement."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        current_ax = (
+            pw.Brick(figsize=(4.0, 4.0), label="featurewise_qc_rsd_ecdf")
+            if ax is None
+            else ax
+        )
+
+        raw_values = result.get("featurewise_qc_rsd_improvement_values")
+        values = pd.Series(raw_values, dtype=float).replace([np.inf, -np.inf], np.nan)
+        values = values.dropna()
+        if values.empty:
+            current_ax.text(
+                0.5,
+                0.5,
+                "No paired QC-RSD values",
+                transform=current_ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=pu.DEFAULT_ANNOTATION_FONTSIZE,
+                bbox=pu.ai_ready_text_bbox(),
+                zorder=10,
+            )
+            self._apply_standard_format(
+                current_ax,
+                title="Feature-wise QC-RSD Improvement",
+                xlabel="Feature-wise QC-RSD relative improvement",
+                ylabel="Cumulative feature fraction",
+                append_stage=False,
+            )
+            return current_ax
+
+        sorted_values = np.sort(values.to_numpy(dtype=float))
+        cumulative = np.arange(1, sorted_values.size + 1) / sorted_values.size
+        current_ax.step(
+            sorted_values,
+            cumulative,
+            where="post",
+            color=pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=1.0),
+            linewidth=1.1 if article_compact else 1.8,
+        )
+        current_ax.axvline(
+            0.0,
+            color="0.35",
+            linestyle="--",
+            linewidth=0.6 if article_compact else 1.0,
+            zorder=2,
+        )
+        current_ax.axhline(
+            0.5,
+            color="0.70",
+            linestyle=":",
+            linewidth=0.6 if article_compact else 1.0,
+            zorder=1,
+        )
+
+        x_low, x_high = np.nanpercentile(sorted_values, [1.0, 99.0])
+        x_span = max(float(x_high - x_low), 0.1)
+        current_ax.set_xlim(float(x_low - x_span * 0.08), float(x_high + x_span * 0.08))
+        current_ax.set_ylim(0.0, 1.02)
+
+        featurewise_score = su.finite_or_nan(
+            result.get("featurewise_qc_rsd_improvement_score")
+        )
+        featurewise_median = su.finite_or_nan(
+            result.get("featurewise_qc_rsd_improvement_median")
+        )
+        note_lines = []
+        if np.isfinite(featurewise_score):
+            note_lines.append(
+                f"Score: {featurewise_score:.3f}"
+                if article_compact
+                else f"Winsorized score: {featurewise_score:.3f}"
+            )
+        if np.isfinite(featurewise_median):
+            note_lines.append(
+                f"Median: {featurewise_median:.1%}"
+                if article_compact
+                else f"Median improvement: {featurewise_median:.1%}"
+            )
+        if note_lines:
+            current_ax.text(
+                0.04,
+                0.96,
+                "\n".join(note_lines),
+                transform=current_ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=4.25 if article_compact else pu.DEFAULT_ANNOTATION_FONTSIZE,
+                color="0.25",
+                bbox=pu.ai_ready_text_bbox(pad=0.25 if article_compact else 0.4),
+                zorder=10,
+            )
+
+        self._apply_standard_format(
+            current_ax,
+            title="Feature-wise QC-RSD Improvement",
+            xlabel="Feature-wise QC-RSD relative improvement",
+            ylabel="Cumulative feature fraction",
+            append_stage=False,
+        )
+        pu.change_axis_format(current_ax, "percentage", "x")
+        return current_ax
+
+    def plot_correction_preservation_scorecard(
+        self,
+        results_store: dict[str, dict[str, Any]],
+        best_method: str,
+        ax: plt.Axes | None = None,
+    ) -> plt.Axes:
+        """Plot actual-sample structure metrics used by AUTO correction."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        if ax is None:
+            current_ax = pw.Brick(
+                figsize=(3.6, 4.0), label="correction_preservation_scorecard"
+            )
+        else:
+            current_ax = ax
+
+        rows = []
+        for method, result in results_store.items():
+            method_label = _format_correction_method_label(method)
+            rows.append(
+                {
+                    "method": method,
+                    "label": method_label,
+                    "selected": method == best_method,
+                    "sample_structure_score": result.get("sample_structure_score"),
+                    "Trustworthiness": result.get(
+                        "sample_structure_metrics", {}
+                    ).get("sample_structure_trustworthiness"),
+                    "Distance rank preservation": result.get(
+                        "sample_structure_metrics", {}
+                    ).get("sample_structure_rank_preservation"),
+                    "Distance scale preservation": result.get(
+                        "sample_structure_metrics", {}
+                    ).get("sample_structure_scale_preservation"),
+                    "auto_score": result.get("auto_score"),
+                }
+            )
+
+        summary_df = pd.DataFrame(rows).replace([np.inf, -np.inf], np.nan)
+        metric_cols = [
+            "Trustworthiness",
+            "Distance rank preservation",
+            "Distance scale preservation",
+        ]
+        metric_labels = [
+            "Trustworthiness",
+            "Distance-rank\npreservation",
+            "Distance-scale\npreservation",
+        ]
+        for col in ["auto_score", "sample_structure_score", *metric_cols]:
+            summary_df[col] = pd.to_numeric(summary_df[col], errors="coerce")
+        summary_df = summary_df.dropna(subset=metric_cols, how="all")
+        summary_df = summary_df.sort_values(
+            by=["auto_score", "label"], ascending=[False, True]
+        ).reset_index(drop=True)
+
+        if summary_df.empty:
+            current_ax.axis("off")
+            return current_ax
+
+        matrix = summary_df[metric_cols].to_numpy(dtype=float)
+        cmap = pu.score_heatmap_cmap()
+        annot_size = pu.heatmap_annotation_fontsize(
+            current_ax,
+            n_rows=matrix.shape[0],
+            n_cols=matrix.shape[1],
+            default_size=11.0,
+            max_size=12.0,
+            min_size=6.0,
+        )
+
+        masked_matrix = np.ma.masked_invalid(matrix)
+        current_ax.imshow(
+            masked_matrix,
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            aspect="auto",
+        )
+        current_ax.set_xticks(np.arange(len(metric_cols)))
+        current_ax.set_xticklabels(metric_labels)
+        current_ax.set_yticks(np.arange(len(summary_df)))
+        current_ax.set_yticklabels(
+            [
+                f"* {row.label}" if bool(row.selected) else str(row.label)
+                for row in summary_df.itertuples()
+            ]
+        )
+        current_ax.set_xticks(np.arange(-0.5, len(metric_cols), 1), minor=True)
+        current_ax.set_yticks(np.arange(-0.5, len(summary_df), 1), minor=True)
+        grid_lw = 1.0
+        current_ax.grid(which="minor", color="k", linestyle="-", linewidth=grid_lw)
+        current_ax.tick_params(which="minor", bottom=False, left=False)
+
+        for y_idx in range(matrix.shape[0]):
+            for x_idx in range(matrix.shape[1]):
+                value = matrix[y_idx, x_idx]
+                if not np.isfinite(value):
+                    label = "NA"
+                    color = "0.35"
+                else:
+                    label = f"{value:.2f}"
+                    color = pu.get_contrast_color(cmap(value))
+                current_ax.text(
+                    x_idx,
+                    y_idx,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=annot_size,
+                    color=color,
+                )
+
+        self._apply_standard_format(
+            current_ax,
+            title="Candidate Preservation Scorecard",
+            xlabel="",
+            ylabel="",
+            append_stage=False,
+        )
+        pu.rotate_xticks_if_overlapping(current_ax)
+        current_ax.tick_params(axis="both", length=0)
+        return current_ax
+
+    def plot_correction_article_legend(
+        self,
+        ax: plt.Axes,
+        show_oof: bool,
+    ) -> plt.Axes:
+        """Draw right-side grouped legends for the correction article panel."""
+        return self.plot_correction_dashboard_legend(
+            ax=ax,
+            show_cv=show_oof,
+            fontsize=pu.ARTICLE_LEGEND_FONTSIZE,
+            title_fontsize=pu.ARTICLE_LEGEND_TITLE_FONTSIZE,
+            article_compact=True,
+        )
+
+    def plot_correction_article_dashboard(
+        self,
+        results_store: dict[str, dict[str, Any]],
+        best_method: str,
     ) -> object | None:
-        """Combine AUTO RSD evaluation plots and a shared legend."""
+        """Create a compact score-aligned correction panel for manuscript figures."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            logger.warning("patchworklib not found. Skipping correction article panel.")
+            return None
+
+        if best_method not in results_store:
+            return None
+
+        pw.clear()
+        best_result = results_store[best_method]
+        panel_height = 1.75
+
+        summary_ax = pw.Brick(
+            figsize=(1.85, panel_height), label="article_correction_summary"
+        )
+        self.plot_correction_score_summary(
+            results_store=results_store,
+            best_method=best_method,
+            ax=summary_ax,
+            show_legend=False,
+        )
+        self._apply_article_panel_format(
+            summary_ax,
+            title="Auto Correction Method Selection",
+        )
+
+        rsd_ax = pw.Brick(
+            figsize=(1.70, panel_height), label="article_correction_qc_rsd"
+        )
+        self.plot_corr_rsd(
+            stage_dfs=best_result["stage_dfs"],
+            stage_oof_dfs=best_result.get("stage_oof_dfs", {}),
+            ax=rsd_ax,
+            show_legend=False,
+            article_compact=True,
+        )
+        self._apply_article_panel_format(
+            rsd_ax,
+            title="QC-RSD Distribution",
+        )
+
+        ecdf_ax = pw.Brick(
+            figsize=(1.70, panel_height), label="article_correction_featurewise"
+        )
+        self.plot_featurewise_qc_rsd_improvement_ecdf(
+            result=best_result,
+            ax=ecdf_ax,
+            article_compact=True,
+        )
+        self._apply_article_panel_format(
+            ecdf_ax,
+            title="Feature-wise QC-RSD Improvement",
+        )
+        ecdf_ax.set_xlabel("QC-RSD relative improvement")
+        ecdf_ax.set_ylabel("Cumulative fraction")
+
+        legend_ax = pw.Brick(
+            figsize=(1.30, panel_height), label="article_correction_legend"
+        )
+        self.plot_correction_article_legend(
+            ax=legend_ax,
+            show_oof=bool(best_result.get("stage_oof_dfs")),
+        )
+        return summary_ax | rsd_ax | ecdf_ax | legend_ax
+
+    def plot_correction_dashboard(
+        self,
+        results_store: dict[str, dict[str, Any]],
+        best_method: str,
+        include_auto_summary: bool = True,
+    ) -> object | None:
+        """Combine correction selection and selected-method diagnostics."""
         try:
             import patchworklib as pw
         except ImportError:
             raise ImportError("patchworklib is required for this plot.")
 
         pw.clear()
-        bricks = {}
+        if not results_store:
+            return None
 
-        # Ensure row sums are exactly 10.2 for perfectly aligned layouts
-        # Row 1: 3.0 + 3.0 + 3.0 + 1.2 (Legend) = 10.2
-        # Row 2: 3.4 + 3.4 + 3.4 = 10.2
-        width_map = {
-            "SERRF": 3.0,
-            "RUV-III": 3.0,
-            "WaveICA 2.0": 3.0,
-            "QC-RLSC": 3.4,
-            "QC-RFSC": 3.4,
-            "QC-SVR": 3.4,
-        }
+        row1 = None
+        if include_auto_summary:
+            summary_brick = pw.Brick(
+                figsize=(4.5, 4.0),
+                label="correction_eval_summary",
+            )
+            self.plot_correction_score_summary(
+                results_store=results_store,
+                best_method=best_method,
+                ax=summary_brick,
+                show_legend=False,
+            )
+            structure_brick = pw.Brick(
+                figsize=(4.7, 4.0),
+                label="correction_preservation_scorecard",
+            )
+            self.plot_correction_preservation_scorecard(
+                results_store=results_store,
+                best_method=best_method,
+                ax=structure_brick,
+            )
+            legend_brick = pw.Brick(
+                figsize=(2.8, 4.0),
+                label="correction_dashboard_legend",
+            )
+            self.plot_correction_dashboard_legend(ax=legend_brick)
+            row1 = summary_brick | structure_brick | legend_brick
 
-        for method, res in results_store.items():
+        if best_method not in results_store:
+            return row1
+
+        best_result = results_store[best_method]
+        selected_rsd = pw.Brick(
+            figsize=(4.0, 4.0),
+            label="selected_correction_qc_rsd",
+        )
+        self.plot_corr_rsd(
+            stage_dfs=best_result["stage_dfs"],
+            stage_oof_dfs=best_result.get("stage_oof_dfs", {}),
+            ax=selected_rsd,
+            show_legend=not include_auto_summary,
+        )
+        selected_rsd.set_title(
+            "QC-RSD Distribution",
+            fontsize=pu.DEFAULT_TITLE_FONTSIZE,
+            fontweight="bold",
+        )
+
+        featurewise_ecdf = pw.Brick(
+            figsize=(4.0, 4.0),
+            label="selected_featurewise_qc_rsd_ecdf",
+        )
+        self.plot_featurewise_qc_rsd_improvement_ecdf(
+            result=best_result,
+            ax=featurewise_ecdf,
+        )
+
+        sample_structure = pw.Brick(
+            figsize=(4.0, 4.0),
+            label="selected_correction_sample_structure",
+        )
+        final_stage_df = list(best_result["stage_dfs"].values())[-1]
+        pu.plot_sample_structure_change_map(
+            ax=sample_structure,
+            raw_obj=self.corr,
+            transformed_obj=final_stage_df,
+            structure_metrics=best_result.get("sample_structure_metrics", {}),
+            seed=int(self.corr.attrs.get("global_seed", 123)),
+            title="Sample Structure Change Map",
+        )
+
+        row2 = selected_rsd | featurewise_ecdf | sample_structure
+        return row1 / row2 if row1 is not None else row2
+
+    def plot_correction_candidate_grid(
+        self, results_store: dict[str, dict[str, Any]], best_method: str
+    ) -> object | None:
+        """Plot all AUTO correction candidates as a QC-RSD appendix grid."""
+        try:
+            import patchworklib as pw
+        except ImportError:
+            raise ImportError("patchworklib is required for this plot.")
+
+        pw.clear()
+        if not results_store:
+            return None
+
+        panel_width = 3.7
+        panel_height = 4.0
+        bricks: dict[str, object] = {}
+        method_rows = [
+            ["QC-RLSC", "QC-RFSC", "QC-SVR"],
+            ["SERRF", "RUV-III", "WaveICA 2.0"],
+        ]
+        detail_methods = [method for row in method_rows for method in row]
+        shared_y_limits = self._resolve_dashboard_corr_rsd_ylim(results_store)
+
+        for method in detail_methods:
+            if method not in results_store:
+                continue
+            res = results_store[method]
             stage_dfs = res["stage_dfs"]
             stage_oof_dfs = res.get("stage_oof_dfs", {})
-
-            fig_width = width_map.get(method, max(3.0, len(stage_dfs) * 1.0))
             safe_label = re.sub(r"[^A-Za-z0-9_]+", "_", f"rsd_box_{method}")
 
-            b = pw.Brick(figsize=(fig_width, 4.0), label=safe_label)
+            b = pw.Brick(figsize=(panel_width, panel_height), label=safe_label)
 
             self.plot_corr_rsd(
                 stage_dfs=stage_dfs,
                 stage_oof_dfs=stage_oof_dfs,
                 ax=b,
                 show_legend=False,
+                y_limits=shared_y_limits,
             )
 
             method_label = _format_correction_method_label(method)
-            # Formatted to prefix the asterisk cleanly (e.g., "* SERRF")
             title = f"* {method_label}" if method == best_method else method_label
-            b.set_title(title)
+            b.set_title(
+                title,
+                fontsize=pu.DEFAULT_TITLE_FONTSIZE,
+                fontweight="bold",
+            )
             bricks[method] = b
 
-        # Dynamically attach explicit handles legend to the 1.0-width slot
-        leg_brick = pw.Brick(figsize=(1.2, 4.0), label="shared_legend")
-        self.plot_rsd_standalone_legend(ax=leg_brick, show_cv=True)
+        plot_rows = []
+        for row_methods in method_rows:
+            row_bricks = [bricks[method] for method in row_methods if method in bricks]
+            if not row_bricks:
+                continue
+            row = row_bricks[0]
+            for brick in row_bricks[1:]:
+                row = row | brick
+            plot_rows.append(row)
 
-        r1_keys = ["SERRF", "RUV-III", "WaveICA 2.0"]
-        r2_keys = ["QC-RLSC", "QC-RFSC", "QC-SVR"]
-
-        row1_bricks = [bricks[k] for k in r1_keys if k in bricks]
-        row2_bricks = [bricks[k] for k in r2_keys if k in bricks]
-
-        if not row1_bricks and not row2_bricks:
+        if not plot_rows:
             return None
 
-        row1 = None
-        for b in row1_bricks:
-            row1 = b if row1 is None else row1 | b
-        row1 = leg_brick if row1 is None else row1 | leg_brick
+        legend_brick = pw.Brick(
+            figsize=(panel_width * 3.0, 0.55), label="correction_mode_legend"
+        )
+        self.plot_rsd_standalone_legend(
+            ax=legend_brick,
+            show_cv=True,
+            loc="center",
+            bbox_to_anchor=(0.5, 0.5),
+            legend_cols=3,
+        )
 
-        row2 = None
-        for b in row2_bricks:
-            row2 = b if row2 is None else row2 | b
+        grid_pw = plot_rows[0]
+        for row in plot_rows[1:]:
+            grid_pw = grid_pw / row
 
-        if row1 is not None and row2 is not None:
-            grid_pw = row1 / row2
-        else:
-            grid_pw = row1 if row1 is not None else row2
-
-        return grid_pw
+        return grid_pw / legend_brick
 
     def _plot_standalone_is_legend(
         self,
@@ -2102,7 +3112,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             mlines.Line2D(
                 [],
                 [],
-                color="tab:red",
+                color=pu.PRIMARY_ACCENT_COLOR,
                 marker="o",
                 linestyle="none",
                 markersize=6,
@@ -2162,7 +3172,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             legend_labels.append("Fitted Baseline")
 
         # =====================================================================
-        # [CRITICAL FIX]: Must initialize the standard matplotlib legend FIRST
+        # Initialize a standard Matplotlib legend before applying shared styling.
         # before passing it to the multi-legend layout formatter engine.
         # =====================================================================
         ax.legend(legend_handles, legend_labels)
@@ -2175,7 +3185,7 @@ class MetaboVisualizerCorrector(visualizer_classes.BaseMetaboVisualizer):
             row_gap=0.04,
             layout_cols=1,
             column_gap=0.1,
-            sublegend_cols=1,
+            max_item_rows=6,
         )
 
         # Prevent Patchworklib from discarding figure-level legends

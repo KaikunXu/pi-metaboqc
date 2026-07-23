@@ -627,6 +627,62 @@ class NarrativeStatsReporter:
         )
         return f"\n\n{table_str}\n\n" if rows else ""
 
+    def _summarize_rsd_guardrail(self, qa_metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Summarize QC precision and biological-sample RSD distribution separately.
+
+        Pooled-QC RSD is an analytical-precision measure. In contrast, RSD across
+        actual biological samples is retained as a descriptive guardrail: it should
+        remain broad after preprocessing rather than being minimized as though it
+        were purely technical variation.
+        """
+        labels = ("0-10%", "10-20%", "20-30%", ">30%")
+
+        def get_distribution(stage_key: str, sample_class: str) -> Dict[str, int]:
+            stage_data = qa_metrics.get(stage_key, {})
+            distribution = stage_data.get("rsd_distribution", {})
+            values = distribution.get(sample_class, {})
+            return {label: int(values.get(label, 0)) for label in labels}
+
+        raw_qc = get_distribution("raw_dataset", "qc")
+        raw_actual = get_distribution("raw_dataset", "actual")
+        raw_total = sum(raw_qc.values())
+        raw_actual_total = sum(raw_actual.values())
+
+        final_key = ""
+        final_name = ""
+        for stage_key, stage_name in reversed(self._QA_STAGES):
+            if qa_metrics.get(stage_key, {}).get("rsd_distribution"):
+                final_key = stage_key
+                final_name = stage_name
+                break
+
+        if not final_key or raw_total == 0 or raw_actual_total == 0:
+            return {"available": False}
+
+        final_qc = get_distribution(final_key, "qc")
+        final_actual = get_distribution(final_key, "actual")
+        final_total = sum(final_qc.values())
+        actual_total = sum(final_actual.values())
+        if final_total == 0 or actual_total == 0:
+            return {"available": False}
+
+        return {
+            "available": True,
+            "final_stage": final_name,
+            "raw_qc_low_count": raw_qc["0-10%"],
+            "raw_qc_total": raw_total,
+            "raw_qc_low_pct": 100 * raw_qc["0-10%"] / raw_total,
+            "final_qc_low_count": final_qc["0-10%"],
+            "final_qc_total": final_total,
+            "final_qc_low_pct": 100 * final_qc["0-10%"] / final_total,
+            "raw_actual_high_count": raw_actual[">30%"],
+            "raw_actual_total": raw_actual_total,
+            "raw_actual_high_pct": 100 * raw_actual[">30%"] / raw_actual_total,
+            "final_actual_high_count": final_actual[">30%"],
+            "final_actual_total": actual_total,
+            "final_actual_high_pct": 100 * final_actual[">30%"] / actual_total,
+        }
+
     def _create_pca_summary_table(self, qa_metrics: Dict[str, Any]) -> str:
         """Generates a table detailing PCA drift and silhouette metrics."""
         rows = []
@@ -859,6 +915,7 @@ class NarrativeStatsReporter:
             "correlation": self._create_corr_summary_table(qa_metrics),
             "outliers": self._create_outlier_summary_table(qa_metrics),
         }
+        stats["rsd_guardrail"] = self._summarize_rsd_guardrail(qa_metrics)
 
         return stats
 
@@ -1062,7 +1119,7 @@ class NarrativeStatsReporter:
             logger.error(f"PowerShell execution explicitly failed: {e}")
             return False
         finally:
-            # [FIX]: Foolproof cleanup from the Python side.
+            # Remove helper scripts created during the browser refresh step.
             # This ensures cleanup even if the PowerShell script aborts early.
             if os.path.exists("ins.ps1"):
                 try:
@@ -1112,7 +1169,7 @@ class NarrativeStatsReporter:
         except Exception as e:
             logger.debug(f"OS env broadcast failed (non-fatal): {e}")
 
-        # [CRITICAL]: Closed-loop verification
+        # Verify the environment refresh before launching the browser.
         if self._is_pdflatex_available():
             logger.success("TinyTeX force-installed and verified.")
             return True
@@ -1244,7 +1301,7 @@ class NarrativeStatsReporter:
             logger.error("Missing dependency: pip install pypandoc[tinytex]")
             return False
 
-        # --- Phase 1: Setup Temporary CSS File ---
+        # --- Phase 1: Setup runtime CSS file ---
         # Derive base directory from the first available markdown file
         md_dir = os.path.abspath(os.path.dirname(str(md_paths[0])))
         assets_path = Path(md_dir) / "assets"
@@ -1402,9 +1459,9 @@ class NarrativeStatsReporter:
             return overall_success
 
         finally:
-            # Phase 2: Guaranteed Cleanup of the Temporary CSS File
+            # Phase 2: Cleanup of the runtime CSS file
             if css_path.exists():
                 try:
                     css_path.unlink()
                 except OSError as e:
-                    logger.debug(f"Failed to remove temporary CSS: {e}")
+                    logger.debug(f"Failed to remove runtime CSS: {e}")

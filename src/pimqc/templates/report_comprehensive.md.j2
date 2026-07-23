@@ -7,7 +7,7 @@
 {%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
 > **Ionization Mode:** {{ meta.get('mode', 'Unknown') }}<br>
 {%- endif %}
-> **Quality-control Engine:** [pi-metaboqc](https://github.com/KaikunXu/pi-metaboqc) (v{{ raw_params.get('pi-metaboqc_version', '1.0.0') }})<br>
+> **Quality-control Engine:** [pi-metaboqc](https://github.com/PHOENIXcenter/pi-metaboqc) (v{{ raw_params.get('pi-metaboqc_version', '1.0.0') }})<br>
 
 
 ## 1. Performance During the Sequential Quality Control Pipeline
@@ -23,7 +23,7 @@ The initial uncorrected analytical dataset, acquired in **{{ meta.get('mode', 'U
 To ensure quantification fidelity and monitor system stability, a suite of **{{ feats.get('internal_standards_count') }}** internal standards (including {{ feats.get('internal_standards', []) | join(', ') }}) was systematically incorporated into the experimental design.
 {%- endif %}
 
-The sample cohort is strategically distributed across **{{ batch_info.get('batch_count', 1) }}** analytical batches{%- if batch_info.get('batch_count', 1) > 1 -%}, processed in the sequential order of **{{ batch_info.get('ordered_batches', []) | join(' -> ') }}**{%- endif -%}. Specifically, the cohort consists of **{{ samps.get('actual', 'N/A') }}** actual biological samples, **{{ samps.get('qc', 'N/A') }}** pooled Quality Control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blank samples, establishing a robust foundation for downstream noise removal.
+The sample cohort is strategically distributed across **{{ batch_info.get('batch_count', 1) }}** analytical batches{%- if batch_info.get('batch_count', 1) > 1 -%}, processed in the sequential order of **{{ batch_info.get('ordered_batches', []) | join(' -> ') }}**{%- endif -%}. Specifically, the cohort consists of **{{ samps.get('actual', 'N/A') }}** actual biological samples, **{{ samps.get('qc', 'N/A') }}** pooled quality-control (QC) samples, and **{{ samps.get('blank', 'N/A') }}** blank samples, establishing a robust foundation for downstream noise removal.
 
 Table: Detailed Batch and Injection Distribution
 {{ raw_dataset.get('batch_table', '') }}
@@ -42,7 +42,7 @@ Table: Detailed Batch and Injection Distribution
 
 Prior to feature-level screening, a sample-level integrity check was conducted to eliminate severe injection failures. Samples exhibiting an overall missing value rate exceeding the tolerance of **{{ sw.get('thresholds', {}).get('sample_mv_tol', 'N/A') }}** were excluded. This step evaluated **{{ sw_ret.get('total_checked', 'N/A') }}** samples, retaining **{{ sw_ret.get('retained_count', 'N/A') }}** samples (Retention rate: **{{ sw_ret.get('retention_rate_pct', 'N/A') }}**%).
 
-Subsequently, to remove irreproducible signals and instrument dropouts, feature-level missing value filtering was executed at the **{{ fw.get('filtering_level', 'N/A') }}** level. Features were topologically classified to decouple genuine biological absences from random noise: Missing Not At Random (MNAR) candidates were identified using a biological group tolerance of **{{ fw_thresh.get('mnar_group_mv_tol', 'N/A') }}** and a QC tolerance of **{{ fw_thresh.get('mnar_qc_mv_tol', 'N/A') }}**. Concurrently, Missing At Random (MAR) features were filtered under baseline health tolerances (Group limit: **{{ fw_thresh.get('mv_group_tol', 'N/A') }}**, QC limit: **{{ fw_thresh.get('mv_qc_tol', 'N/A') }}**).
+Subsequently, to remove irreproducible signals and instrument dropouts, feature-level missing-value filtering was executed at the **{{ fw.get('filtering_level', 'N/A') }}** level. Features were topologically classified to decouple genuine biological absences from random noise: missing-not-at-random (MNAR) candidates were identified using a biological group tolerance of **{{ fw_thresh.get('mnar_group_mv_tol', 'N/A') }}** and a QC tolerance of **{{ fw_thresh.get('mnar_qc_mv_tol', 'N/A') }}**. Concurrently, missing-at-random (MAR) features were filtered under baseline health tolerances (Group limit: **{{ fw_thresh.get('mv_group_tol', 'N/A') }}**, QC limit: **{{ fw_thresh.get('mv_qc_tol', 'N/A') }}**).
 
 Out of the initial **{{ fw_ret.get('pre_mv_filter_count', 'N/A') }}** raw features, **{{ fw_cls.get('mar_count', 'N/A') }}** MAR and **{{ fw_cls.get('mnar_total', 'N/A') }}** MNAR features successfully met the stringency criteria and were retained (Retention rate: **{{ fw_ret.get('retention_rate_pct', 'N/A') }}**%).
 
@@ -53,68 +53,67 @@ Out of the initial **{{ fw_ret.get('pre_mv_filter_count', 'N/A') }}** raw featur
 {%- set sc_status = signal_correction.get('correction_status', 'Unknown') %}
 {%- set sc_perf = signal_correction.get('overall_performance', {}) %}
 {%- set sc_stages = signal_correction.get('stages_executed', []) %}
+{%- set sc_ns = namespace(has_oof=sc_perf.get('median_qc_rsd_current_oof') is not none) -%}
+{%- for stage in sc_stages -%}
+    {%- if stage.get('stage_qc_rsd_oof') is not none -%}
+        {%- set sc_ns.has_oof = true -%}
+    {%- endif -%}
+{%- endfor %}
 
 To mitigate time-dependent instrument drift, within-batch intensity fluctuations, and systemic batch effects, the pipeline executed a sequential signal correction architecture.
 
-**Dual-Evaluation Framework:**
-To ensure both mathematical rigor and optimal biological signal preservation, the pipeline evaluates the QC Relative Standard Deviation (RSD) under two distinct frameworks:
-* **CV (OOF) Evaluated:** Calculates RSD using K-Fold Out-Of-Fold predictions. This rigorous blind-test metric acts as a lie detector, proving that the hyper-parameters are learning the true drift trend rather than overfitting to noise.
-* **Global Model Applied:** Calculates RSD using the finalized algorithm trained on all valid QC samples. This metric represents the actual corrected data matrix delivered for downstream biological analysis.
+{% if sc_ns.has_oof -%}
+**Dual-evaluation framework.** The correction module reports two complementary QC relative standard deviation (RSD) summaries when applicable.
 
-{% for stage in sc_stages %}
-**{{ 'Phase ' ~ loop.index ~ ': ' if sc_stages | length > 1 else '' }}{{ stage.get('stage_name', 'Unknown Stage') }}. **
-The pipeline utilized the **{{ stage.get('algorithm', 'Unknown') }}** algorithm.
+- **Cross-validation/out-of-fold (CV/OOF) evaluation:** QC RSD is estimated from K-fold OOF predictions, providing a held-out assessment of whether the fitted trend generalizes beyond the QC samples used during model fitting.
+- **Global-model output:** QC RSD is estimated from the final model fitted on all valid QC samples, representing the corrected data matrix delivered for downstream analysis.
+{%- else -%}
+**Global-model correction.** QC RSD is estimated from the final model fitted on all valid QC samples, representing the corrected data matrix delivered for downstream analysis.
+{%- endif %}
+{% for stage in sc_stages -%}
+{%- set stage_title = ('Phase ' ~ loop.index ~ ': ' if sc_stages | length > 1 else '') ~ stage.get('stage_name', 'Unknown Stage') %}
+**{{ stage_title }}.** The pipeline used the **{{ stage.get('algorithm', 'Unknown') }}** algorithm.
 {%- set params = stage.get('parameters', {}) %}
-{%- if params %}
-The model was configured with the following key parameters:
-{%- if 'loess_frac' in params %} a smoothing fraction of **{{ params.get('loess_frac') }}**.{% endif %}
-{%- if 'n_estimators' in params %} an ensemble of **{{ params.get('n_estimators') }}** decision trees{%- if 'n_corr_features' in params %} utilizing a highly correlated features network of **{{ params.get('n_corr_features') }}**{% endif %}.{% endif %}
-{%- if 'svr_kernel' in params %} a **{{ params.get('svr_kernel') }}** kernel, regularization (C) of **{{ params.get('svr_c') }}**, and gamma of **{{ params.get('svr_gamma') }}**.{% endif %}
-{%- if 'ruv_k' in params %} an SVD projection with **k={{ params.get('ruv_k') }}** latent factors.{% endif %}
-{%- if 'cv_folds' in params %} It utilized **{{ params.get('cv_folds') }}**-fold cross-validation.{% endif %}
+{%- if params -%}
+{%- if 'loess_frac' in params %} The model used a smoothing fraction of **{{ params.get('loess_frac') }}**.{%- endif -%}
+{%- if 'n_estimators' in params %} The random-forest model used **{{ params.get('n_estimators') }}** decision trees{% if 'n_corr_features' in params %} with **{{ params.get('n_corr_features') }}** highly correlated features{% endif %}.{%- endif -%}
+{%- if 'svr_kernel' in params %} The SVR model used a **{{ params.get('svr_kernel') }}** kernel, regularization parameter **C={{ params.get('svr_c') }}**, and gamma **{{ params.get('svr_gamma') }}**.{%- endif -%}
+{%- if 'ruv_k' in params %} The RUV-III model used a singular-value decomposition (SVD) projection with **k={{ params.get('ruv_k') }}** latent factors.{%- endif -%}
+{%- if 'cv_folds' in params and stage.get('stage_qc_rsd_oof') is not none %} The internal evaluation used **{{ params.get('cv_folds') }}**-fold cross-validation.{%- endif -%}
 {%- endif %}
 {%- if not loop.last %}
 {%- if stage.get('stage_qc_rsd_oof') is not none %}
-This phase achieved a rigorous OOF evaluated QC RSD of **{{ (stage.get('stage_qc_rsd_oof') * 100) | round(2) }}%**, while the applied global model effectively suppressed the RSD to **{{ (stage.get('stage_qc_rsd_full', 0) * 100) | round(2) }}%**.
+
+This phase achieved a CV/OOF-evaluated QC RSD of **{{ (stage.get('stage_qc_rsd_oof') * 100) | round(2) }}%**, while the applied global model reduced the QC RSD to **{{ (stage.get('stage_qc_rsd_full', 0) * 100) | round(2) }}%**.
 {%- else %}
-This phase effectively suppressed the QC RSD to **{{ (stage.get('stage_qc_rsd_full', 0) * 100) | round(2) }}%** using the finalized global model.
+
+This phase reduced the QC RSD to **{{ (stage.get('stage_qc_rsd_full', 0) * 100) | round(2) }}%** using the finalized global model.
 {%- endif %}
 {%- endif %}
 {% endfor %}
-
-{%- if sc_perf.get('median_qc_rsd_baseline') is not none and sc_perf.get('median_qc_rsd_current_full') is not none %}
-Overall, the signal correction module reduced the median QC RSD from an initial baseline of **{{ (sc_perf.get('median_qc_rsd_baseline') * 100) | round(2) }}%** down to a finalized global model RSD of **{{ (sc_perf.get('median_qc_rsd_current_full') * 100) | round(2) }}%**
-{%- if sc_perf.get('median_qc_rsd_current_oof') is not none -%}
-\ (CV Evaluated: **{{ (sc_perf.get('median_qc_rsd_current_oof') * 100) | round(2) }}%**)
-{%- endif -%}
-{%- if sc_perf.get('relative_noise_reduction_full') is not none -%}
-, achieving a relative noise reduction of **{{ (sc_perf.get('relative_noise_reduction_full') * 100) | round(2) }}%**.
-{%- else -%}
-.
-{%- endif -%}
-{%- elif sc_perf.get('median_qc_rsd_current_full') is not none %}
-Overall, the finalized global model achieved a median QC RSD of **{{ (sc_perf.get('median_qc_rsd_current_full') * 100) | round(2) }}%**
-{%- if sc_perf.get('median_qc_rsd_current_oof') is not none -%}
-\ (CV Evaluated: **{{ (sc_perf.get('median_qc_rsd_current_oof') * 100) | round(2) }}%**).
-{%- else -%}
-.
-{%- endif -%}
-{%- else %}
+{% if sc_perf.get('median_qc_rsd_baseline') is not none and sc_perf.get('median_qc_rsd_current_full') is not none -%}
+Overall, the signal correction module reduced the median QC RSD from an initial baseline of **{{ (sc_perf.get('median_qc_rsd_baseline') * 100) | round(2) }}%** to a finalized global-model RSD of **{{ (sc_perf.get('median_qc_rsd_current_full') * 100) | round(2) }}%**{% if sc_perf.get('median_qc_rsd_current_oof') is not none %} (CV/OOF evaluated: **{{ (sc_perf.get('median_qc_rsd_current_oof') * 100) | round(2) }}%**){% endif %}{% if sc_perf.get('relative_noise_reduction_full') is not none %}, achieving a relative noise reduction of **{{ (sc_perf.get('relative_noise_reduction_full') * 100) | round(2) }}%**{% endif %}.
+{% elif sc_perf.get('median_qc_rsd_current_full') is not none -%}
+Overall, the finalized global model achieved a median QC RSD of **{{ (sc_perf.get('median_qc_rsd_current_full') * 100) | round(2) }}%**{% if sc_perf.get('median_qc_rsd_current_oof') is not none %} (CV/OOF evaluated: **{{ (sc_perf.get('median_qc_rsd_current_oof') * 100) | round(2) }}%**){% endif %}.
+{% else -%}
 Signal correction was applied, but QC RSD metrics are currently unavailable.
-{%- endif %}
-
-{% if sc_stages | length > 0 %}
-{% set primary_algo = sc_stages[0].get('algorithm', 'Unknown') %}
-{% set is_auto = signal_correction.get('is_auto_mode') or sc_stages[0].get('is_auto_mode', False) %}
-
+{% endif -%}
+{% if sc_stages | length > 0 -%}
+{%- set primary_algo = sc_stages[0].get('algorithm', 'Unknown') -%}
+{%- set is_auto = signal_correction.get('is_auto_mode') or sc_stages[0].get('is_auto_mode', False) -%}
 {% if is_auto %}
-![**Multi-Algorithm RSD Evaluation Grid**](../03_Corrected_Data/QC_RSD_Evaluation_Grid.svg){.full-width-image}
+**AUTO Correction Selection Dashboard**
+
+![**AUTO Correction Selection Dashboard**](../03_Corrected_Data/Correction_Dashboard_{{ primary_algo | replace(' ', '_') }}.svg){.full-width-image}
+
+**AUTO Correction Candidate QC-RSD Dashboard**
+
+![**AUTO Correction Candidate QC-RSD Dashboard**](../03_Corrected_Data/Correction_Candidate_Dashboard_{{ primary_algo | replace(' ', '_') }}.svg){.full-width-image}
 {% else %}
-![**Signal Drift Correction Dual-Mode RSD Improvement**](../03_Corrected_Data/QC_RSD_{{ primary_algo }}.svg){style="width: 65%; display: block; margin: 0 auto;"}
-{% endif %}
+**Signal Drift Correction Dashboard: {{ primary_algo }}**
 
-{% endif %}
-
+![**Signal Drift Correction Dashboard**](../03_Corrected_Data/Correction_Dashboard_{{ primary_algo | replace(' ', '_') }}.svg){.full-width-image}
+{% endif %}{% endif %}
 ### 1.4 Low-quality Features Filtering
 {% set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
 {%- set lq_ret = lq_params.get('feature_retention', {}) -%}
@@ -147,7 +146,7 @@ To filter out ubiquitous environmental contaminants, solvent impurities, and ins
 
 **Tier 2: Analytical Reproducibility Check (QC RSD Check)**
 
-Subsequently, to guarantee strict technical reproducibility, a Relative Standard Deviation (RSD) threshold of {{ lq_thresh.get('qc_rsd_tol', 'N/A') }} was applied to the pooled QC samples. Crucially, this step was executed exclusively on MAR features. MNAR features, which often represent genuine biological signals near the limit of detection (LOD), were exempted. Consequently, **{{ lq_drop.get('dropped_by_rsd', {}).get('total', 'N/A') }}** MAR features failed this reproducibility test.
+Subsequently, to guarantee strict technical reproducibility, an RSD threshold of {{ lq_thresh.get('qc_rsd_tol', 'N/A') }} was applied to the pooled QC samples. Crucially, this step was executed exclusively on MAR features. MNAR features, which often represent genuine biological signals near the limit of detection (LOD), were exempted. Consequently, **{{ lq_drop.get('dropped_by_rsd', {}).get('total', 'N/A') }}** MAR features failed this reproducibility test.
 
 Ultimately, the low-quality feature filtering cascade yielded a robust, high-confidence matrix containing **{{ lq_post_rsd_total }}** purified metabolic features (**{{ lq_post_rsd.get('mar_count', 'N/A') }}** MAR and **{{ lq_post_rsd.get('mnar_count', 'N/A') }}** MNAR).
 
@@ -160,38 +159,50 @@ Ultimately, the low-quality feature filtering cascade yielded a robust, high-con
 {%- set imp_dist = imp_params.get('feature_distribution', {}) -%}
 {%- set imp_perf = imp_params.get('performance', {}) -%}
 {%- set imp_status = imp_params.get('imputation_status', 'Pending') -%}
-{%- set imp_qa = imp_params.get('qa_metrics', {}) %}
 
 {%- if imp_status == 'Skipped' %}
 No missing values were detected in the target analytical matrix; therefore, the imputation module was bypassed and the matrix was propagated unchanged.
 
 {%- else %}
-To seamlessly reconstruct the incomplete data matrix without inducing analytical variance leakage, a stratified imputation architecture was implemented. The module processed a curated matrix containing **{{ imp_dist.get('mar_count', 'N/A') }}** Missing At Random (MAR) features and **{{ imp_dist.get('mnar_count', 'N/A') }}** Missing Not At Random (MNAR) features.
+To reconstruct the incomplete data matrix without inducing analytical variance leakage, a stratified imputation architecture was implemented. The module processed a curated matrix containing **{{ imp_dist.get('mar_count', 'N/A') }}** MAR features and **{{ imp_dist.get('mnar_count', 'N/A') }}** MNAR features.
 
 **Deterministic Substitution for MNAR Features**
-For features classified as MNAR (biologically relevant non-detects below instrument sensitivity), a localized limit of detection (LOD) approximation was utilized.
+For features classified as MNAR (biologically relevant non-detects below instrument sensitivity), a localized LOD approximation was utilized.
 {%- if imp_strat.get('mnar_fraction') is not none %}
 Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** minimum strategy with a constant fractional multiplier of {{ imp_strat.get('mnar_fraction', 'N/A') }}.
 {%- else %}
 Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** strategy.
 {%- endif %}
 
-**Autonomous ML Simulation for MAR Features**
-For structurally random missingness (MAR), the strategy was initialized to **{{ imp_strat.get('mar_method_requested', 'auto') }}** mode. The pipeline autonomously executed a masked simulation benchmark to dynamically evaluate candidate algorithms. The algorithm selected for final execution was the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** method.
+{%- set requested_mar_method = imp_strat.get('mar_method_requested', 'auto') | upper -%}
+{%- set is_auto_imp = requested_mar_method == 'AUTO' -%}
+{% if is_auto_imp %}
+**Automatic MAR Imputation Selection**
+
+For structurally random MAR features, the pipeline executed a masked simulation benchmark to evaluate candidate algorithms. The algorithm selected for final execution was the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** method.
+{% else %}
+**MAR Imputation Diagnostics**
+
+For structurally random MAR features, the configured **{{ imp_strat.get('mar_method_selected', imp_strat.get('mar_method_requested', 'Unknown')) }}** method was applied directly. The dashboard reports masked-reconstruction accuracy, distribution preservation, and sample-structure preservation for the applied method.
+{% endif %}
 
 {%- set sel_perf = imp_perf.get(imp_strat.get('mar_method_selected', ''), {}) %}
-Specifically, the selected algorithm achieved a low-abundance Normalized Root Mean Square Error (NRMSE) of {{ sel_perf.get('nrmse_low', 'N/A') }} and a global NRMSE of {{ sel_perf.get('nrmse_total', 'N/A') }}.
+Specifically, the applied algorithm achieved a low-abundance normalized root mean square error (NRMSE) of {{ sel_perf.get('nrmse_low', 'N/A') }} and a global NRMSE of {{ sel_perf.get('nrmse_total', 'N/A') }}.
 
-![**Imputation NRMSE Comparison**](../05_Imputation/Imputer_Candidates.svg){.full-width-image}
+![**MAR Imputation Dashboard**](../05_Imputation/Imputation_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
+{% if is_auto_imp %}
 
-**Global Distribution Preservation**
-Following the isolated imputation, kernel density estimation (KDE) evaluated the structural integrity of the transformed matrix.
-{%- set imp_qc_jsd = imp_qa.get('JSD', {}).get('QC', {}).get('Before vs Imputation', 'N/A') -%}
-{%- set imp_sam_jsd = imp_qa.get('JSD', {}).get('Sample', {}).get('Before vs Imputation', 'N/A') %}
+**MAR Imputer Candidate NRMSE Dashboard**
 
-The Jensen-Shannon Divergence (JSD) between the pre- and post-imputation distributions yielded stable scores of **{{ imp_qc_jsd | round(3) if imp_qc_jsd is number else imp_qc_jsd }}** for QC samples and **{{ imp_sam_jsd | round(3) if imp_sam_jsd is number else imp_sam_jsd }}** for biological samples.
+![**MAR Imputer Candidate NRMSE Dashboard**](../05_Imputation/Imputation_Candidate_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
+{% endif %}
 
-![**Imputation Performance Summary**](../05_Imputation/Imputation_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
+**Masked-Value Distribution Fidelity**
+Distribution fidelity was evaluated within the same GMM-plus-noise masked simulation used for MAR method selection. Artificially masked values from QC and biological samples were pooled, and the reconstructed values were compared with their corresponding masked truth values.
+{%- set imp_jsd = sel_perf.get('jsd_total', 'N/A') -%}
+{%- set imp_wasserstein = sel_perf.get('wasserstein_normalized', 'N/A') %}
+
+The selected method yielded a Jensen-Shannon distance of **{{ imp_jsd | round(3) if imp_jsd is number else imp_jsd }}** and a normalized Wasserstein distance of **{{ imp_wasserstein | round(3) if imp_wasserstein is number else imp_wasserstein }}** for the pooled masked values.
 {%- endif %}
 
 ### 1.6 Normalization
@@ -206,39 +217,44 @@ The Jensen-Shannon Divergence (JSD) between the pre- and post-imputation distrib
 {%- set is_auto_norm = auto_sel or requested_norm_method == 'AUTO' %}
 
 Systematic analytical variation, including global concentration differences, dilution effects, and residual instrument sensitivity shifts, was addressed before downstream statistical analysis.
-
-{%- if is_auto_norm %}
+{% if is_auto_norm %}
 **Automatic Normalization Selection**
-The normalization strategy was selected automatically from predefined log-only, sample-wise scaling, distribution-alignment, and variance-stabilizing candidates. Each candidate was evaluated on a common log-like view using four label-independent criteria: QC RLE alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation. The robust Log2-only strategy served as the neutral reference for candidate scoring, while the sample structure term combined actual-sample neighborhood trustworthiness, distance-rank preservation, and distance-scale preservation. The selected strategy was **{{ auto_sel.get('selected_method', norm_method) | replace('_', ' ') }}**
+
+The normalization strategy was selected automatically from predefined log-only, sample-wise scaling, distribution-alignment, and variance-stabilizing candidates. Each candidate was evaluated on a common log-like view using four label-independent criteria: QC relative log expression (RLE) alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation. The robust Log2-only strategy served as the neutral reference for candidate scoring, while the sample structure term combined actual-sample neighborhood trustworthiness, distance-rank preservation, and distance-scale preservation. The selected strategy was **{{ auto_sel.get('selected_method', norm_method) | replace('_', ' ') }}**
 {%- if auto_sel.get('selected_score') is number %} with an overall score of **{{ auto_sel.get('selected_score') | round(3) }}**{%- endif -%}
 {%- if auto_sel.get('selection_margin') is number %} and a score margin of **{{ auto_sel.get('selection_margin') | round(3) }}**{%- endif %}.
 
 {%- elif norm_method == 'ROBUST_LOG_ONLY' %}
 **Robust Log2 Transformation Only**
+
 Sample-wise intensity correction was bypassed, and a robust Log2 transformation was applied to compress the dynamic range while preserving the original sample-wise scaling structure.
 
 {%- elif norm_method == 'QUANTILE' %}
 **Global Quantile Normalization**
+
 A standalone global quantile normalization was applied. By imposing identical statistical distributions across all samples, it effectively mitigates complex, non-linear instrumental drifts.
 {%- if is_log %} Prior to quantile alignment, a robust Log2 transformation was applied to stabilize variance.{%- endif %}
 
 {%- elif norm_method == 'VSN' %}
 **Variance Stabilizing Normalization (VSN)**
-To address the heteroscedasticity inherent in mass spectrometry data, Variance Stabilizing Normalization (VSN) was applied. The internal optimization engine determined the maximum likelihood parameters for the variance stabilization curve, converging on a structural scale factor of **{{ "%0.3e" | format(vsn_p.get('vsn_scale', 0)) if vsn_p.get('vsn_scale') is number else 'N/A' }}** and a generalized baseline shift of **{{ "%0.3e" | format(vsn_p.get('vsn_shift', 0)) if vsn_p.get('vsn_shift') is number else 'N/A' }}**. This transformation shifts the data into a generalized logarithmic space (glog) optimized for multivariate modeling.
+
+To address the heteroscedasticity inherent in mass spectrometry data, VSN was applied. The internal optimization engine determined the maximum likelihood parameters for the variance stabilization curve, converging on a structural scale factor of **{{ "%0.3e" | format(vsn_p.get('vsn_scale', 0)) if vsn_p.get('vsn_scale') is number else 'N/A' }}** and a generalized baseline shift of **{{ "%0.3e" | format(vsn_p.get('vsn_shift', 0)) if vsn_p.get('vsn_shift') is number else 'N/A' }}**. This transformation shifts the data into a generalized logarithmic space (glog) optimized for multivariate modeling.
 
 {%- else %}
 **Global Intensity Correction (Sample-wise)**
+
 To mitigate analytical baseline fluctuations across the injection sequence, the data matrix underwent sample-wise normalization utilizing the **{{ norm_method }}** algorithm.
 {%- if is_log %} Following sample calibration, a robust Log2 transformation was applied to stabilize variance.{%- endif %}
 {%- endif %}
 
 **Score-Aligned Normalization Diagnostics**
-{%- if is_auto_norm %}
+{% if is_auto_norm %}
 The normalization dashboard summarizes the automatic method ranking through a weighted score-contribution panel and then visualizes the diagnostic evidence supporting the selected method.
 {%- else %}
 Because a fixed normalization method was specified, no candidate-ranking score panel was generated. The normalization dashboard instead reports the same QC and sample structure diagnostics for the applied method.
-{%- endif %}
-Specifically, QC RLE alignment is evaluated using the median RLE center offset and RLE spread; QC variance stabilization is evaluated from the dependence between feature-wise mean QC log2 intensity and robust QC dispersion; QC structure distance improvement is assessed through distance-to-pooled-QC-centroid and QC-QC pairwise-distance changes; and sample structure preservation is monitored using actual-sample neighborhood trustworthiness together with distance-rank and distance-scale preservation diagnostics.
+{% endif %}
+
+Specifically, {% if is_auto_norm %}QC RLE alignment{% else %}QC relative log expression (RLE) alignment{% endif %} is evaluated using the median RLE center offset and RLE spread; QC variance stabilization is evaluated from the dependence between feature-wise mean QC log2 intensity and robust QC dispersion; QC structure distance improvement is assessed through distance-to-pooled-QC-centroid and QC-QC pairwise-distance changes; and sample structure preservation is monitored using actual-sample neighborhood trustworthiness together with distance-rank and distance-scale preservation diagnostics.
 
 {%- set suffix = norm_method -%}
 {%- if is_log and suffix | upper not in ['VSN', 'ROBUST_LOG_ONLY'] -%}
@@ -256,7 +272,12 @@ A continuous quality assessment (QA) framework was embedded throughout the pipel
 
 ### 2.1 Feature Reproducibility
 
-To evaluate the overall analytical precision and the recovery of feature stability, the relative standard deviation (RSD) of features across pooled quality control (QC) samples was systematically tracked.
+Pooled-QC and biological-sample RSDs were calculated separately. Pooled-QC RSD quantifies analytical precision, whereas RSD across biological samples is retained as a descriptive guardrail against unintended compression of sample heterogeneity; it is not an optimization target.
+
+{% set rsd_guardrail = rsd_guardrail | default({}) -%}
+{% if rsd_guardrail.get('available') -%}
+The proportion of features with calculable pooled-QC RSD below 10% changed from **{{ rsd_guardrail.get('raw_qc_low_pct') | round(1) }}%** ({{ rsd_guardrail.get('raw_qc_low_count') }}/{{ rsd_guardrail.get('raw_qc_total') }}) in the raw matrix to **{{ rsd_guardrail.get('final_qc_low_pct') | round(1) }}%** ({{ rsd_guardrail.get('final_qc_low_count') }}/{{ rsd_guardrail.get('final_qc_total') }}) at the final **{{ rsd_guardrail.get('final_stage') }}** stage. In contrast, the proportion of retained features with RSD above 30% across biological samples changed from **{{ rsd_guardrail.get('raw_actual_high_pct') | round(1) }}%** ({{ rsd_guardrail.get('raw_actual_high_count') }}/{{ rsd_guardrail.get('raw_actual_total') }}) to **{{ rsd_guardrail.get('final_actual_high_pct') | round(1) }}%** ({{ rsd_guardrail.get('final_actual_high_count') }}/{{ rsd_guardrail.get('final_actual_total') }}). This broad distribution is interpreted together with sample-structure diagnostics and is consistent with retained between-sample heterogeneity after QC-oriented preprocessing.
+{% endif %}
 
 Table: Feature RSD Stability Summary
 {{ summary_tables.get('rsd', '') }}

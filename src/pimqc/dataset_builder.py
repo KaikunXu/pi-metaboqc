@@ -63,7 +63,7 @@ class MetaboIntBuilder:
         if isinstance(self.intensity_dataframe.index, pd.RangeIndex):
             first_column = self.intensity_dataframe.columns[0]
             logger.warning(
-                f"RangeIndex detected. Setting '{first_column}' " "as feature index."
+                f"RangeIndex detected. Setting '{first_column}' as feature index."
             )
             self.intensity_dataframe = self.intensity_dataframe.set_index(first_column)
 
@@ -125,7 +125,7 @@ class MetaboIntBuilder:
 
             error_message = (
                 "Duplicate sample names in intensity data: "
-                f'{", ".join(duplicated_details)}.'
+                f"{', '.join(duplicated_details)}."
             )
             raise AssertionError(error_message)
 
@@ -357,7 +357,7 @@ class MetaboIntBuilder:
         self.intensity_dataframe = self.intensity_dataframe.loc[:, valid_mask]
 
         # =================================================================
-        # NEW: Zero-Value Detection & Conversion (Explicit 0 as Missing)
+        # Zero-value detection and conversion
         # =================================================================
         zero_mask = self.intensity_dataframe == 0
         zero_count = int(zero_mask.sum().sum())
@@ -370,11 +370,10 @@ class MetaboIntBuilder:
                 "intensity. They have been automatically converted to NaN to "
                 "ensure pipeline safety."
             )
-            # Natively replace 0 with NaN
+            # Represent explicit zeros as missing values for downstream steps.
             self.intensity_dataframe = self.intensity_dataframe.replace(0, np.nan)
 
-        # [NEW FIX] Force conversion to float64 to prevent Pandas 2.1+
-        # LossySetitemError in downstream machine learning assignments.
+        # Use float64 for stable downstream machine-learning assignments.
         self.intensity_dataframe = self.intensity_dataframe.astype(float)
 
         if output_dir:
@@ -678,20 +677,19 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
             color=plotting_dataframe[sample_type_column]
             .map(sample_color_map)
             .fillna("black")
+            .map(lambda color: pu.get_equivalent_hex(color, alpha=0.85))
             .values,
             edgecolor="black",
             linewidth=0.3,
-            alpha=0.85,
             zorder=3,
         )
 
         for boundary in self._get_batch_boundaries():
             current_axes.axvline(
                 x=boundary,
-                color="gray",
+                color=pu.get_equivalent_hex("gray", alpha=0.7),
                 linestyle="--",
                 linewidth=0.8,
-                alpha=0.7,
                 zorder=0,
             )
 
@@ -708,7 +706,12 @@ class MetaboVisualizerBuilder(visualizer_classes.BaseMetaboVisualizer):
         # for multi-line text to save horizontal space, but we still
         # push it left to match the barcodes' alignment.
 
-        current_axes.grid(axis="y", linestyle="--", alpha=0.5, zorder=0)
+        current_axes.grid(
+            axis="y",
+            linestyle="--",
+            color=pu.get_equivalent_hex("gray", alpha=0.5),
+            zorder=0,
+        )
         current_axes.set_ylim(0, min(105, plotting_dataframe["MV_Rate"].max() * 1.1))
 
         for spine in ["top", "right"]:

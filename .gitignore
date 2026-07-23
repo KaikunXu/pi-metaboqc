@@ -123,9 +123,13 @@ desktop.ini
 # Deprecated scripts and WIP functions
 .deprecated/
 
-# Codex-generated local artifacts, scratch scripts, and downloaded caches
-.codex_artifacts/
-.codex_tmp_*
+# AI-assistant artifacts, scratch scripts, and downloaded caches
+/.codex_artifacts/
+/.codex_tmp_*
+/.agents/
+/.gemini/
+/.claude/
+/tmp/
 
 # Local data files that should not be public
 examples/tutorial_output/

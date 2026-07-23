@@ -22,6 +22,7 @@ import pandas as pd
 from functools import cached_property
 
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import matplotlib.colors as mcolors
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
@@ -777,89 +778,39 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                         label.set_color(color)
                         break
 
-    # def plot_qc_corr_heatmap(
-    #     self, corr_matrix, corr_mask, batches, method="spearman",
-    #     vmin=0.85, vmax=1.0, ax=None
-    # ):
-    #     """Plot sample-level correlation matrix heatmap of Pooled QCs.
+    @staticmethod
+    def _draw_visible_heatmap_cell_edges(
+        ax: plt.Axes,
+        visible_mask: np.ndarray,
+        linewidth: float,
+        edgecolor: str = "k",
+        zorder: float = 4,
+    ) -> None:
+        """Draw each visible heatmap cell edge once for uniform vector output."""
+        edge_segments = set()
+        for row_idx, col_idx in np.argwhere(visible_mask):
+            x0, x1 = float(col_idx), float(col_idx + 1)
+            y0, y1 = float(row_idx), float(row_idx + 1)
+            for edge in (
+                ((x0, y0), (x1, y0)),
+                ((x0, y1), (x1, y1)),
+                ((x0, y0), (x0, y1)),
+                ((x1, y0), (x1, y1)),
+            ):
+                edge_segments.add(edge)
 
-    #     Dynamically adapts annotation visibility, tick rotations, and font sizes
-    #     based on the rendering context (standalone figure vs. rigid patchwork
-    #     grid) and the total number of QC samples.
-    #     """
-    #     n_samples = corr_matrix.shape[0]
+        if not edge_segments:
+            return
 
-    #     # Context-aware dynamic sizing & annotation logic
-    #     is_constrained = (ax is not None)
-
-    #     if not is_constrained:
-    #         # Standalone Mode: Dynamically expand figure size
-    #         fig_w = max(5.0, n_samples * 0.2 + 2.0)
-    #         fig_h = max(4.0, n_samples * 0.2 + 1.5)
-    #         fig, current_ax = plt.subplots(figsize=(fig_w, fig_h))
-
-    #         # Allow annotations for up to 15 QCs in a fully expanded plot
-    #         show_annot = n_samples <= 15
-    #         tick_size = max(3.0, min(8.0, 90.0 / max(1, n_samples)))
-    #         annot_size = max(4.0, min(8.0, 60.0 / max(1, n_samples)))
-    #     else:
-    #         # Grid Mode (Patchwork): Locked by parent brick size
-    #         current_ax = ax
-    #         fig = current_ax.figure
-
-    #         # Stricter threshold for grid mode to prevent annotation overlap
-    #         show_annot = n_samples <= 6
-    #         tick_size = max(3.0, min(8.0, 60.0 / max(1, n_samples)))
-    #         annot_size = max(4.0, min(8.0, 40.0 / max(1, n_samples)))
-
-    #     custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
-    #     color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
-
-    #     tick_colors = pu.extract_linear_cmap(
-    #         cmap=custom_cmap, cmin=0.5, cmax=1.0, n_colors=len(batches)
-    #     )
-    #     tick_color_dict = dict(zip(batches, tick_colors))
-
-    #     cbar_ax = current_ax.inset_axes([1.05, 0.1, 0.05, 0.8])
-
-    #     # Adapt string formatting and grid lines based on density
-    #     annot_fmt = ".3f" if n_samples <= 15 else ".2f"
-    #     grid_lw = 0.5 if n_samples <= 20 else 0.05
-
-    #     with sns.axes_style("white"):
-    #         hm = sns.heatmap(
-    #             corr_matrix, mask=corr_mask, xticklabels=1, yticklabels=1,
-    #             vmin=vmin if vmin else corr_matrix.min().min(),
-    #             vmax=vmax, cmap=color_map, annot=show_annot, fmt=annot_fmt,
-    #             linewidths=grid_lw, linecolor="white", square=True,
-    #             ax=current_ax, cbar_ax=cbar_ax,
-    #             annot_kws={"size": annot_size},  # Explicit dynamic scaling
-    #             cbar_kws={
-    #                 "label": f"{method.title()} Correlation",
-    #                 "format": "%.2f"
-    #             }
-    #         )
-
-    #     # Force explicit tick rotations to override Seaborn defaults
-    #     current_ax.set_yticklabels(
-    #         current_ax.get_yticklabels(), rotation=0
-    #     )
-
-    #     x_rot = 45 if n_samples <= 15 else 90
-    #     current_ax.set_xticklabels(
-    #         current_ax.get_xticklabels(), rotation=x_rot, ha="right",
-    #         va="center", rotation_mode="anchor"
-    #     )
-
-    #     self._apply_standard_format(
-    #         ax=current_ax, title="Pooled QCs Correlation", xlabel="Pooled QCs",
-    #         ylabel="Pooled QCs", title_fontsize=14, label_fontsize=12,
-    #         tick_fontsize=tick_size, append_stage=True
-    #     )
-
-    #     self._format_heatmap_ticks(hm=hm, tick_color_dict=tick_color_dict)
-
-    #     return fig
+        ax.add_collection(
+            LineCollection(
+                list(edge_segments),
+                colors=edgecolor,
+                linewidths=linewidth,
+                zorder=zorder,
+                clip_on=False,
+            )
+        )
 
     def plot_qc_corr_heatmap(
         self,
@@ -965,8 +916,11 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         # =====================================================================
         # 2. Batch Colors Preparation
         # =====================================================================
-        custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
-        color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
+        custom_cmap = pu.custom_linear_cmap(["white", pu.PRIMARY_ACCENT_COLOR], 100)
+        color_map = mcolors.ListedColormap(
+            pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
+        )
+        color_map.set_bad(color="white", alpha=1.0)
 
         tick_colors = pu.extract_linear_cmap(
             cmap=custom_cmap, cmin=0.5, cmax=1.0, n_colors=len(batches)
@@ -985,8 +939,8 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
 
         annot_fmt = ".3f" if n_samples <= 15 else ".2f"
         show_annot = n_samples <= 15
-        annot_size = max(4.0, min(10.0, 60.0 / max(1, n_samples)))
-        grid_lw = 0.5 if n_samples <= 20 else 0.05
+        annot_size = max(5.0, min(12.0, 84.0 / max(1, n_samples)))
+        cell_edge_lw = 1.0
 
         if ax is None:
             fig = plt.figure(
@@ -1124,11 +1078,11 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 cmap=color_map,
                 annot=show_annot,
                 fmt=annot_fmt,
-                linewidths=grid_lw,
-                linecolor="white",
+                linewidths=0,
+                linecolor="none",
                 square=False,
                 xticklabels=1,
-                yticklabels=1,  # CRITICAL FIX 2: Force explicit rendering of every single tick
+                yticklabels=1,
                 ax=ax_heatmap,
                 cbar_ax=cbar_ax,
                 annot_kws={"size": annot_size},
@@ -1139,6 +1093,25 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             )
             cbar_ax.xaxis.set_ticks_position("top")
             cbar_ax.xaxis.set_label_position("top")
+            for spine in cbar_ax.spines.values():
+                spine.set_visible(False)
+
+        self._draw_visible_heatmap_cell_edges(
+            ax=ax_heatmap,
+            visible_mask=np.ones_like(geom_mask, dtype=bool),
+            linewidth=cell_edge_lw,
+            edgecolor="white",
+            zorder=3,
+        )
+        self._draw_visible_heatmap_cell_edges(
+            ax=ax_heatmap,
+            visible_mask=~geom_mask,
+            linewidth=cell_edge_lw,
+            edgecolor="k",
+            zorder=4,
+        )
+        for spine in ax_heatmap.spines.values():
+            spine.set_visible(False)
 
         # Color Patches
         thickness = max(0.4, n_samples * 0.015)
@@ -1177,7 +1150,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         ax_heatmap.tick_params(axis="x", pad=pad_amount)
         ax_heatmap.tick_params(axis="y", pad=pad_amount)
 
-        # CRITICAL FIX 3: Violently destroy Seaborn's auto-injected DataFrame axis names.
+        # Remove Seaborn-injected DataFrame axis names before final formatting.
         # This prevents 'inject_order' from being squeezed between ticks and dendrograms.
         ax_heatmap.set_xlabel("")
         ax_heatmap.set_ylabel("")
@@ -1211,11 +1184,11 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             x_tick_labels,
             rotation=x_rot,
             ha="right",
-            va="center",
+            va="top",
             fontsize=x_tick_size,
             rotation_mode="anchor",
         )
-        ax_heatmap.tick_params(axis="x", pad=pad_amount, length=2)
+        ax_heatmap.tick_params(axis="x", pad=pad_amount + 3, length=2)
         ax_heatmap.tick_params(axis="y", pad=pad_amount, length=2)
         pu.apply_batch_tick_colors(ax_heatmap.get_xticklabels(), tick_color_dict)
         pu.apply_batch_tick_colors(ax_heatmap.get_yticklabels(), tick_color_dict)
@@ -1293,16 +1266,18 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         # 2. Heatmap Rendering
         # =====================================================================
         mask = np.triu(np.ones_like(batch_corr_matrix, dtype=bool), k=1)
-        custom_cmap = pu.custom_linear_cmap(["white", "tab:red"], 100)
-        color_map = pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
+        custom_cmap = pu.custom_linear_cmap(["white", pu.PRIMARY_ACCENT_COLOR], 100)
+        color_map = mcolors.ListedColormap(
+            pu.extract_linear_cmap(custom_cmap, cmin=0.2, cmax=1.0)
+        )
+        color_map.set_bad(color="white", alpha=1.0)
 
         cbar_ax = current_ax.inset_axes([1.05, 0.1, 0.05, 0.8])
 
         # Dynamically adjust decimal format to save space for medium cohorts
         annot_fmt = ".3f" if n_batches <= 10 else ".2f"
-        annot_size = max(3.0, min(10.0, 80.0 / max(1, n_batches)))
-        # Dynamic line width to prevent grid lines from overwhelming small cells
-        grid_lw = 0.5 if n_batches <= 12 else 0.1
+        annot_size = max(5.0, min(12.0, 90.0 / max(1, n_batches)))
+        cell_edge_lw = 1.0
 
         with sns.axes_style("white"):
             sns.heatmap(
@@ -1313,14 +1288,34 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 vmin=vmin if vmin else batch_corr_matrix.min().min(),
                 vmax=vmax,
                 cmap=color_map,
-                linewidths=grid_lw,
-                linecolor="white",
+                linewidths=0,
+                linecolor="none",
                 square=True,
                 ax=current_ax,
                 cbar_ax=cbar_ax,
                 annot_kws={"size": annot_size},
                 cbar_kws={"label": f"{method.title()} Correlation", "format": "%.2f"},
             )
+
+        for spine in cbar_ax.spines.values():
+            spine.set_visible(False)
+
+        self._draw_visible_heatmap_cell_edges(
+            ax=current_ax,
+            visible_mask=np.ones_like(mask, dtype=bool),
+            linewidth=cell_edge_lw,
+            edgecolor="white",
+            zorder=3,
+        )
+        self._draw_visible_heatmap_cell_edges(
+            ax=current_ax,
+            visible_mask=~mask,
+            linewidth=cell_edge_lw,
+            edgecolor="k",
+            zorder=4,
+        )
+        for spine in current_ax.spines.values():
+            spine.set_visible(False)
 
         # =====================================================================
         # 3. Dense Tick Layout
@@ -1398,11 +1393,11 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             x_tick_labels,
             rotation=x_rot,
             ha="right",
-            va="center",
+            va="top",
             fontsize=x_tick_size,
             rotation_mode="anchor",
         )
-        current_ax.tick_params(axis="x", pad=2, length=2)
+        current_ax.tick_params(axis="x", pad=5, length=2)
         current_ax.tick_params(axis="y", pad=2, length=2)
 
         return fig
@@ -1410,6 +1405,81 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
     # =========================================================================
     # Dimensionality Reduction and Outlier Plots
     # =========================================================================
+    @staticmethod
+    def _place_pca_annotation(
+        ax: plt.Axes,
+        text_artist: object,
+        occupancy_arrays: list[np.ndarray],
+    ) -> None:
+        """Place PCA diagnostics text in the least occupied plot corner."""
+        occupancy_arrays = [
+            values[np.all(np.isfinite(values), axis=1)]
+            for values in occupancy_arrays
+            if values.size
+        ]
+        if not occupancy_arrays:
+            return
+
+        try:
+            ax.figure.canvas.draw()
+            renderer = ax.figure.canvas.get_renderer()
+            text_bbox = text_artist.get_window_extent(renderer=renderer).transformed(
+                ax.transAxes.inverted()
+            )
+            text_width = min(0.62, max(0.32, float(text_bbox.width)))
+            text_height = min(0.30, max(0.14, float(text_bbox.height)))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            text_width = 0.46
+            text_height = 0.18
+
+        data_points = np.vstack(occupancy_arrays)
+        axes_points = ax.transAxes.inverted().transform(
+            ax.transData.transform(data_points)
+        )
+        axes_points = axes_points[np.all(np.isfinite(axes_points), axis=1)]
+        if axes_points.size == 0:
+            return
+
+        candidates = [
+            {"xy": (0.96, 0.02), "ha": "right", "va": "bottom"},
+            {"xy": (0.96, 0.98), "ha": "right", "va": "top"},
+            {"xy": (0.04, 0.02), "ha": "left", "va": "bottom"},
+            {"xy": (0.04, 0.98), "ha": "left", "va": "top"},
+        ]
+        best_candidate = candidates[0]
+        best_score = float("inf")
+
+        for rank, candidate in enumerate(candidates):
+            x_anchor, y_anchor = candidate["xy"]
+            if candidate["ha"] == "right":
+                x0, x1 = x_anchor - text_width - 0.02, x_anchor + 0.02
+            else:
+                x0, x1 = x_anchor - 0.02, x_anchor + text_width + 0.02
+
+            if candidate["va"] == "top":
+                y0, y1 = y_anchor - text_height - 0.02, y_anchor + 0.02
+            else:
+                y0, y1 = y_anchor - 0.02, y_anchor + text_height + 0.02
+
+            in_box = (
+                (axes_points[:, 0] >= x0)
+                & (axes_points[:, 0] <= x1)
+                & (axes_points[:, 1] >= y0)
+                & (axes_points[:, 1] <= y1)
+            )
+            out_of_bounds_penalty = (
+                max(0.0, -x0) + max(0.0, x1 - 1.0) + max(0.0, -y0) + max(0.0, y1 - 1.0)
+            )
+            score = float(np.count_nonzero(in_box)) + out_of_bounds_penalty * 1000
+
+            if score < best_score or (np.isclose(score, best_score) and rank == 0):
+                best_score = score
+                best_candidate = candidate
+
+        text_artist.set_position(best_candidate["xy"])
+        text_artist.set_ha(best_candidate["ha"])
+        text_artist.set_va(best_candidate["va"])
+
     def plot_pca_scatter(
         self,
         pca_df: pd.DataFrame,
@@ -1428,7 +1498,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         plot_df = pca_df.reset_index().copy()
         plot_df[sample_type] = plot_df[sample_type].astype("category")
         plot_df = plot_df.sort_values(by=sample_type, ascending=False)
-        palette_dict = {qc_label: "tab:red", actual_label: "tab:gray"}
+        palette_dict = {qc_label: pu.PRIMARY_ACCENT_COLOR, actual_label: pu.NEUTRAL_COLOR}
 
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(4, 4))
@@ -1470,21 +1540,58 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             markers=self.style_map,
         )
 
+        plot_bounds = []
+        occupancy_arrays = []
+        finite_x = pd.to_numeric(plot_df[x_pc], errors="coerce").to_numpy(dtype=float)
+        finite_y = pd.to_numeric(plot_df[y_pc], errors="coerce").to_numpy(dtype=float)
+        finite_mask = np.isfinite(finite_x) & np.isfinite(finite_y)
+        if np.any(finite_mask):
+            occupancy_arrays.append(
+                np.column_stack((finite_x[finite_mask], finite_y[finite_mask]))
+            )
+            plot_bounds.append(
+                (
+                    float(np.nanmin(finite_x[finite_mask])),
+                    float(np.nanmax(finite_x[finite_mask])),
+                    float(np.nanmin(finite_y[finite_mask])),
+                    float(np.nanmax(finite_y[finite_mask])),
+                )
+            )
+
         if draw_ce:
             for group in (qc_label, actual_label):
                 sub_df = plot_df[plot_df[sample_type] == group]
                 if not sub_df.empty:
-                    pu.confidence_ellipse(
+                    ellipse = pu.confidence_ellipse(
                         x=sub_df[x_pc],
                         y=sub_df[y_pc],
                         ax=current_ax,
                         n_std=3.0,
-                        alpha=0.1,
-                        facecolor=palette_dict[group],
+                        facecolor=mcolors.to_rgba(palette_dict[group], alpha=0.12),
                         edgecolor=palette_dict[group],
+                        linewidth=1.2,
+                        zorder=3,
                     )
+                    pu.mark_preserve_alpha(ellipse)
+                    try:
+                        vertices = ellipse.get_path().vertices
+                        display_vertices = ellipse.get_transform().transform(vertices)
+                        data_vertices = current_ax.transData.inverted().transform(
+                            display_vertices
+                        )
+                        plot_bounds.append(
+                            (
+                                float(np.nanmin(data_vertices[:, 0])),
+                                float(np.nanmax(data_vertices[:, 0])),
+                                float(np.nanmin(data_vertices[:, 1])),
+                                float(np.nanmax(data_vertices[:, 1])),
+                            )
+                        )
+                        occupancy_arrays.append(data_vertices)
+                    except (AttributeError, TypeError, ValueError):
+                        pass
 
-        current_ax.text(
+        annot_artist = current_ax.text(
             0.96,
             0.02,
             annot_text,
@@ -1493,8 +1600,9 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             verticalalignment="bottom",
             horizontalalignment="right",
             clip_on=False,
+            zorder=10,
             bbox=dict(
-                boxstyle="round,pad=0.4", facecolor="white", edgecolor="none", alpha=0.6
+                boxstyle="round,pad=0.4", facecolor="white", edgecolor="none", alpha=1.0
             ),
         )
 
@@ -1518,7 +1626,23 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             sublegend_cols=1,
         )
 
-        current_ax.autoscale()
+        if plot_bounds:
+            x_min = min(bounds[0] for bounds in plot_bounds)
+            x_max = max(bounds[1] for bounds in plot_bounds)
+            y_min = min(bounds[2] for bounds in plot_bounds)
+            y_max = max(bounds[3] for bounds in plot_bounds)
+            x_span = max(x_max - x_min, 1.0)
+            y_span = max(y_max - y_min, 1.0)
+            current_ax.set_xlim(x_min - 0.08 * x_span, x_max + 0.08 * x_span)
+            current_ax.set_ylim(y_min - 0.16 * y_span, y_max + 0.12 * y_span)
+        else:
+            current_ax.autoscale()
+
+        self._place_pca_annotation(
+            ax=current_ax,
+            text_artist=annot_artist,
+            occupancy_arrays=occupancy_arrays,
+        )
         return fig
 
     # =========================================================================
@@ -1548,14 +1672,6 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         Returns:
             matplotlib.figure.Figure: The rendered figure object.
         """
-        # Reconstruct seaborn-compatible DataFrame dynamically
-        records = []
-        for r_bin, count in rsd_data.get("qc", {}).items():
-            records.append({"RSD": r_bin, "Counts": count, "Type": qc_label})
-        for r_bin, count in rsd_data.get("actual", {}).items():
-            records.append({"RSD": r_bin, "Counts": count, "Type": actual_label})
-        plot_df = pd.DataFrame(records)
-
         # Initialize axes hierarchy
         if ax is None:
             fig, current_ax = plt.subplots(figsize=(5.5, 4))
@@ -1563,40 +1679,54 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             current_ax = ax
             fig = current_ax.figure
 
-        # Initialize barplot layout with strict explicit ordering
         labels = ["0-10%", "10-20%", "20-30%", ">30%"]
-        sns.barplot(
-            data=plot_df,
-            x="RSD",
-            y="Counts",
-            hue="Type",
-            ax=current_ax,
-            hue_order=[qc_label, actual_label],
-            order=labels,
+        x_pos = np.arange(len(labels), dtype=float)
+        bar_width = 0.36
+        qc_counts = np.asarray(
+            [rsd_data.get("qc", {}).get(label, 0) for label in labels]
+        )
+        actual_counts = np.asarray(
+            [rsd_data.get("actual", {}).get(label, 0) for label in labels]
+        )
+        qc_bar_colors = [
+            pu.get_equivalent_hex(
+                pu.PRIMARY_ACCENT_COLOR if label == ">30%" else pu.NEUTRAL_COLOR
+            )
+            for label in labels
+        ]
+        actual_bar_colors = [
+            pu.get_equivalent_hex(
+                pu.PRIMARY_ACCENT_COLOR if label == ">30%" else pu.NEUTRAL_COLOR,
+                alpha=0.4,
+            )
+            for label in labels
+        ]
+
+        current_ax.bar(
+            x_pos - bar_width / 2,
+            qc_counts,
+            width=bar_width,
+            color=qc_bar_colors,
+            edgecolor="black",
+            linewidth=1.0,
+            linestyle="-",
+            label=qc_label,
+        )
+        current_ax.bar(
+            x_pos + bar_width / 2,
+            actual_counts,
+            width=bar_width,
+            color=actual_bar_colors,
+            edgecolor="black",
+            linewidth=1.0,
+            linestyle="--",
+            label=actual_label,
         )
 
-        # Apply aesthetics utilizing RGBA for PDF backend stability
-        for i, container in enumerate(current_ax.containers):
-            # QC (i=0): Solid-like | Actual (i=1): Ghost-like, dashed
-            line_style = "-" if i == 0 else "--"
-            alpha_val = 1.0 if i == 0 else 0.4
-
-            for j, bar in enumerate(container):
-                base_color = "tab:red" if j == 3 else "tab:gray"
-                rgba_color = mcolors.to_rgba(base_color, alpha=alpha_val)
-
-                bar.set_facecolor(rgba_color)
-                bar.set_edgecolor("black")
-                bar.set_linestyle(line_style)
-                bar.set_linewidth(1.0)
-
-        # Physically remove zero-height bars to kill ghost labels
-        for p in list(current_ax.patches):
-            if p.get_height() <= 0:
-                p.remove()
-
         # Update axis limit and annotate after removing empty patches
-        max_count = plot_df["Counts"].max()
+        max_count = max(
+            float(np.nanmax(qc_counts)), float(np.nanmax(actual_counts)), 1.0
+        )
         current_ax.set_ylim(0, max_count * 1.3)
         pu.show_values_on_bars(
             axs=current_ax,
@@ -1609,14 +1739,14 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         # Manually construct legend to ensure correct style mapping
         h_type = [
             Patch(
-                facecolor=mcolors.to_rgba("tab:gray", alpha=0.9),
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=1.0),
                 edgecolor="black",
                 linestyle="-",
                 linewidth=1.0,
                 label=qc_label,
             ),
             Patch(
-                facecolor=mcolors.to_rgba("tab:gray", alpha=0.4),
+                facecolor=pu.get_equivalent_hex("tab:gray", alpha=0.4),
                 edgecolor="black",
                 linestyle="--",
                 linewidth=1.0,
@@ -1628,6 +1758,8 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         legend_kwargs = getattr(self, "LEGEND_KWARGS", {}).copy()
         legend_kwargs.update({"title": "Sample Type", "loc": "best"})
         current_ax.legend(handles=h_type, **legend_kwargs)
+        current_ax.set_xticks(x_pos)
+        current_ax.set_xticklabels(labels)
 
         # Execute standardized axis formatting
         if hasattr(self, "_apply_standard_format"):
@@ -1654,14 +1786,14 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         show_legend: bool = True,
     ) -> plt.Figure:
         """Plot SD-OD diagnostic scatter with multi-dimensional overlays."""
-        red_solid = "tab:red"
-        red_alpha = pu.get_equivalent_hex("tab:red", alpha=0.5)
+        accent_solid = pu.PRIMARY_ACCENT_COLOR
+        accent_alpha = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
 
         custom_pal = {
             "Normal": "tab:gray",
-            "Strong Outlier": red_alpha,
-            "Orthogonal Outlier": red_alpha,
-            "Extreme Outlier": red_solid,
+            "Strong Outlier": accent_alpha,
+            "Orthogonal Outlier": accent_alpha,
+            "Extreme Outlier": accent_solid,
         }
         custom_markers = {
             "Normal": "o",
@@ -1691,7 +1823,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             zorder=2,
         )
 
-        # Overlay halo effect for analytical IS outliers (Red dashed circle)
+        # Overlay halo effect for analytical IS outliers (accent dashed circle)
         if is_flags is not None and is_flags.any():
             outlier_idx = is_flags[is_flags].index.intersection(metrics_df.index)
             subset = metrics_df.loc[outlier_idx]
@@ -1701,7 +1833,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                     subset["OD"],
                     s=150,
                     facecolors="none",
-                    edgecolors="tab:red",
+                    edgecolors=pu.PRIMARY_ACCENT_COLOR,
                     linewidths=2.0,
                     linestyle="--",
                     zorder=3,
@@ -1725,8 +1857,9 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                     label="ORF Outlier",
                 )
 
-        current_ax.axvline(x=sd_limit, color="k", linestyle="--", alpha=0.6)
-        current_ax.axhline(y=od_limit, color="k", linestyle="--", alpha=0.6)
+        threshold_color = pu.get_equivalent_hex("k", alpha=0.6)
+        current_ax.axvline(x=sd_limit, color=threshold_color, linestyle="--")
+        current_ax.axhline(y=od_limit, color=threshold_color, linestyle="--")
 
         self._apply_standard_format(
             ax=current_ax,
@@ -1745,17 +1878,15 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 mlines.Line2D(
                     [],
                     [],
-                    color="k",
+                    color=threshold_color,
                     ls="--",
-                    alpha=0.6,
                     label=f"SD Limit ({sd_limit:.2f})",
                 ),
                 mlines.Line2D(
                     [],
                     [],
-                    color="k",
+                    color=threshold_color,
                     ls="--",
-                    alpha=0.6,
                     label=f"OD Limit ({od_limit:.2f})",
                 ),
             ]
@@ -1880,20 +2011,20 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         cats.index = new_idx
         out_df = out_df.rename_axis(index=["Sample ID"])
 
-        red_solid = "tab:red"
-        red_alpha = pu.get_equivalent_hex("tab:red", alpha=0.5)
-        gray_col = "tab:gray"
+        accent_solid = pu.PRIMARY_ACCENT_COLOR
+        accent_alpha = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
+        gray_col = pu.NEUTRAL_COLOR
 
         palette_spe = {
-            "Extreme Outlier": red_solid,
-            "Orthogonal Outlier": red_alpha,
+            "Extreme Outlier": accent_solid,
+            "Orthogonal Outlier": accent_alpha,
             "Strong Outlier": gray_col,
             "Normal": gray_col,
         }
         palette_ht2 = {
-            "Extreme Outlier": red_solid,
+            "Extreme Outlier": accent_solid,
             "Orthogonal Outlier": gray_col,
-            "Strong Outlier": red_alpha,
+            "Strong Outlier": accent_alpha,
             "Normal": gray_col,
         }
 
@@ -2043,7 +2174,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             full_text = str(new_idx[idx]) if idx < len(new_idx) else label.get_text()
             is_extreme = idx < len(cat_values) and cat_values[idx] == "Extreme Outlier"
             if "*" in full_text or "#" in full_text or is_extreme:
-                label.set_color("tab:red")
+                label.set_color(pu.PRIMARY_ACCENT_COLOR)
 
         if not show_all_ticks:
             visible_indices = {0, n_samples - 1}
@@ -2072,14 +2203,14 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             current_ax = ax
             fig = current_ax.figure
 
-        red_solid = "tab:red"
-        red_alpha = pu.get_equivalent_hex("tab:red", alpha=0.5)
-        gray_col = "tab:gray"
+        accent_solid = pu.PRIMARY_ACCENT_COLOR
+        accent_alpha = pu.get_equivalent_hex(pu.PRIMARY_ACCENT_COLOR, alpha=0.5)
+        gray_col = pu.NEUTRAL_COLOR
 
         cat_styles = {
-            "Extreme Outlier": {"color": red_solid, "marker": "X", "hatch": ""},
-            "Orthogonal Outlier": {"color": red_alpha, "marker": "s", "hatch": "///"},
-            "Strong Outlier": {"color": red_alpha, "marker": "^", "hatch": r"\\\\"},
+            "Extreme Outlier": {"color": accent_solid, "marker": "X", "hatch": ""},
+            "Orthogonal Outlier": {"color": accent_alpha, "marker": "s", "hatch": "///"},
+            "Strong Outlier": {"color": accent_alpha, "marker": "^", "hatch": r"\\\\"},
             "Normal": {"color": gray_col, "marker": "o", "hatch": ""},
         }
 
@@ -2114,7 +2245,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 [],
                 [],
                 color="none",
-                markeredgecolor="tab:red",
+                markeredgecolor=pu.PRIMARY_ACCENT_COLOR,
                 marker="o",
                 markersize=9,
                 markeredgewidth=2.0,
@@ -2162,8 +2293,8 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 [],
                 [],
                 color="none",
-                markerfacecolor="tab:red",
-                markeredgecolor="tab:red",
+                markerfacecolor=pu.PRIMARY_ACCENT_COLOR,
+                markeredgecolor=pu.PRIMARY_ACCENT_COLOR,
                 marker=r"$\ast$",
                 markersize=10,
                 linestyle="none",
@@ -2265,7 +2396,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
         plot_df = plot_df.sort_values(by=sample_type, ascending=True)
 
         # Symmetrical visual markers mapping from previous specification
-        v_color = "tab:red" if ref_type_upper == "IS" else "tab:orange"
+        v_color = pu.PRIMARY_ACCENT_COLOR if ref_type_upper == "IS" else "tab:orange"
         v_ls = "--" if ref_type_upper == "IS" else "-."
 
         # Step 1: Generate analytical control chart bricks sequentially
@@ -2286,7 +2417,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
                 edgecolor="k",
                 linewidth=0.5,
                 style=batch,
-                palette={qc_label: "tab:red", actual_label: "tab:gray"},
+                palette={qc_label: pu.PRIMARY_ACCENT_COLOR, actual_label: pu.NEUTRAL_COLOR},
                 hue=sample_type,
                 hue_order=[qc_label, actual_label],
                 markers=self.style_map,
@@ -2373,7 +2504,7 @@ class MetaboVisualizerAssessor(visualizer_classes.BaseMetaboVisualizer):
             mlines.Line2D(
                 [],
                 [],
-                color="tab:red",
+                color=pu.PRIMARY_ACCENT_COLOR,
                 marker="o",
                 linestyle="none",
                 markersize=6,

@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 # ==============================================================================
 [project]
 name = "pi-metaboqc"           # Distribution name used by PyPI and pip
-version = "1.1.4"              # Static release version following PEP 440
+version = "1.1.5"              # Static release version following PEP 440
 dynamic = ["readme"]           # README content is loaded from README.md
 
 # Maintainer information displayed in package metadata.
@@ -35,10 +35,9 @@ keywords = [
 
 # Short package summary shown on PyPI search and project pages.
 description = """\
-A comprehensive LC-MS metabolomics quality-control and preprocessing package \
-that provides an object-oriented pipeline for dataset construction, sample and \
-feature filtering, signal drift and batch-effect correction, missing-value \
-imputation, normalization, quality assessment, and report generation.\
+A traceable and adaptive LC-MS metabolomics quality-control and preprocessing \
+package for dataset construction, feature filtering, signal correction, \
+missing-value imputation, normalization, quality assessment, and reporting.\
 """
 
 requires-python = ">=3.10"      # Supports modern Python features and type hints
@@ -47,7 +46,7 @@ license-files = ["LICENSE"]     # Path to the license file
 
 # Trove classifiers used by PyPI for package maturity and topic indexing.
 classifiers = [
-    "Development Status :: 3 - Alpha",        # Current project maturity level
+    "Development Status :: 4 - Beta",         # Current project maturity level
     "Programming Language :: Python :: 3",    # Python 3 compatible package
     "Operating System :: OS Independent",     # Platform-independent source
     "Intended Audience :: Science/Research",  # Target research users
@@ -106,8 +105,8 @@ dependencies = [
 # External links for source code, documentation, and issue tracking.
 # ==============================================================================
 [project.urls]
-"Homepage" = "https://github.com/KaikunXu/pi-metaboqc"  # Source repository
-"Bug Tracker" = "https://github.com/KaikunXu/pi-metaboqc/issues"  # Issues
+"Homepage" = "https://github.com/PHOENIXcenter/pi-metaboqc"  # Source repository
+"Bug Tracker" = "https://github.com/PHOENIXcenter/pi-metaboqc/issues"  # Issues
 
 # ==============================================================================
 # SETTOOLS SPECIFIC CONFIGURATION
