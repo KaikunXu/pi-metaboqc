@@ -114,6 +114,7 @@ Rtmp*/
 ._*
 Thumbs.db
 desktop.ini
+~$*
 
 # ==========================================
 # Project Specific: Local data or logs
