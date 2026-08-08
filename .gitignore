@@ -116,6 +116,9 @@ Thumbs.db
 desktop.ini
 ~$*
 
+# Do not upload files or directories whose names start with '#'.
+\#*
+
 # ==========================================
 # Project Specific: Local data or logs
 # ==========================================
