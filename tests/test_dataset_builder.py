@@ -10,8 +10,8 @@ annotation levels are present in the resulting column MultiIndex.
 
 import pandas as pd
 
-from pimqc.dataset_builder import build_dataset
-from pimqc.core_classes import MetaboInt
+from pimqc.dataset.builder import build_dataset
+from pimqc.core import MetaboInt
 
 
 def test_build_dataset_with_real_data(

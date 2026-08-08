@@ -75,7 +75,7 @@ To mitigate time-dependent instrument drift, within-batch intensity fluctuations
 **{{ stage_title }}.** The pipeline used the **{{ stage.get('algorithm', 'Unknown') }}** algorithm.
 {%- set params = stage.get('parameters', {}) %}
 {%- if params -%}
-{%- if 'loess_frac' in params %} The model used a smoothing fraction of **{{ params.get('loess_frac') }}**.{%- endif -%}
+{%- if 'loess_span' in params %} The model used a LOESS span of **{{ params.get('loess_span') }}**.{%- endif -%}
 {%- if 'n_estimators' in params %} The random-forest model used **{{ params.get('n_estimators') }}** decision trees{% if 'n_corr_features' in params %} with **{{ params.get('n_corr_features') }}** highly correlated features{% endif %}.{%- endif -%}
 {%- if 'svr_kernel' in params %} The SVR model used a **{{ params.get('svr_kernel') }}** kernel, regularization parameter **C={{ params.get('svr_c') }}**, and gamma **{{ params.get('svr_gamma') }}**.{%- endif -%}
 {%- if 'ruv_k' in params %} The RUV-III model used a singular-value decomposition (SVD) projection with **k={{ params.get('ruv_k') }}** latent factors.{%- endif -%}

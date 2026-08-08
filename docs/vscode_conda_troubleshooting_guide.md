@@ -1,4 +1,4 @@
-# pi-metaboqc: VS Code Environment & Troubleshooting Guide
+# π-MetaboQC: VS Code Environment & Troubleshooting Guide
 
 **IDE-Level Configuration for Large-Scale Clinical Metabolomics QC Pipelines**
 
@@ -8,7 +8,7 @@
 
 ## 1. Introduction & Architectural Background
 
-`pi-metaboqc` is a high-performance, automated quality control pipeline optimized for large-scale, multi-batch metabolomics data. To meet the non-interactive deployment requirements of High-Performance Computing (HPC) clusters and backend batch processing, the project features a robust, `argparse`-based CLI execution script (`run_pimqc.py`).
+π-MetaboQC is a high-performance, automated quality control pipeline optimized for large-scale, multi-batch metabolomics data. It is distributed as `pi-metaboqc` and provides the `pimqc` Python package. To meet the non-interactive deployment requirements of High-Performance Computing (HPC) clusters and backend batch processing, the project features a robust, `argparse`-based CLI execution script (`run_pimqc.py`).
 
 However, when using **Visual Studio Code (VS Code)** as an Integrated Development Environment (IDE) on Windows, developers frequently encounter a specific anomaly: *pure Python dependencies run perfectly, but system-level graphical or report rendering modules crash or gracefully degrade*. 
 

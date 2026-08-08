@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
+## [1.2.0] - 2026-08-08
+
+### Added
+
+- **[Correction]** Extended QC-RLSC with optional Tukey-bisquare residual
+  reweighting, quadratic LOESS, and QC-only constrained-grid/OOF span
+  selection, while retaining fixed-span linear LOESS as the default. The robust
+  fitting design was informed by the [UGent-LIMET Metanorm project](https://github.com/UGent-LIMET/Metanorm).
+  Blank-aware fitting and frozen-model prediction are applied where the
+  correction method supports them.
+- **[Configuration]** Added validated configuration fields for the new QC-RLSC
+  options, including span selection, polynomial degree, minimum QC count, and
+  robust-reweighting iterations.
+- **[Visualization]** Added compact, article-ready dashboard builders and
+  dedicated panel/legend layouts for filtering, correction, imputation, and
+  normalization results.
+
+### Changed
+
+- **[Architecture]** Reorganized the former monolithic stage scripts into
+  domain subpackages under `processing/`, separating analysis, visualization,
+  and algorithm responsibilities. `MetaboInt` now lives in `core`, while
+  dataset construction, statistics, visualization infrastructure, reporting,
+  I/O, and configuration each have dedicated packages.
+- **[Configuration and packaging]** Added centralized stage-configuration
+  resolution with one precedence rule for defaults, TOML/JSON sections, and
+  runtime overrides. Bundled demo tables/configuration now live under
+  `resources/demo`, and report templates are packaged under `templates`.
+- **[Correction]** Consolidated correction candidate labels, parameters,
+  scoring, and diagnostics. AUTO correction compares fixed-span standard and
+  robust QC-RLSC together with the supported alternatives; QC-RFSC remains
+  available for explicit selection, while WaveICA 2.0 uses full-data QC-RSD
+  evaluation and other candidates use OOF evaluation where applicable.
+- **[Visualization and reporting]** Centralized adaptive figure sizing,
+  annotation/tick scaling, colorbar and legend styling, and publication-ready
+  SVG layout. Sequential QA dashboards now emit compact shared sidecars, and
+  intermediate source panels/sidecars are removed after final grid assembly.
+- **[Documentation]** Updated the runnable notebook, CLI defaults, pipeline
+  descriptions, and project structure documentation for the reorganized
+  seven-stage workflow.
+
+### Fixed
+
+- **[Configuration and resources]** Fixed package-relative resolution of demo
+  data and report templates, added JSON loading alongside TOML, and corrected
+  unsupported-format errors to advertise the formats that are actually
+  supported.
+- **[Correction and diagnostics]** Aligned the new QC-RLSC options with AUTO
+  candidate evaluation, method-specific scoring, and downstream dashboards;
+  renamed the span parameter from `loess_frac` to `loess_span` and documented
+  fixed-span and GCV modes consistently.
+- **[Reports and visualizers]** Fixed report assembly edge cases involving
+  conditional IS/ORF legends, shared diagnostic sidecars, stale PDF
+  intermediates, and stage-specific dashboard titles.
+
 ## [1.1.5] - 2026-07-23
 
 ### Added

@@ -16,7 +16,7 @@ from rpy2.robjects import pandas2ri
 from rpy2.robjects.conversion import localconverter
 from scipy.stats import spearmanr
 
-from pimqc.imputation import MetaboIntImputer
+from pimqc.processing.imputation import MetaboIntImputer
 
 
 def _require_r_package(package: str) -> None:

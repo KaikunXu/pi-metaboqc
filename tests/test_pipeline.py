@@ -197,8 +197,8 @@ def dummy_pipeline_data() -> PipelineData:
 )
 @patch("pimqc.pipeline.iu._check_dir_exists")
 @patch("pandas.DataFrame.to_csv")
-@patch("pimqc.visualizer_classes.BaseMetaboVisualizer.save_and_close_fig")
-@patch("pimqc.visualizer_classes.BaseMetaboVisualizer.save_and_show_pw")
+@patch("pimqc.visualization.base.BaseMetaboVisualizer.save_and_close_fig")
+@patch("pimqc.visualization.base.BaseMetaboVisualizer.save_and_show_pw")
 @patch("pimqc.pipeline.ru.NarrativeStatsReporter")
 @patch("pimqc.pipeline.ru.VisualAssetReporter")
 def test_run_pipeline_e2e(
@@ -229,8 +229,8 @@ def test_run_pipeline_e2e(
 # ========================================================================
 @patch("pimqc.pipeline.iu._check_dir_exists")
 @patch("pandas.DataFrame.to_csv")
-@patch("pimqc.visualizer_classes.BaseMetaboVisualizer.save_and_close_fig")
-@patch("pimqc.visualizer_classes.BaseMetaboVisualizer.save_and_show_pw")
+@patch("pimqc.visualization.base.BaseMetaboVisualizer.save_and_close_fig")
+@patch("pimqc.visualization.base.BaseMetaboVisualizer.save_and_show_pw")
 @patch("pimqc.pipeline.ru.NarrativeStatsReporter")
 @patch("pimqc.pipeline.ru.VisualAssetReporter")
 def test_run_pipeline_real_data(

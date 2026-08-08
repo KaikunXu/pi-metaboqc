@@ -19,7 +19,7 @@ from rpy2.robjects import pandas2ri
 from rpy2.robjects.conversion import localconverter
 from scipy.stats import spearmanr
 
-from pimqc.correction import WaveICA2Corrector
+from pimqc.processing.correction import WaveICA2Corrector
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

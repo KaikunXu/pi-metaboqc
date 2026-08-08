@@ -13,7 +13,7 @@ import rpy2.robjects as ro
 from rpy2.robjects import pandas2ri
 from rpy2.robjects.conversion import localconverter
 
-from pimqc.correction import RUVCorrector
+from pimqc.processing.correction import RUVCorrector
 
 
 def _make_ruviii_matrix() -> tuple[pd.DataFrame, np.ndarray]:

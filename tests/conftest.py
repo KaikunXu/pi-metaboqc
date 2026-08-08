@@ -13,6 +13,8 @@ import os
 import sys
 import logging
 import subprocess
+import argparse
+import shutil
 import pytest
 import numpy as np
 import pandas as pd
@@ -39,15 +41,41 @@ else:
 
 # Inject R binary paths into the system PATH.
 r_bin_candidates = [
-    Path(os.environ["R_HOME"]) / "bin" / "x64",
     Path(os.environ["R_HOME"]) / "bin",
+    Path(os.environ["R_HOME"]) / "bin" / "x64",
 ]
 for r_bin_path in r_bin_candidates:
     if r_bin_path.exists():
         os.environ["PATH"] = str(r_bin_path) + os.pathsep + os.environ.get("PATH", "")
 
 os.environ["LANGUAGE"] = "en"
-os.environ["LC_ALL"] = "C"
+if sys.platform == "win32":
+    os.environ.pop("LC_ALL", None)
+else:
+    os.environ["LC_ALL"] = "C"
+
+# R 4.5 on Windows can return successfully but emit no ``R CMD config`` flags
+# when Rtools is absent. rpy2's ABI mode only needs R.dll in that situation.
+if sys.platform == "win32":
+    if (Path(os.environ["R_HOME"]) / "bin" / "x64").exists():
+        os.environ.setdefault("R_ARCH", "/x64")
+    os.environ.setdefault("RPY2_CFFI_MODE", "ABI")
+
+    import rpy2.situation as rpy2_situation
+
+    _get_r_flags = rpy2_situation.get_r_flags
+
+    def _get_r_flags_windows_compat(
+        r_home: str, flags: str
+    ) -> tuple[argparse.Namespace, list[str]]:
+        if shutil.which("make") is None:
+            return argparse.Namespace(I=[], L=[], l=[]), []
+        try:
+            return _get_r_flags(r_home, flags)
+        except IndexError:
+            return argparse.Namespace(I=[], L=[], l=[]), []
+
+    rpy2_situation.get_r_flags = _get_r_flags_windows_compat
 
 # Suppress rpy2 console output globally
 from rpy2.rinterface_lib.callbacks import logger as rpy2_logger  # noqa: E402
@@ -89,10 +117,10 @@ def mock_ms_data() -> pd.DataFrame:
 
 @pytest.fixture(scope="session")
 def real_project_data() -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
-    """Load real project data from the package data directory."""
-    from pimqc.io_utils import load_pipeline_config
+    """Load real project data from the package demo resources directory."""
+    from pimqc.io.utils import load_pipeline_config
 
-    data_dir = Path(__file__).parents[1] / "src" / "pimqc" / "data"
+    data_dir = Path(__file__).parents[1] / "src" / "pimqc" / "resources" / "demo"
 
     meta_path = data_dir / "project_meta.csv"
     int_path = data_dir / "project_intensity.csv"

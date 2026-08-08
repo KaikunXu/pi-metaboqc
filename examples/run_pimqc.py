@@ -44,7 +44,7 @@ mpl.use("Agg")
 
 # Import internal modules after backend initialization
 import pimqc
-import pimqc.io_utils as iu
+from pimqc.io import utils as iu
 from pimqc.pipeline import run_pipeline
 
 
@@ -57,7 +57,7 @@ def parse_arguments() -> argparse.Namespace:
     """
     # Resolve package data directory and default output directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = str(files("pimqc") / "data")
+    data_dir = str(files("pimqc") / "resources" / "demo")
     default_out = os.path.join(script_dir, "tutorial_output")
 
     parser = argparse.ArgumentParser(
@@ -87,7 +87,7 @@ def parse_arguments() -> argparse.Namespace:
         "--config",
         type=str,
         default=os.path.join(data_dir, "pipeline_parameters.toml"),
-        help="Path to the configuration TOML file.",
+        help="Path to the configuration TOML or JSON file.",
     )
     parser.add_argument(
         "-o",
@@ -131,7 +131,7 @@ def main() -> None:
 
     # 4. Professional Execution Header
     logger.info("=" * 79)
-    logger.info("🚀 Starting pi-metaboqc Automated Quality Control Pipeline")
+    logger.info("Starting pi-metaboqc Automated Quality Control Pipeline")
     logger.info("-" * 79)
     logger.info(f">>> Metadata   : {clean_meta}")
     logger.info(f">>> Intensity  : {clean_intensity}")
@@ -151,7 +151,7 @@ def main() -> None:
     try:
         logger.info("Ingesting configuration and raw data matrices...")
 
-        # Load analytical parameters via io_utils
+        # Load analytical parameters via pimqc.io.utils
         params = iu.load_pipeline_config(config_path=clean_config)
 
         # Ingest metadata (Sample info, Batch, Injection Order)

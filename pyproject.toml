@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 # ==============================================================================
 [project]
 name = "pi-metaboqc"           # Distribution name used by PyPI and pip
-version = "1.1.5"              # Static release version following PEP 440
+version = "1.2.0"              # Static release version following PEP 440
 dynamic = ["readme"]           # README content is loaded from README.md
 
 # Maintainer information displayed in package metadata.
@@ -35,9 +35,9 @@ keywords = [
 
 # Short package summary shown on PyPI search and project pages.
 description = """\
-A traceable and adaptive LC-MS metabolomics quality-control and preprocessing \
-package for dataset construction, feature filtering, signal correction, \
-missing-value imputation, normalization, quality assessment, and reporting.\
+π-MetaboQC: a traceable and adaptive LC-MS metabolomics quality-control and \
+preprocessing package for dataset construction, feature filtering, signal \
+correction, missing-value imputation, normalization, quality assessment, and reporting.\
 """
 
 requires-python = ">=3.10"      # Supports modern Python features and type hints
@@ -119,9 +119,9 @@ include = ["pimqc*"]            # Include only packages starting with pimqc
 [tool.setuptools.package-data]
 # Non-Python resources bundled into the installed pimqc package.
 "pimqc" = [
-    "data/*.csv",               # Demo meta and intensity data files
-    "data/*.toml",              # Demo conf file (default format)
-    "data/*.json",              # Demo conf file (optional format for webserver)
+    "resources/demo/*.csv",     # Demo meta and intensity data files
+    "resources/demo/*.toml",    # Demo conf file (default format)
+    "resources/demo/*.json",    # Demo conf file (JSON-compatible format)
     "templates/*.j2",           # Template files for report
 ]
 
@@ -138,5 +138,9 @@ test = [
     "rpy2>=3.5.0",              # R-interface for algorithm benchmarking
 ]
 pdf = [
-    "weasyprint>=61.0"          # Primary HTML-to-PDF rendering engine
+    "weasyprint>=61.0",         # Primary HTML-to-PDF rendering engine
+    "tinycss2>=1.5.0",          # Compatible CSS parser for current WeasyPrint
 ]
+
+[tool.ruff]
+line-length = 80

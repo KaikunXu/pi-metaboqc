@@ -1,16 +1,16 @@
-# `pi-metaboqc`: $\pi$-Metabolomics-Quality Control
+# π-MetaboQC: a comprehensive and traceable workflow for automated quality assessment and preprocessing of LC-MS untargeted metabolomics data
 
 [![PyPI version](https://badgen.net/pypi/v/pi-metaboqc)](https://pypi.org/project/pi-metaboqc/)
 [![Python 3.10+](https://badgen.net/badge/python/3.10%2B/blue)](https://www.python.org/downloads/)
 [![License: MIT](https://badgen.net/badge/license/MIT/blue)](https://github.com/PHOENIXcenter/pi-metaboqc/blob/main/LICENSE)
 
-**pi-metaboqc** is a traceable, adaptive Python workflow for quality control and preprocessing of LC-MS metabolomics feature-intensity matrices. It combines missingness-aware feature filtering, preservation-aware method selection, stage-wise quality assessment, and automated reporting for large, multi-batch studies.
+**π-MetaboQC** is a traceable, adaptive Python workflow for quality control and preprocessing of LC-MS metabolomics feature-intensity matrices. It combines missingness-aware feature filtering, preservation-aware method selection, stage-wise quality assessment, and automated reporting for large, multi-batch studies. The project is distributed on PyPI as `pi-metaboqc` and exposes the Python package `pimqc`.
 
-![Pipeline of pi-metaboqc](https://github.com/PHOENIXcenter/pi-metaboqc/raw/main/docs/pipeline_of_pi-metaboqc.png)
+![Pipeline of π-MetaboQC](https://github.com/PHOENIXcenter/pi-metaboqc/raw/main/docs/pipeline_of_pi-metaboqc.png)
 
 ## ✨ Core Capabilities
 
-* **Matrix-level LC-MS metabolomics QC workflow:** `pi-metaboqc` focuses on feature-intensity matrices from large, multi-batch metabolomics studies. It integrates dataset construction, missing-value triage, blank/QC filtering, signal correction, imputation, normalization, QA diagnostics, and report generation in a single reproducible workflow.
+* **Matrix-level LC-MS metabolomics QC workflow:** π-MetaboQC focuses on feature-intensity matrices from large, multi-batch metabolomics studies. It integrates dataset construction, missing-value triage, blank/QC filtering, signal correction, imputation, normalization, QA diagnostics, and report generation in a single reproducible workflow.
 
 * **Python-native data model and method implementations:** The core `MetaboInt` object inherits from `pandas.DataFrame`, allowing users to work with standard tabular operations while preserving pipeline metadata. Classical preprocessing methods that often require R dependencies, including quantile normalization, VSN, QRILC, BPCA, RUV-III, and WaveICA 2.0, are implemented or reconstructed in Python and checked against R reference implementations where applicable.
 
@@ -24,9 +24,13 @@
 
 * **Automated reporting and publication-ready visualization:** The pipeline records stage-level decisions, retained feature counts, selected methods, evaluation metrics, and diagnostic figures. Users can generate **Brief** or **Comprehensive** reports in Markdown, HTML, or PDF, while diagnostic plots are exported as editable **SVG** or **PDF** files for downstream inspection and manuscript preparation.
 
+### Correction and AUTO selection
+
+Correction `AUTO` compares `SERRF`, `RUV-III`, `WaveICA 2.0`, `QC-RLSC`, `robust QC-RLSC`, and `QC-SVR`. `QC-RFSC` remains available when explicitly selected with `base_est = "QC-RFSC"`, but is not evaluated by `AUTO`. `QC-RLSC` uses the Numba-accelerated LOESS fitter and supports optional Tukey-bisquare robust residual weighting through `rlsc_robust` and `rlsc_robust_iterations`. Standard and robust QC-RLSC share optional `loess_degree`, constrained-grid `rlsc_span_selection`, `rlsc_span_grid`, and `rlsc_min_qc` settings; defaults retain fixed-span linear LOESS.
+
 ## 📦 Installation
 
-We strongly recommend installing `pi-metaboqc` within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/), or [Anaconda](https://www.anaconda.com/download).
+We strongly recommend installing π-MetaboQC (`pi-metaboqc`) within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/), or [Anaconda](https://www.anaconda.com/download).
 
 Generating high-fidelity HTML and PDF reports requires advanced graphical engines (`pandoc`, `weasyprint`, `tinycss2` and `librsvg`). These tools depend on complex, system-level C libraries (e.g., GTK3, Pango) that are notoriously difficult to compile and configure via standard `pip`, particularly on Windows.
 
@@ -75,13 +79,13 @@ pip install -e .
 
 ## 🚀 Quickstart & Tutorials
 
-`pi-metaboqc` is designed for zero-friction deployment. You only need three files to trigger the fully automated pipeline: a sample metadata table, a raw intensity matrix, and a TOML configuration file.
+π-MetaboQC is designed for zero-friction deployment. You only need three files to trigger the fully automated pipeline: a sample metadata table, a raw intensity matrix, and a TOML or JSON configuration file.
 
 We provide execution modalities for different use cases in the `examples/` directory. **For first-time users, we strongly recommend starting with the Interactive Notebook.**
 
 ### 1. Interactive Notebook (Recommended for Onboarding)
 
-**[Interactive Tutorial (`interactive_tutorial.ipynb`)](https://github.com/PHOENIXcenter/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: An end-to-end Jupyter Notebook. This is the optimal way to experience `pi-metaboqc`. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards, and intuitively grasp the core algorithmic logic.
+**[Interactive Tutorial (`interactive_tutorial.ipynb`)](https://github.com/PHOENIXcenter/pi-metaboqc/blob/main/examples/interactive_tutorial.ipynb)**: An end-to-end Jupyter Notebook. This is the optimal way to experience π-MetaboQC. It allows you to step through the pipeline, visually inspect intermediate QA diagnostic dashboards, and intuitively grasp the core algorithmic logic.
 
 **[Pre-rendered HTML Viewer](https://raw.githack.com/PHOENIXcenter/pi-metaboqc/main/examples/interactive_tutorial.html)**: A zero-loading, fully rendered static webpage. This ensures all inline high-resolution plots and metrics are displayed instantly, bypassing any GitHub API rendering timeouts or file size limits.
 
@@ -115,44 +119,36 @@ python run_pimqc.py -q
 
 ```bash
 pi-metaboqc/
-├── README.md                      # Project documentation and quickstart guide
-├── pyproject.toml                 # Modern Python build and dependency config
-├── LICENSE                        # MIT license
-├── examples/                      # Directory for tutorials and examples
-│   ├── interactive_tutorial.ipynb # Interactive Jupyter Notebook for onboarding
-│   └── run_pimqc.py               # Production-ready CLI execution script
-├── src/                           # Core source code directory
-│   └── pimqc/                     # Core pi-metaboqc package
-│       ├── __init__.py            # Package initialization file
-│       ├── core_classes.py        # Core DataStructure class (MetaboInt)
-│       ├── visualizer_classes.py  # Core Visualization class (BaseMetaboVisualizer)
-│       ├── dataset_builder.py     # MetaboInt instantiation 
-│       ├── assessment.py          # Data quality assessment
-│       ├── correction.py          # Signal drift & batch correction
-│       ├── filtering.py           # High-missing value & low-quality features filtering
-│       ├── imputation.py          # Missing values imputation
-│       ├── normalization.py       # Data normalization
-│       ├── pipeline.py            # Automated pipeline orchestrator
-│       ├── io_utils.py            # I/O operations
-│       ├── plot_utils.py          # Plotting utilities
-│       ├── pca_utils.py           # Underlying PCA dimensionality reduction
-│       ├── stat_utils.py          # Shared statistical utility functions
-│       ├── report_utils.py        # Automated markdown and pdf report rendering
-│       ├── config_schema.py       # Configuration schema and parameter validation
-│       ├── templates/...          # Template file for generating reports...
-│       └── data/                  # Demo data and configuration file directory
-│           ├── project_meta.csv          # Demo project metadata file
-│           ├── project_intensity.csv     # Demo project intensity file
-│           └── pipeline_parameters.toml  # Demo pipeline parameters file
-│── tests/...                      # Unit testing and E2E stress testing...
-└── ...                            # Other files required by this module...
+├── README.md
+├── pyproject.toml
+├── LICENSE
+├── examples/
+│   ├── interactive_tutorial.ipynb
+│   └── run_pimqc.py
+├── src/pimqc/
+│   ├── core/                  # Core data model
+│   ├── config/                # Configuration schema and resolution
+│   ├── dataset/               # Dataset construction and diagnostics
+│   ├── processing/            # Stage-specific analysis and visualization
+│   │   ├── assessment/
+│   │   ├── correction/
+│   │   ├── filtering/
+│   │   ├── imputation/
+│   │   └── normalization/
+│   ├── statistics/            # Metrics, PCA, and candidate selection
+│   ├── visualization/         # Shared plotting infrastructure
+│   ├── reporting/             # Report assembly and rendering
+│   ├── templates/             # Markdown report templates
+│   ├── resources/demo/        # Example tables and TOML/JSON configurations
+│   └── pipeline.py            # Automated pipeline orchestrator
+└── tests/                     # Unit and integration tests
 ```
 
-> *💡 **Note on Configuration:** The entire analytical workflow of `pi-metaboqc` is centrally governed by `pipeline_parameters.toml`. Users can fine-tune all analysis parameters exclusively through this file, without modifying any underlying Python code.
+> *💡 **Note on Configuration:** The entire analytical workflow of π-MetaboQC is centrally governed by a `pipeline_parameters.toml` or `pipeline_parameters.json` file. Users can fine-tune all analysis parameters exclusively through this file, without modifying any underlying Python code.
 
 ## 📖 Hands-on Case Study
 
-To demonstrate the robustness, reproducibility, and correction efficacy of `pi-metaboqc` in real-world scenarios, we provide a dedicated case study repository. 
+To demonstrate the robustness, reproducibility, and correction efficacy of π-MetaboQC in real-world scenarios, we provide a dedicated case study repository.
 
 👉 **[pi-metaboqc-casestudy](https://github.com/PHOENIXcenter/pi-metaboqc-casestudy)**
 
@@ -160,11 +156,11 @@ The case study repository contains:
 
 * **Diverse Real-World & Benchmark Datasets**: Includes actual metabolomics datasets generated in-house and benchmark data from published tools. Both the originally downloaded raw datasets and the fully pre-processed versions are provided.
 
-* **Transparent Data Preparation**: We provide all data cleaning and formatting scripts used to convert raw matrices into the standardized input formats required by `pi-metaboqc`.
+* **Transparent Data Preparation**: We provide all data cleaning and formatting scripts used to convert raw matrices into the standardized input formats required by π-MetaboQC.
 
 * **Highly Organized Project Structure**: All ready-to-run data is systematically categorized by project under the `data/processed/` directory. Each project directory is self-contained with its specific matrices, metadata, and a dedicated `pipeline_parameters.toml` configuration file.
 
-* **Project-Specific Analytical Notebooks**: For every dataset, you will find a dedicated, interactive Jupyter Notebook that executes the complete `pi-metaboqc` analytical pipeline under the `scripts/evaluation` directory, providing step-by-step demonstrations and embedded diagnostic visualizations.
+* **Project-Specific Analytical Notebooks**: For every dataset, you will find a dedicated, interactive Jupyter Notebook that executes the complete π-MetaboQC analytical pipeline under the `scripts/evaluation` directory, providing step-by-step demonstrations and embedded diagnostic visualizations.
 
 We highly recommend new users start with the case study to familiarize themselves with the pipeline's configuration and capabilities.
 

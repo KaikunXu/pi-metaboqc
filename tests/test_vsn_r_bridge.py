@@ -18,7 +18,7 @@ import rpy2.robjects as ro
 from rpy2.robjects import pandas2ri
 from rpy2.robjects.conversion import localconverter
 
-from pimqc.normalization import MetaboIntNormalizer
+from pimqc.processing.normalization import MetaboIntNormalizer
 
 
 def run_r_vsn(df_input: pd.DataFrame) -> pd.DataFrame:

@@ -1,0 +1,104 @@
+{
+  "MetaboInt": {
+    "mode": "ESI+",
+    "sample_name": "Sample Name",
+    "sample_type": "Sample Type",
+    "bio_group": "Bio Group",
+    "group_order": [],
+    "batch": "Batch",
+    "inject_order": "Inject Order",
+    "boundary": "IQR",
+    "global_seed": 123,
+    "internal_standard": [
+      "Phenylalanine-d5",
+      "Choline-d4",
+      "CA-d4",
+      "CDCA-d4",
+      "Carnitine C10:0-d3",
+      "FFA 18:0-d3",
+      "FFA 16:0-d3",
+      "IS-PC",
+      "IS-TG",
+      "IS-CER",
+      "IS-SM",
+      "IS-PE",
+      "IS-LPC",
+      "IS_PC 38:0+AcO",
+      "IS_PE 30:0-H",
+      "IS_LPC 19:0+AcO",
+      "IS_SM 30:1;2+AcO",
+      "IS_FFA C16:0-d3",
+      "IS_FFA C18:0-d3"
+    ],
+    "outlier_ref_feat": [
+      "Creatinine"
+    ],
+    "resort_inject_order": "Auto",
+    "sample_dict": {
+      "Actual sample": "Sample",
+      "Blank sample": "Blank",
+      "QC sample": "QC"
+    }
+  },
+  "MetaboIntAssessor": {
+    "corr_method": "Spearman",
+    "scaling_method": "Auto-scaling",
+    "is_outlier_threshold": 0.5,
+    "orf_outlier_threshold": 0.5
+  },
+  "MetaboIntFilter": {
+    "sample_mv_tol": 0.5,
+    "mv_global_tol": 0.7,
+    "mv_qc_tol": 0.3,
+    "mv_group_tol": 0.5,
+    "mnar_group_mv_tol": 0.8,
+    "mnar_qc_mv_tol": 0.2,
+    "mnar_intensity_pct": 0.1,
+    "blank_qc_ratio_tol": 0.2,
+    "qc_rsd_tol": 0.3
+  },
+  "MetaboIntCorrector": {
+    "base_est": "Auto",
+    "loess_span": 0.5,
+    "loess_degree": 1,
+    "rlsc_span_selection": "fixed",
+    "rlsc_span_grid": [
+      0.3,
+      0.5,
+      0.7
+    ],
+    "rlsc_min_qc": 7,
+    "rlsc_robust": true,
+    "rlsc_robust_iterations": 3,
+    "rf_n_tree": 200,
+    "serrf_n_tree": 100,
+    "serrf_corr_features": 5,
+    "serrf_backend": "loky",
+    "serrf_batch_size": "auto",
+    "svr_kernel": "rbf",
+    "svr_c": 10,
+    "svr_gamma": 1.0,
+    "ruv_k": 5,
+    "waveica_components": 10,
+    "waveica_cutoff": 0.1,
+    "waveica_spline_knots": 5,
+    "waveica_max_iter": 1000,
+    "regression_backend": "loky",
+    "regression_batch_size": "auto",
+    "cv_folds": 3
+  },
+  "MetaboIntImputer": {
+    "mnar_method": "QRILC",
+    "mnar_fraction": 0.5,
+    "mar_method": "Auto",
+    "knn_neighbors": 5,
+    "lls_neighbors": 15,
+    "bpca_components": 2,
+    "bpca_max_iter": 100,
+    "bpca_tol": 0.0001,
+    "sim_mask_ratio": 0.05
+  },
+  "MetaboIntNormalizer": {
+    "norm_method": "Auto"
+  }
+}

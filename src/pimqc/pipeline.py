@@ -1,29 +1,23 @@
-# src/pimqc/pipeline.py
-"""
-Script purpose: Run the complete pi-metaboqc workflow from raw data to report.
+"""End-to-end pipeline orchestration from input tables to report artifacts.
 
-run_pipeline() creates the standard output workspace and executes each stage in
-order: dataset construction, raw-data QA, high-missing-value filtering, signal
-correction, low-quality feature filtering, imputation, normalization, and QA
-checkpoints after each major transformation. Each stage passes a MetaboInt
-object with preserved metadata and metrics to the next stage.
-The final section collects pipeline metrics and QA metrics, compiles visual
-assets, renders comprehensive and brief Markdown reports, and exports PDFs
-through the reporting utilities.
+run_pipeline constructs the dataset, executes traceable assessment checkpoints,
+runs missing-value filtering, correction, low-quality filtering, imputation,
+and normalization, then assembles reports. It carries stage metrics, matrices,
+and audit paths forward so each decision remains inspectable in final outputs.
 """
 
 import os
 import pandas as pd
 from loguru import logger
 
-from . import io_utils as iu
-from . import report_utils as ru
-from .dataset_builder import build_dataset
-from .assessment import MetaboIntAssessor
-from .filtering import MetaboIntFilter
-from .correction import MetaboIntCorrector
-from .imputation import MetaboIntImputer
-from .normalization import MetaboIntNormalizer
+from .io import utils as iu
+from .reporting import utils as ru
+from .dataset.builder import build_dataset
+from .processing.assessment import MetaboIntAssessor
+from .processing.filtering import MetaboIntFilter
+from .processing.correction import MetaboIntCorrector
+from .processing.imputation import MetaboIntImputer
+from .processing.normalization import MetaboIntNormalizer
 
 
 @iu._exe_time
@@ -35,10 +29,10 @@ def run_pipeline(
 ) -> None:
     """Run the complete pi-metaboqc pipeline.
 
-    Executes data construction, sequential quality assessments, sample filtering
-    and dual-stage feature filtering, signal correction, imputation,
-    normalization, and report generation. All intermediate and final artifacts
-    are written to `output_dir`.
+    Executes dataset construction, QA checkpoints, sample filtering, two-stage
+    feature filtering, signal correction, missingness-aware imputation,
+    normalization, and report generation. All intermediate matrices, tracking
+    tables, visual diagnostics, and final reports are written to `output_dir`.
 
     Args:
         meta_df (pd.DataFrame): The metadata pandas DataFrame.
@@ -49,14 +43,9 @@ def run_pipeline(
     # ========================================================================
     # Step 00: Environment Initialization
     # **Purpose & Function**:
-    # Strictly validate and mount the output directory structure before
-    # initiating computationally intensive tasks.
-    # **Method Deconstruction**:
-    # Ensures I/O safety through interceptor mechanisms. This guarantees
-    # that diagnostic charts, intermediate CSV matrices, and final audit
-    # reports have valid physical storage paths throughout the pipeline's
-    # lifecycle, preventing unexpected crashes (OOM or I/O Errors) caused
-    # by missing paths.
+    # Creates the root output directory before any stage writes artifacts.
+    # Each processing and QA stage then owns a dedicated subdirectory, keeping
+    # matrices, metrics, and figures traceable to their point of generation.
     # ========================================================================
     logger.info("Step 00: Environment Initialization...")
     iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
@@ -65,31 +54,30 @@ def run_pipeline(
     # ========================================================================
     # Step 01: Dataset Construction
     # **Purpose & Function**:
-    # Instantiate fragmented raw peak tables and metadata into a unified
-    # `MetaboInt` object, establishing a Single Source of Truth (SSOT).
-    # **Method Deconstruction**:
-    # Executes precise coordinate alignment between sample identifiers and
-    # feature intensities. This phase implicitly registers sample types
-    # (e.g., QC, Actual samples, Blanks) and batch information, laying a
-    # structured foundation for topological classification and batch effect
-    # correction.
+    # Validates metadata and peak-table consistency, resolves duplicated
+    # features/samples and injection-order issues, and aligns intensity columns
+    # to metadata. It builds the MultiIndex-backed `MetaboInt` source object
+    # with sample types, batches, injection order, and optional bio-groups.
+    # Explicit zero intensities are converted to missing values, and the raw
+    # matrix plus acquisition overview are exported.
     # ========================================================================
     logger.info("Step 01: Dataset Construction...")
     step1_dir = os.path.join(output_dir, "01_Raw_Data")
     raw_data = build_dataset(
-        meta_info=meta_df, int_df=int_df, pipeline_params=params, output_dir=step1_dir
+        meta_info=meta_df,
+        int_df=int_df,
+        pipeline_params=params,
+        output_dir=step1_dir,
     )
     is_multi_batch_flag = raw_data.attrs["is_multi_batch"]
 
     # ========================================================================
     # QA-Step 01: Quality Assessment of Raw Data
     # **Evaluation Logic**:
-    # A comprehensive "health check" of the raw data prior to any
-    # algorithmic intervention. This baseline diagnostic anchors the initial
-    # degree of inter-batch offset, injection-order-dependent signal drift,
-    # and the topological distribution of global missing values. It serves
-    # as the baseline for evaluating the benefits of subsequent
-    # preprocessing.
+    # Establishes the unprocessed baseline using QC and batch QC correlations,
+    # PCA, QC RSD distributions, acquisition-order diagnostics, and internal-
+    # standard/outlier-reference-feature checks. These metrics provide the
+    # comparison point for all later transformations.
     # ========================================================================
     logger.info("QA-Step 01: Quality Assessment of Raw Data...")
     qa_step1_dir = os.path.join(output_dir, "QA_01_Raw_Data")
@@ -97,24 +85,16 @@ def run_pipeline(
     qa_raw_engine.execute_assessment(output_dir=qa_step1_dir)
 
     # ========================================================================
-    ## Step 02: High-Missing Value Feature Filtering
+    # Step 02: High-Missing Value Feature Filtering
     # **Purpose & Function**:
-    # Systematically eliminate highly degraded samples and redundant
-    # features with excessive missingness, while classifying the missing
-    # mechanisms for surviving features to guide downstream imputation.
-    # **Method Deconstruction (`filtering.py`)**:
-    # 1. **Sample-Level Filtering**: Evaluates missing rates strictly on
-    # QC and Actual samples, removing samples with critical missingness.
-    # 2. **Feature-Level Classification (MAR vs. MNAR)**:
-    # 2.1 Introduces dynamic topological routing to strictly classify
-    # missing features into MAR and MNAR.
-    # 2.2 Biological Group Rescue: If a feature is robustly expressed
-    # in a specific biological group, it is classified as MNAR and
-    # retained despite a high global missing rate (preventing the
-    # accidental deletion of group-specific biomarkers).
-    # 2.3 QC Rescue: Evaluates low-abundance features using a
-    # dual-threshold approach (abundance limits combined with QC
-    # missing rates).
+    # First removes only QC and biological samples exceeding the sample-level
+    # missingness tolerance; non-target sample types are retained. It then
+    # calculates global, QC, and per-bio-group missingness to label features as
+    # MAR, MNAR, or dropped. Biological-group rescue retains group-specific
+    # sparse signals, while QC rescue retains plausible low-abundance features
+    # according to QC missingness and a low-intensity percentile criterion.
+    # The resulting labels and attrition tables drive later filtering and
+    # imputation.
     # ========================================================================
     logger.info("Step 02: High-Missing Value Feature Filtering...")
     step2_dir = os.path.join(output_dir, "02_MV_Filtered")
@@ -124,36 +104,30 @@ def run_pipeline(
     # ========================================================================
     # QA-Step 02: Quality Assessment of High-MV Filtered Data
     # **Evaluation Logic**:
-    # Verifies that the global abundance distribution of the feature matrix
-    # remains undistorted after structural missing data is cleaned. Ensures
-    # that specific sparsity issues are resolved without disrupting the
-    # intrinsic biological variance between groups.
+    # Re-runs the standard QA suite after sample removal and feature routing.
+    # It shows the impact of structural sparsity filtering on QC consistency,
+    # sample structure, missingness, and reference-feature behaviour.
     # ========================================================================
     logger.info("QA-Step 02: Quality Assessment of High-MV Filtered Data...")
     qa_step2_dir = os.path.join(output_dir, "QA_02_MV_Filtered")
-    qa_mv_filter_engine = MetaboIntAssessor(data=mv_filter_data, pipeline_params=params)
+    qa_mv_filter_engine = MetaboIntAssessor(
+        data=mv_filter_data, pipeline_params=params
+    )
     qa_mv_filter_engine.execute_assessment(output_dir=qa_step2_dir)
 
     # ========================================================================
     # Step 03: Signal Drift & Batch Effect Correction
     # **Purpose & Function**:
-    # Effectively attenuate (rather than absolutely eliminate) intra-batch
-    # signal drift and systematic inter-batch variations caused by
-    # instrument fluctuations and column aging.
-    # **Method Deconstruction (`correction.py`)**:
-    # Supports two complementary paradigms:
-    # 1. Classical Multi-Stage Fitting (QC-RLSC / SVR / RFSC):
-    # 1.1 Intra-batch: Uses QC samples as anchor points to fit a
-    # non-linear drift baseline via LOESS, or SVR/Random Forest.
-    # 1.2 Inter-batch: Executes global QC median alignment based on
-    # the intra-batch corrected matrix.
-    # 1.3 Internal OOF evaluation supports method selection while the
-    # global refit is used for final corrected output.
-    # 2. Global Model Correction (SERRF / RUV-III / WaveICA 2.0):
-    # 2.1 SERRF models cross-feature and injection-order effects with
-    # random forests; RUV-III removes unwanted factors estimated from
-    # QC/control features; WaveICA 2.0 removes injection-order-associated
-    # independent components from multiscale signal structure.
+    # Reduces injection-order drift and batch effects with a selected
+    # QC-anchored or global strategy. QC-RLSC (including robust and optional
+    # GCV span selection), QC-SVR, and QC-RFSC fit feature-wise drift from QC
+    # samples; multi-batch QC-anchored runs then apply QC-median alignment.
+    # SERRF borrows correlated features in a random-forest model, RUV-III
+    # removes estimated unwanted factors, and WaveICA 2.0 removes injection-
+    # order-associated independent components. In `Auto` mode, SERRF, RUV-III,
+    # WaveICA 2.0, standard/robust QC-RLSC, and QC-SVR are compared and the
+    # selected candidate alone is propagated. Blanks are excluded from fitting
+    # where applicable and receive frozen-model corrections in the output.
     # ========================================================================
     logger.info("Step 03: Signal Drift & Batch Effect Correction...")
     step3_dir = os.path.join(output_dir, "03_Corrected_Data")
@@ -164,16 +138,18 @@ def run_pipeline(
     # ========================================================================
     # QA-Step 03: Quality Assessment of Signal Corrected Data
     # **Evaluation Logic**:
-    # Verifies that technical error signatures are systematically
-    # suppressed, ensuring subsequent multivariate clustering (e.g., PCA)
-    # is driven by intrinsic biological traits rather than analytical
-    # artifacts.
+    # Assesses every returned correction stage, rather than only the final
+    # matrix. The same QC correlation, RSD, PCA, acquisition-order, and
+    # reference-feature diagnostics quantify drift reduction and batch
+    # alignment while exposing possible distortion of sample structure.
     # ========================================================================
     qa_step3_dir = os.path.join(output_dir, "QA_03_Corrected_Data")
     qa_engines_dict = {}
     for stage_name, stage_data in corrected_stages.items():
         logger.info(f"Executing Quality Assessment (QA) for: {stage_name}")
-        qa_corr_engine = MetaboIntAssessor(data=stage_data, pipeline_params=params)
+        qa_corr_engine = MetaboIntAssessor(
+            data=stage_data, pipeline_params=params
+        )
         qa_corr_engine.execute_assessment(
             output_dir=os.path.join(qa_step3_dir, stage_name)
         )
@@ -182,18 +158,11 @@ def run_pipeline(
     # ========================================================================
     # Step 04: Low-Quality Feature Filtering
     # **Purpose & Function**:
-    # Deeply purifies the feature matrix from the dual dimensions of
-    # technical reproducibility and biological relevance, permanently
-    # removing noise features contaminated or highly sensitive to
-    # instrument fluctuations.
-    # **Method Deconstruction (`filtering.py`)**:
-    # 1. Blank-to-QC Ratio Check: Compares the mean abundance in Blank
-    # samples to QC samples. Features exceeding the ratio threshold are
-    # removed to strip solvent background noise and column bleed.
-    # 2. QC RSD Control: Features with exceptionally poor reproducibility
-    # (High RSD in QC samples) are discarded. *(Note: Low-abundance features
-    # previously marked as MNAR are automatically exempted to prevent the
-    # misidentification of trace metabolites).*
+    # Removes features dominated by blank background (mean Blank/QC ratio
+    # above its tolerance) and technically irreproducible MAR features (QC RSD
+    # above its tolerance). Features previously routed to MNAR remain exempt
+    # from the QC-RSD screen so trace-level, left-censored signals are not
+    # discarded solely for expected low-abundance variability.
     # ========================================================================
     logger.info("Step 04: Low-Quality Feature Filtering...")
     step4_dir = os.path.join(output_dir, "04_Quality_Filtered")
@@ -207,9 +176,9 @@ def run_pipeline(
     # ========================================================================
     # QA-Step 04: Quality Assessment of Quality Filtered Data
     # **Evaluation Logic**:
-    # The final "health check" prior to imputation. Confirms that surviving
-    # features represent high-fidelity biological signals and that low
-    # Signal-to-Noise Ratio (SNR) dimensions have been safely truncated.
+    # Confirms the reproducibility and sample/QC structure of the feature set
+    # passed to imputation, with the retained-feature and removal-reason
+    # diagnostics documenting the blank and RSD decisions.
     # ========================================================================
     logger.info(
         "QA-Step 04: Quality Assessment on Low-Quality Feature Filtered Data..."
@@ -223,34 +192,28 @@ def run_pipeline(
     # ========================================================================
     # Step 05: Missing Value Imputation
     # **Purpose & Function**:
-    # Reconstructs matrix completeness using missing-mechanism-aware hybrid
-    # strategies based on topological classifications (MAR/MNAR).
-    # **Method Deconstruction (`imputation.py`)**:
-    # To prevent technical variance leakage between biological groups,
-    # imputation is strictly isolated.
-    # 1. **MAR (Random Missing)**: Managed via local estimations such as
-    # KNN, median, or probabilistic distributions. Includes an autonomous
-    # simulated masking and stratified NRMSE evaluation mechanism to
-    # dynamically select the optimal algorithm.
-    # 2. **MNAR (Systematic Missing)**: Supports QRILC or LOD-based
-    # fractional constant imputation. QRILC estimates underlying normal
-    # distributions using robust estimators (Median/MAD) and draws randomly
-    # from the truncated left tail, safely preserving natural variance in
-    # low-abundance regions.
+    # Applies separate, label-aware routes to the non-blank matrix. MNAR
+    # features use QRILC or row-, column-, or global LOD-fraction constants;
+    # MAR features use KNN, LLS, BPCA, MinProb, Median, or an `Auto` choice.
+    # Auto benchmarks KNN, LLS, BPCA, MinProb, and Median by stratified masking
+    # and reconstruction metrics before applying the selected method. Blank
+    # columns are not imputed, and the stage is safely skipped when no target
+    # values are missing.
     # ========================================================================
     logger.info("Step 05: Missing Value Imputation...")
     step5_dir = os.path.join(output_dir, "05_Imputation")
-    imp_engine = MetaboIntImputer(data=low_quality_filter_data, pipeline_params=params)
+    imp_engine = MetaboIntImputer(
+        data=low_quality_filter_data, pipeline_params=params
+    )
     imputed_data = imp_engine.execute_imputation(output_dir=step5_dir)
 
     # ========================================================================
     # QA-Step 05: Quality Assessment of Imputed Data
     # **Evaluation Logic**:
-    # Quantifies data distribution shifts pre- and post-imputation. Core
-    # metrics include Jensen-Shannon Divergence (JSD). Validates that the
-    # imputation strategy seamlessly blends into the original data
-    # distribution (KDE Overlay) without introducing artificial data cliffs
-    # or singular value clusters.
+    # Examines the completed matrix for distributional and structural shifts.
+    # The imputation passport records the selected MAR method and candidate
+    # benchmark results; QA compares observed, completed, and imputed-only
+    # values using distribution distances alongside the standard diagnostics.
     # ========================================================================
     logger.info("QA-Step 05: Quality Assessment of Imputated Data...")
     qa_step5_dir = os.path.join(output_dir, "QA_05_Imputed_Data")
@@ -260,20 +223,13 @@ def run_pipeline(
     # ========================================================================
     # Step 06: Data Normalization
     # **Purpose & Function**:
-    # Calibrates sample-wise systematic shifts and stabilizes
-    # heteroscedasticity across dynamic abundance ranges.
-    # **Method Deconstruction (`normalization.py`)**:
-    # 1. **Linear Scaling Strategies**: TIC, Median, or PQN (based on
-    # reference spectrum offset correction). Can be followed by a robust
-    # Log2 transformation.
-    # 2. **Distribution Alignment & Variance Stabilization**:
-    # Quantile Normalization: Forces all samples to share an identical
-    # global distribution.
-    # VSN: Uses a Numba-compiled L-BFGS-B optimizer to solve the maximum
-    # likelihood function, applying a generalized logarithm (glog)
-    # transformation to decouple the dependency between variance and
-    # mean, achieving optimal balance between noise suppression and
-    # biological signal preservation.
+    # Removes sample-wise scale effects and stabilizes intensity variance using
+    # robust-log-only, TIC, Median, PQN, MDFC, Quantile, or VSN processing.
+    # TIC/Median/PQN/MDFC are followed by robust Log2; Quantile aligns robust-
+    # logged distributions; VSN applies its intrinsic generalized log. `Auto`
+    # scores fixed candidates with QC RLE, QC variance/structure, and sample-
+    # structure guardrails, then selects a conservative valid method. Blank
+    # samples are permanently excluded from the normalized output.
     # ========================================================================
     logger.info("Step 06: Data Normalization...")
     step6_dir = os.path.join(output_dir, "06_Normalized_Data")
@@ -283,28 +239,24 @@ def run_pipeline(
     # ========================================================================
     # QA-Step 06: Quality Assessment of Normalized Data
     # **Evaluation Logic**:
-    # Comprehensively confirms the smoothing of sample-level systematic
-    # biases via Relative Log Expression (RLE) boxplots, MA-plots
-    # (monitoring abundance-dependent bias via MAD and Spearman correlation
-    # ), and eCDF distribution alignments.
+    # Verifies the selected normalization through RLE, MA, eCDF, PCA, and QC
+    # consistency diagnostics. The Auto summary, when applicable, preserves
+    # candidate scores and the rationale for the selected method.
     # ========================================================================
     logger.info("QA-Step 06: Quality Assessment of Normalized Data...")
     qa_step6_dir = os.path.join(output_dir, "QA_06_Norm_Data")
-    qa_norm_engine = MetaboIntAssessor(data=normalized_data, pipeline_params=params)
+    qa_norm_engine = MetaboIntAssessor(
+        data=normalized_data, pipeline_params=params
+    )
     qa_norm_engine.execute_assessment(output_dir=qa_step6_dir)
 
     # ========================================================================
     # Step 07: Sequential Audit Report Compilation
     # **Purpose & Function**:
-    # Synthesizes all quality control metrics, interception logs, and
-    # visual assets generated throughout the pipeline lifecycle into a
-    # highly readable, structured analytical report.
-    # **Method Deconstruction**:
-    # Extracts intermediate evaluation metrics stored within object
-    # metrics pools. Consolidates SVG vector graphics and diagnostic tables
-    # from each step, rendering them into professional Markdown and PDF
-    # comprehensive reports via the `weasyprint` engine, guaranteeing
-    # absolute data provenance and traceability.
+    # Consolidates stage metrics, QA metrics, tracking tables, and visual
+    # assets into the report workspace. The reporter renders comprehensive and
+    # brief Markdown reports and exports the configured PDF representation,
+    # preserving the evidence needed to audit each pipeline decision.
     # ========================================================================
     logger.info("Step 07: Sequential Audit Report Compilation...")
 
@@ -334,7 +286,9 @@ def run_pipeline(
         "raw_dataset": raw_data.dataset_metrics,
         "high_mv_feature_filtering": mv_filter_data.mv_filtering_metrics,
         "signal_correction": final_corr_data.correction_metrics,
-        "low_quality_feature_filtering": low_quality_filter_data.quality_filtering_metrics,
+        "low_quality_feature_filtering": (
+            low_quality_filter_data.quality_filtering_metrics
+        ),
         "missing_value_imputation": imputed_data.imputation_metrics,
         "normalization": normalized_data.normalization_metrics,
     }
@@ -343,7 +297,9 @@ def run_pipeline(
         "raw_dataset": qa_raw_engine.assessment_metrics,
         "high_mv_feature_filtering": qa_mv_filter_engine.assessment_metrics,
         **qa_corr_metrics,
-        "low_quality_feature_filtering": qa_low_quality_filter_engine.assessment_metrics,
+        "low_quality_feature_filtering": (
+            qa_low_quality_filter_engine.assessment_metrics
+        ),
         "missing_value_imputation": qa_imp_engine.assessment_metrics,
         "normalization": qa_norm_engine.assessment_metrics,
     }

@@ -1,13 +1,10 @@
-# src/pimqc/__init__.py
-"""
-Script purpose: Define the public package surface for pi-metaboqc.
+"""Public package API and runtime initialization for pi-metaboqc.
 
-This module re-exports the core MetaboInt container, dataset builder, full
-pipeline runner, and stage-specific processing classes used by applications
-and tutorials. It also provides the init() helper that prepares shared
-logging, hardware diagnostics, and resource paths before analysis begins.
-The import order keeps the user-facing API compact while leaving individual
-implementation details inside their dedicated modules.
+The module exposes the supported analysis entry points: the MetaboInt data
+container, dataset builder, stage processors, and end-to-end pipeline runner.
+It also initializes shared Loguru logging, progress-display settings, optional
+hardware diagnostics, and the Windows subprocess compatibility guard used by
+runtime dependencies.
 """
 
 import sys
@@ -18,21 +15,21 @@ from importlib.metadata import PackageNotFoundError, version
 from loguru import logger
 
 # Initialize Logger and Environment Check
-from . import io_utils as iu
+from .io import utils as iu
 
 # Core Data Structure
-from .core_classes import MetaboInt
+from .core import MetaboInt
 
 # Data Ingestion & Pipeline Management
-from .dataset_builder import build_dataset
+from .dataset.builder import build_dataset
 from .pipeline import run_pipeline
 
 # Processing Modules (Actors)
-from .assessment import MetaboIntAssessor
-from .correction import MetaboIntCorrector
-from .imputation import MetaboIntImputer
-from .normalization import MetaboIntNormalizer
-from .filtering import MetaboIntFilter
+from .processing.assessment import MetaboIntAssessor
+from .processing.correction import MetaboIntCorrector
+from .processing.imputation import MetaboIntImputer
+from .processing.normalization import MetaboIntNormalizer
+from .processing.filtering import MetaboIntFilter
 
 # Package Version
 try:
@@ -58,7 +55,9 @@ _IS_INITIALIZED = False
 
 
 def init(
-    check_hardware: bool = True, log_level: str = "DEBUG", show_progress: bool = True
+    check_hardware: bool = True,
+    log_level: str = "DEBUG",
+    show_progress: bool = True,
 ) -> None:
     """Explicitly initialize the pi-metaboqc runtime environment.
 
@@ -143,7 +142,9 @@ if sys.platform == "win32":
             is_probe = any(p in cmd_str_lower for p in safe_probes)
 
             # Heuristic to detect blind absolute path hunting.
-            is_hunting = is_probe and ("\\" in cmd_str_log or "/" in cmd_str_log)
+            is_hunting = is_probe and (
+                "\\" in cmd_str_log or "/" in cmd_str_log
+            )
 
             # 3. Controlled Logging.
             if is_probe:
