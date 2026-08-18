@@ -5,6 +5,7 @@ collect stage outputs, render templates, and assemble final project
 deliverables without exposing report-internal helper functions as public API.
 """
 
+from .models import ReportInput
 from .utils import NarrativeStatsReporter, VisualAssetReporter
 
-__all__ = ["NarrativeStatsReporter", "VisualAssetReporter"]
+__all__ = ["NarrativeStatsReporter", "ReportInput", "VisualAssetReporter"]

@@ -44,7 +44,7 @@ mpl.use("Agg")
 
 # Import internal modules after backend initialization
 import pimqc
-from pimqc.io import utils as iu
+from pimqc.io import ensure_directory, load_pipeline_config
 from pimqc.pipeline import run_pipeline
 
 
@@ -112,13 +112,13 @@ def main() -> None:
     """
     # 1. Parse configuration arguments
     args = parse_arguments()
-    logger.info(f"pimqc.__version__: {pimqc.__version__}")
 
     # 2. Setup Silent Mode (just show error logger)
     if args.quiet:
         pimqc.init(check_hardware=False, log_level="ERROR", show_progress=False)
     else:
         pimqc.init(check_hardware=True, log_level="INFO", show_progress=True)
+    logger.info(f"pimqc.__version__: {pimqc.__version__}")
 
     # 3. Path Normalization (The 'clean_xx' convention)
     # -------------------------------------------------------------------------
@@ -142,7 +142,7 @@ def main() -> None:
     # 5. Workspace Initialization
     try:
         # Safely create or verify the target output directory mount
-        iu._check_dir_exists(dir_path=clean_outdir, handle="makedirs")
+        ensure_directory(clean_outdir)
     except Exception as e:
         logger.error(f"Failed to initialize output workspace: {e}")
         sys.exit(1)
@@ -151,8 +151,7 @@ def main() -> None:
     try:
         logger.info("Ingesting configuration and raw data matrices...")
 
-        # Load analytical parameters via pimqc.io.utils
-        params = iu.load_pipeline_config(config_path=clean_config)
+        params = load_pipeline_config(config_path=clean_config)
 
         # Ingest metadata (Sample info, Batch, Injection Order)
         meta_df = pd.read_csv(clean_meta, header=[0])
@@ -172,17 +171,22 @@ def main() -> None:
     try:
         logger.info("Triggering algorithmic core. Processing...")
 
-        # Execute the unified runner
+        # Execute the unified runner and retain its structured in-memory result.
         # Data Builder -> MV-related Filtering -> Correction
         # -> Quality-related Filtering -> Imputation -> Normalization
         # -> Report Generation
 
-        run_pipeline(
+        pipeline_result = run_pipeline(
             meta_df=meta_df, int_df=int_df, params=params, output_dir=clean_outdir
         )
 
         logger.success("=" * 79)
         logger.success("Execution successful! Audit reports generated successfully.")
+        logger.success(
+            "Final normalized matrix: "
+            f"{pipeline_result.data.shape[0]} features x "
+            f"{pipeline_result.data.shape[1]} samples."
+        )
         logger.success(f"   --> {clean_outdir}")
         logger.success("=" * 79)
 

@@ -7,7 +7,7 @@
 {%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
 > **Ionization Mode:** {{ meta.get('mode', 'Unknown') }}<br>
 {%- endif %}
-> **Quality-control Engine:** [pi-metaboqc](https://github.com/PHOENIXcenter/pi-metaboqc) (v{{ raw_params.get('pi-metaboqc_version', '1.0.0') }})<br>
+> **Quality-control Engine:** [pi-metaboqc](https://github.com/PHOENIXcenter/pi-metaboqc) (v{{ meta.get('version', raw_params.get('pi-metaboqc_version', 'Unknown')) }})<br>
 
 
 ## 1. Performance During the Sequential Quality Control Pipeline
@@ -28,7 +28,7 @@ The sample cohort is strategically distributed across **{{ batch_info.get('batch
 Table: Detailed Batch and Injection Distribution
 {{ raw_dataset.get('batch_table', '') }}
 
-![**Global Experimental Acquisition Overview**](../01_Raw_Data/Global_Acquisition_Overview.svg){.full-width-image}
+![**Dataset Acquisition Dashboard**](../01_Raw_Data/Global_Acquisition_Overview.svg){.full-width-image}
 
 ### 1.2 High Missing Value Features Filtering
 
@@ -46,7 +46,7 @@ Subsequently, to remove irreproducible signals and instrument dropouts, feature-
 
 Out of the initial **{{ fw_ret.get('pre_mv_filter_count', 'N/A') }}** raw features, **{{ fw_cls.get('mar_count', 'N/A') }}** MAR and **{{ fw_cls.get('mnar_total', 'N/A') }}** MNAR features successfully met the stringency criteria and were retained (Retention rate: **{{ fw_ret.get('retention_rate_pct', 'N/A') }}**%).
 
-![**High-Missing Value Features Filtering Summary**](../02_MV_Filtered/MV_Classification_Dashboard.svg){.full-width-image}
+![**High-Missing-Value Filtering Dashboard**](../02_MV_Filtered/MV_Classification_Dashboard.svg){.full-width-image}
 
 ### 1.3 Signal Drift Correction
 
@@ -100,7 +100,8 @@ Signal correction was applied, but QC RSD metrics are currently unavailable.
 {% endif -%}
 {% if sc_stages | length > 0 -%}
 {%- set primary_algo = sc_stages[0].get('algorithm', 'Unknown') -%}
-{%- set is_auto = signal_correction.get('is_auto_mode') or sc_stages[0].get('is_auto_mode', False) -%}
+{%- set sc_selection = signal_correction.get('selection', {}) -%}
+{%- set is_auto = sc_selection.get('is_auto', False) -%}
 {% if is_auto %}
 **AUTO Correction Selection Dashboard**
 
@@ -112,7 +113,7 @@ Signal correction was applied, but QC RSD metrics are currently unavailable.
 {% else %}
 **Signal Drift Correction Dashboard: {{ primary_algo }}**
 
-![**Signal Drift Correction Dashboard**](../03_Corrected_Data/Correction_Dashboard_{{ primary_algo | replace(' ', '_') }}.svg){.full-width-image}
+![**Signal Correction Dashboard: {{ primary_algo }}**](../03_Corrected_Data/Correction_Dashboard_{{ primary_algo | replace(' ', '_') }}.svg){.full-width-image}
 {% endif %}{% endif %}
 ### 1.4 Low-quality Features Filtering
 {% set lq_params = low_quality_feature_filtering.get('pipeline_params', {}) -%}
@@ -150,79 +151,85 @@ Subsequently, to guarantee strict technical reproducibility, an RSD threshold of
 
 Ultimately, the low-quality feature filtering cascade yielded a robust, high-confidence matrix containing **{{ lq_post_rsd_total }}** purified metabolic features (**{{ lq_post_rsd.get('mar_count', 'N/A') }}** MAR and **{{ lq_post_rsd.get('mnar_count', 'N/A') }}** MNAR).
 
-![**Low-quality Features Filtering Summary**](../04_Quality_Filtered/Low-quality_Filtering_Dashboard.svg){.full-width-image}
+![**Low-Quality Feature Filtering Dashboard**](../04_Quality_Filtered/Low-quality_Filtering_Dashboard.svg){.full-width-image}
 
 ### 1.5 Missing Value Imputation
 
-{%- set imp_params = missing_value_imputation.get('pipeline_params', {}) -%}
-{%- set imp_strat = imp_params.get('strategies', {}) -%}
-{%- set imp_dist = imp_params.get('feature_distribution', {}) -%}
-{%- set imp_perf = imp_params.get('performance', {}) -%}
-{%- set imp_status = imp_params.get('imputation_status', 'Pending') -%}
+{% set imp_params = missing_value_imputation.get('pipeline_params', {}) %}
+{% set imp_strat = imp_params.get('strategies', {}) %}
+{% set imp_dist = imp_params.get('feature_distribution', {}) %}
+{% set imp_selection = imp_params.get('selection', {}) %}
+{% set imp_candidate_metrics = imp_params.get('candidate_metrics', {}) %}
+{% set imp_status = imp_params.get('imputation_status', 'Pending') %}
 
-{%- if imp_status == 'Skipped' %}
+{% if imp_status == 'Skipped' %}
 No missing values were detected in the target analytical matrix; therefore, the imputation module was bypassed and the matrix was propagated unchanged.
 
-{%- else %}
+{% else %}
 To reconstruct the incomplete data matrix without inducing analytical variance leakage, a stratified imputation architecture was implemented. The module processed a curated matrix containing **{{ imp_dist.get('mar_count', 'N/A') }}** MAR features and **{{ imp_dist.get('mnar_count', 'N/A') }}** MNAR features.
 
 **Deterministic Substitution for MNAR Features**
-For features classified as MNAR (biologically relevant non-detects below instrument sensitivity), a localized LOD approximation was utilized.
-{%- if imp_strat.get('mnar_fraction') is not none %}
-Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** minimum strategy with a constant fractional multiplier of {{ imp_strat.get('mnar_fraction', 'N/A') }}.
-{%- else %}
-Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** strategy.
-{%- endif %}
 
-{%- set requested_mar_method = imp_strat.get('mar_method_requested', 'auto') | upper -%}
-{%- set is_auto_imp = requested_mar_method == 'AUTO' -%}
+For features classified as MNAR (biologically relevant non-detects below instrument sensitivity), a localized LOD approximation was utilized.
+{% if imp_strat.get('mnar_fraction') is not none %}
+Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** minimum strategy with a constant fractional multiplier of {{ imp_strat.get('mnar_fraction', 'N/A') }}.
+{% else %}
+Missing values were deterministically substituted utilizing a **{{ imp_strat.get('mnar_method', 'row-wise') }}** strategy.
+{% endif %}
+
+{% set requested_mar_method = imp_selection.get('requested_method', 'Auto') | upper %}
+{% set selected_mar_method = imp_selection.get('selected_method', 'Unknown') %}
+{% set selected_mar_label = imp_selection.get('selected_label', selected_mar_method) %}
+{% set is_auto_imp = imp_selection.get('is_auto', requested_mar_method == 'AUTO') %}
 {% if is_auto_imp %}
 **Automatic MAR Imputation Selection**
 
-For structurally random MAR features, the pipeline executed a masked simulation benchmark to evaluate candidate algorithms. The algorithm selected for final execution was the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** method.
+For structurally random MAR features, the pipeline executed a masked simulation benchmark to evaluate candidate algorithms. The algorithm selected for final execution was the **{{ selected_mar_label }}** method.
 {% else %}
-**MAR Imputation Diagnostics**
+**Configured MAR Imputation Method**
 
-For structurally random MAR features, the configured **{{ imp_strat.get('mar_method_selected', imp_strat.get('mar_method_requested', 'Unknown')) }}** method was applied directly. The dashboard reports masked-reconstruction accuracy, distribution preservation, and sample-structure preservation for the applied method.
+For structurally random MAR features, the configured **{{ selected_mar_label }}** method was applied directly. Its dashboard reports masked-reconstruction accuracy, masked-value distribution fidelity, and sample-structure preservation.
 {% endif %}
 
-{%- set sel_perf = imp_perf.get(imp_strat.get('mar_method_selected', ''), {}) %}
-Specifically, the applied algorithm achieved a low-abundance normalized root mean square error (NRMSE) of {{ sel_perf.get('nrmse_low', 'N/A') }} and a global NRMSE of {{ sel_perf.get('nrmse_total', 'N/A') }}.
+{% set sel_perf = imp_candidate_metrics.get(selected_mar_method, {}) %}
+Specifically, the applied algorithm achieved a low-abundance normalized root mean square error (NRMSE) of {{ sel_perf.get('nrmse_low', 'N/A') }} and a global NRMSE of {{ sel_perf.get('nrmse_total', 'N/A') }}. The low-abundance stratum comprises masked observations from features whose median intensity is at or below the 25th percentile of all feature medians.
 
-![**MAR Imputation Dashboard**](../05_Imputation/Imputation_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
-{% if is_auto_imp %}
-
-**MAR Imputer Candidate NRMSE Dashboard**
-
-![**MAR Imputer Candidate NRMSE Dashboard**](../05_Imputation/Imputation_Candidate_Dashboard_{{ imp_strat.get('mar_method_selected', 'Unknown') }}.svg){.full-width-image}
-{% endif %}
+![**MAR Imputation Dashboard: {{ selected_mar_label }}**](../05_Imputation/Imputation_Dashboard_{{ selected_mar_label }}.svg){.full-width-image}
 
 **Masked-Value Distribution Fidelity**
 Distribution fidelity was evaluated within the same GMM-plus-noise masked simulation used for MAR method selection. Artificially masked values from QC and biological samples were pooled, and the reconstructed values were compared with their corresponding masked truth values.
-{%- set imp_jsd = sel_perf.get('jsd_total', 'N/A') -%}
-{%- set imp_wasserstein = sel_perf.get('wasserstein_normalized', 'N/A') %}
+{% set imp_jsd = sel_perf.get('jsd_total', 'N/A') %}
+{% set imp_wasserstein = sel_perf.get('wasserstein_normalized', 'N/A') %}
 
 The selected method yielded a Jensen-Shannon distance of **{{ imp_jsd | round(3) if imp_jsd is number else imp_jsd }}** and a normalized Wasserstein distance of **{{ imp_wasserstein | round(3) if imp_wasserstein is number else imp_wasserstein }}** for the pooled masked values.
-{%- endif %}
+{% if is_auto_imp %}
+
+**MAR Imputation Candidate NRMSE Dashboard**
+
+The candidate dashboard compares masked-value reconstruction across the AUTO candidates; the asterisk identifies the selected method.
+
+![**MAR Imputation Candidate NRMSE Dashboard**](../05_Imputation/Imputation_Candidate_Dashboard_{{ selected_mar_label }}.svg){.full-width-image}
+{% endif %}
+{% endif %}
 
 ### 1.6 Normalization
 
 {%- set norm_params = normalization.get('pipeline_params', {}) -%}
 {%- set norm_strat = norm_params.get('strategies', {}) -%}
 {%- set norm_method = norm_strat.get('normalization_method', 'ROBUST_LOG_ONLY') | upper -%}
-{%- set requested_norm_method = norm_strat.get('requested_norm_method', norm_method) | upper -%}
+{%- set norm_selection = norm_params.get('selection', {}) -%}
+{%- set requested_norm_method = norm_selection.get('requested_method', norm_method) | upper -%}
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
 {%- set vsn_p = norm_params.get('vsn_parameters', {}) %}
-{%- set auto_sel = norm_params.get('auto_selection', {}) %}
-{%- set is_auto_norm = auto_sel or requested_norm_method == 'AUTO' %}
+{%- set is_auto_norm = norm_selection.get('is_auto', requested_norm_method == 'AUTO') %}
 
 Systematic analytical variation, including global concentration differences, dilution effects, and residual instrument sensitivity shifts, was addressed before downstream statistical analysis.
 {% if is_auto_norm %}
 **Automatic Normalization Selection**
 
-The normalization strategy was selected automatically from predefined log-only, sample-wise scaling, distribution-alignment, and variance-stabilizing candidates. Each candidate was evaluated on a common log-like view using four label-independent criteria: QC relative log expression (RLE) alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation. The robust Log2-only strategy served as the neutral reference for candidate scoring, while the sample structure term combined actual-sample neighborhood trustworthiness, distance-rank preservation, and distance-scale preservation. The selected strategy was **{{ auto_sel.get('selected_method', norm_method) | replace('_', ' ') }}**
-{%- if auto_sel.get('selected_score') is number %} with an overall score of **{{ auto_sel.get('selected_score') | round(3) }}**{%- endif -%}
-{%- if auto_sel.get('selection_margin') is number %} and a score margin of **{{ auto_sel.get('selection_margin') | round(3) }}**{%- endif %}.
+The normalization strategy was selected automatically from predefined log-only, sample-wise scaling, distribution-alignment, and variance-stabilizing candidates. Each candidate was evaluated on a common log-like view using four label-independent criteria: QC relative log expression (RLE) alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation. The robust Log2-only strategy served as the neutral reference for candidate scoring, while the sample structure term combined actual-sample neighborhood trustworthiness, distance-rank preservation, and distance-scale preservation. The selected strategy was **{{ norm_selection.get('selected_label', norm_selection.get('selected_method', norm_method)) | replace('_', ' ') }}**
+{%- if norm_selection.get('selected_score') is number %} with an overall score of **{{ norm_selection.get('selected_score') | round(3) }}**{%- endif -%}
+{%- if norm_selection.get('selection_margin') is number %} and a score margin of **{{ norm_selection.get('selection_margin') | round(3) }}**{%- endif %}.
 
 {%- elif norm_method == 'ROBUST_LOG_ONLY' %}
 **Robust Log2 Transformation Only**
@@ -247,7 +254,7 @@ To mitigate analytical baseline fluctuations across the injection sequence, the 
 {%- if is_log %} Following sample calibration, a robust Log2 transformation was applied to stabilize variance.{%- endif %}
 {%- endif %}
 
-**Score-Aligned Normalization Diagnostics**
+**Normalization Dashboard**
 {% if is_auto_norm %}
 The normalization dashboard summarizes the automatic method ranking through a weighted score-contribution panel and then visualizes the diagnostic evidence supporting the selected method.
 {%- else %}
@@ -261,14 +268,14 @@ Specifically, {% if is_auto_norm %}QC RLE alignment{% else %}QC relative log exp
     {%- set suffix = suffix ~ '_Log2' -%}
 {%- endif %}
 
-![**Normalization Summary Grid**](../06_Normalized_Data/Normalization_Dashboard_{{ suffix }}.svg){.full-width-image}
+![**Normalization Dashboard**](../06_Normalized_Data/Normalization_Dashboard_{{ suffix }}.svg){.full-width-image}
 
 ## 2. Global Data Quality Assessment
 
 {% set qa_base = raw_dataset.get('qa_assessments', {}) -%}
 {%- set corr_method = qa_base.get('correlation', {}).get('method', 'spearman') %}
 
-A continuous quality assessment (QA) framework was embedded throughout the pipeline to systematically monitor the data transformation process.
+A fixed QA suite is run for each stage snapshot to show how processing changed the data. Its dashboards track QC or batch correlation, QC and biological-sample RSD distributions, PCA structure, and multivariate outliers, with optional internal-standard and outlier-reference-feature diagnostics. Candidate scores and stage-specific evidence remain in their respective processing results rather than the QA suite.
 
 ### 2.1 Feature Reproducibility
 
@@ -282,7 +289,7 @@ The proportion of features with calculable pooled-QC RSD below 10% changed from 
 Table: Feature RSD Stability Summary
 {{ summary_tables.get('rsd', '') }}
 
-![**Feature RSD Distribution Grid**](assets/01_QC_Sample_RSD_Dashboard.svg){.full-width-image}
+![**Feature RSD Dashboard**](assets/01_QC_Sample_RSD_Dashboard.svg){.full-width-image}
 
 ### 2.2 Global Variance & Batch Effect Diagnosis
 
@@ -291,7 +298,7 @@ Principal Component Analysis (PCA) was performed (utilizing **{{ qa_base.get('pc
 Table: PCA Metrics
 {{ summary_tables.get('pca', '') }}
 
-![**PCA Variance Projection Grid**](assets/02_PCA_Scatter_Dashboard.svg){.full-width-image}
+![**PCA Dashboard**](assets/02_PCA_Scatter_Dashboard.svg){.full-width-image}
 
 ### 2.3 Systemic Sample Coherence
 
@@ -300,7 +307,7 @@ To ensure global sample coherence, pooled QC correlation profiles (**{{ corr_met
 Table: Pooled QC Correlation Statistics
 {{ summary_tables.get('correlation', '') }}
 
-![**Correlation Matrix Grid**](assets/{{ '03_Batch_Correlation_Dashboard.svg' if meta.get('is_multi_batch') else '03_QC_Correlation_Dashboard.svg' }}){.full-width-image}
+![**{{ 'Batch Correlation Dashboard' if meta.get('is_multi_batch') else 'QC Correlation Dashboard' }}**](assets/{{ '03_Batch_Correlation_Dashboard.svg' if meta.get('is_multi_batch') else '03_QC_Correlation_Dashboard.svg' }}){.full-width-image}
 
 ### 2.4 Multi-variate Outlier Diagnosis
 
@@ -316,4 +323,4 @@ Furthermore, structural integrity was cross-validated using Outlier Reference Fe
 Table: Classification of Detected Outliers
 {{ summary_tables.get('outliers', '') }}
 
-![**Multi-variate Outlier Diagnostics**](assets/04_Outlier_Diagnosis_Dashboard.svg){.full-width-image}
+![**Multivariate Outlier Dashboard**](assets/04_Outlier_Diagnosis_Dashboard.svg){.full-width-image}

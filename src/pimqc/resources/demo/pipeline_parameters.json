@@ -8,7 +8,7 @@
     "batch": "Batch",
     "inject_order": "Inject Order",
     "boundary": "IQR",
-    "global_seed": 123,
+    "global_seed": 0,
     "internal_standard": [
       "Phenylalanine-d5",
       "Choline-d4",

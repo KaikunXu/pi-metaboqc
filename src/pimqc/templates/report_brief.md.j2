@@ -20,21 +20,23 @@
 
 {%- set imp_params = missing_value_imputation.get('pipeline_params', {}) -%}
 {%- set imp_strat = imp_params.get('strategies', {}) -%}
+{%- set imp_selection = imp_params.get('selection', {}) -%}
 {%- set imp_status = imp_params.get('imputation_status', 'Pending') -%}
+{%- set imp_selected_label = imp_selection.get('selected_label', 'Unknown') -%}
 
 {%- set norm_params = normalization.get('pipeline_params', {}) -%}
 {%- set norm_strat = norm_params.get('strategies', {}) -%}
 {%- set norm_method = norm_strat.get('normalization_method', 'ROBUST_LOG_ONLY') | upper -%}
-{%- set requested_norm_method = norm_strat.get('requested_norm_method', norm_method) | upper -%}
+{%- set norm_selection = norm_params.get('selection', {}) -%}
+{%- set requested_norm_method = norm_selection.get('requested_method', norm_method) | upper -%}
 {%- set is_log = norm_strat.get('log_transform_active', False) %}
-{%- set auto_sel = norm_params.get('auto_selection', {}) -%}
-{%- set is_auto_norm = auto_sel or requested_norm_method == 'AUTO' %}
+{%- set is_auto_norm = norm_selection.get('is_auto', requested_norm_method == 'AUTO') %}
 
 > **Date Generated:** {{ meta.get('date', 'Unknown') }}<br>
 {%- if meta.get('mode', 'Unknown') not in ['None', 'N/A'] %}
 > **Ionization Mode:** {{ meta.get('mode', 'Unknown') }}<br>
 {%- endif %}
-> **Engine:** pi-metaboqc v{{ raw_params.get('pi-metaboqc_version', '1.0.2.alpha') }}
+> **Engine:** pi-metaboqc v{{ meta.get('version', raw_params.get('pi-metaboqc_version', 'Unknown')) }}
 
 ## 1. Global Pipeline Yield and Experimental Overview
 
@@ -60,11 +62,11 @@ The correction architecture reduced the median QC RSD from an initial baseline o
 {%- if imp_status == 'Skipped' %}
 Subsequently, missing-value imputation was bypassed because no missing values were detected in the target analytical matrix; the matrix was propagated unchanged.
 {%- else %}
-Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed using the **{{ imp_strat.get('mar_method_selected', 'Unknown') }}** algorithm to preserve global structural fidelity.
+Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed using **{{ imp_selected_label }}** to preserve global structural fidelity. Low-abundance NRMSE evaluates masked observations from features whose median intensity is at or below the 25th percentile of all feature medians.
 {%- endif %}
 
 {% if is_auto_norm %}
-Finally, global quantitative refinement used automatic selection of **{{ auto_sel.get('selected_method', norm_method) | replace('_', ' ') }}** normalization from predefined candidates. Selection was based on QC relative log expression (RLE) alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation relative to the robust-log reference{% if auto_sel.get('selected_score') is number %} (overall score: **{{ auto_sel.get('selected_score') | round(3) }}**){% endif %}.
+Finally, global quantitative refinement used automatic selection of **{{ norm_selection.get('selected_label', norm_selection.get('selected_method', norm_method)) | replace('_', ' ') }}** normalization from predefined candidates. Selection was based on QC relative log expression (RLE) alignment change, QC variance stabilization, QC structure distance improvement, and sample structure preservation relative to the robust-log reference{% if norm_selection.get('selected_score') is number %} (overall score: **{{ norm_selection.get('selected_score') | round(3) }}**){% endif %}.
 {% elif norm_method == 'ROBUST_LOG_ONLY' %}
 Finally, global quantitative refinement used a robust Log2 transformation without sample-wise normalization. QC relative log expression (RLE) alignment, QC variance stabilization, QC structure distance, and sample structure preservation diagnostics were generated for review.
 {% elif norm_method == 'VSN' %}
@@ -77,26 +79,26 @@ Finally, global quantitative refinement used **{{ norm_method }}** normalization
 
 ## 3. Global Data Quality Validation
 
-A continuous quality assessment (QA) framework was embedded throughout the pipeline to systematically monitor the data transformation process and verify the elimination of technical biases.
+A fixed QA suite is run for each stage snapshot to show how processing changed the data. It tracks QC or batch correlation, QC and biological-sample RSD distributions, PCA structure, and multivariate outliers, with optional internal-standard and outlier-reference-feature diagnostics. Candidate scores and stage-specific evidence remain in their respective processing results rather than the QA suite.
 
 ### 3.1 Feature Reproducibility Improvement
 
 {% set rsd_guardrail = rsd_guardrail | default({}) -%}
 Pooled-QC RSD was used to assess analytical precision, while biological-sample RSD was retained as a descriptive guardrail against compression of sample heterogeneity.
 {% if rsd_guardrail.get('available') -%}
-The proportion of features with calculable pooled-QC RSD below 10% increased from **{{ rsd_guardrail.get('raw_qc_low_pct') | round(1) }}%** in the raw matrix to **{{ rsd_guardrail.get('final_qc_low_pct') | round(1) }}%** after **{{ rsd_guardrail.get('final_stage') }}**. In contrast, the proportion of retained features with biological-sample RSD above 30% changed from **{{ rsd_guardrail.get('raw_actual_high_pct') | round(1) }}%** to **{{ rsd_guardrail.get('final_actual_high_pct') | round(1) }}%**, consistent with preservation of a broad sample-variation distribution rather than convergence toward pooled-QC precision.
+The proportion of features with calculable pooled-QC RSD below 10% changed from **{{ rsd_guardrail.get('raw_qc_low_pct') | round(1) }}%** in the raw matrix to **{{ rsd_guardrail.get('final_qc_low_pct') | round(1) }}%** after **{{ rsd_guardrail.get('final_stage') }}**. In contrast, the proportion of retained features with biological-sample RSD above 30% changed from **{{ rsd_guardrail.get('raw_actual_high_pct') | round(1) }}%** to **{{ rsd_guardrail.get('final_actual_high_pct') | round(1) }}%**, consistent with preservation of a broad sample-variation distribution rather than convergence toward pooled-QC precision.
 {% endif %}
 
-![**Feature RSD Distribution Grid**](assets/01_QC_Sample_RSD_Dashboard.svg){.full-width-image}
+![**Feature RSD Dashboard**](assets/01_QC_Sample_RSD_Dashboard.svg){.full-width-image}
 
 ### 3.2 Global Variance Alignment and Batch Effect Mitigation
 
-Principal Component Analysis (PCA) was performed to visualize the global variance projection. The spatial aggregation of pooled QC samples in the corrected space corroborates the successful removal of systematic instrument artifacts and the preservation of authentic biological variance.
+Principal Component Analysis (PCA) was performed to visualize the global variance projection. The dashboard shows whether pooled QC clustering and sample structure changed after preprocessing; these observations are interpreted alongside the stage-specific correction and normalization evidence.
 
-![**PCA Variance Projection Grid**](assets/02_PCA_Scatter_Dashboard.svg){.full-width-image}
+![**PCA Dashboard**](assets/02_PCA_Scatter_Dashboard.svg){.full-width-image}
 
 ### 3.3 Systemic Sample Coherence
 
 To ensure global sample coherence, pooled QC correlation profiles were tracked dynamically.
 
-![**Correlation Matrix Grid**](assets/{{ '03_Batch_Correlation_Dashboard.svg' if meta.get('is_multi_batch') else '03_QC_Correlation_Dashboard.svg' }}){.full-width-image}
+![**{{ 'Batch Correlation Dashboard' if meta.get('is_multi_batch') else 'QC Correlation Dashboard' }}**](assets/{{ '03_Batch_Correlation_Dashboard.svg' if meta.get('is_multi_batch') else '03_QC_Correlation_Dashboard.svg' }}){.full-width-image}

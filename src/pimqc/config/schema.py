@@ -6,8 +6,11 @@ They supply stage defaults, constrain method names and numerical options, and
 provide the normalized configuration surface consumed by every pipeline stage.
 """
 
-from typing import List, Dict, Union, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union
+
 from pydantic import BaseModel, Field, field_validator
+
+from ..constants import DEFAULT_RANDOM_SEED
 
 
 class MetaboIntConfig(BaseModel):
@@ -32,12 +35,12 @@ class MetaboIntConfig(BaseModel):
     batch: str = "Batch"
     inject_order: str = "Inject Order"
     boundary: Literal["IQR", "sigma"] = "IQR"
-    global_seed: int = Field(default=123, ge=0)
+    global_seed: int = Field(default=DEFAULT_RANDOM_SEED, ge=0)
     internal_standard: List[str] = Field(default_factory=list)
     outlier_ref_feat: List[str] = Field(default_factory=list)
     resort_inject_order: Union[Literal["Auto", "None"], bool] = "Auto"
     sample_dict: Dict[str, str] = Field(
-        default={
+        default_factory=lambda: {
             "Actual sample": "Sample",
             "Blank sample": "Blank",
             "QC sample": "QC",
@@ -56,7 +59,7 @@ class AssessorConfig(BaseModel):
         "Auto-scaling"
     )
 
-    # 1. Update fields with the correct default values (0.75 for IS, 0.5 for
+    # Update fields with the correct default values (0.75 for IS, 0.5 for
     # ORF)
     is_outlier_threshold: Union[float, int] = Field(
         default=0.75,
@@ -73,7 +76,7 @@ class AssessorConfig(BaseModel):
         ),
     )
 
-    # 2. Strict validation matching your architectural design
+    # Strict validation matching your architectural design
     @field_validator("is_outlier_threshold", "orf_outlier_threshold")
     @classmethod
     def validate_thresholds(cls, v: Union[float, int]) -> Union[float, int]:

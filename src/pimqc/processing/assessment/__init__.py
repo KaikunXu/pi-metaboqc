@@ -1,11 +1,15 @@
-"""Quality-assessment computation and visualization exports.
+"""Public quality-assessment computation and stage-execution API.
 
-MetaboIntAssessor calculates stage metrics and MetaboVisualizerAssessor renders
-their diagnostic figures. Keeping both exports together defines the supported
-quality-assessment interface used by the pipeline and report assembly.
+This package calculates assessment diagnostics and orchestrates their export.
+Figure construction is kept separate under :mod:`pimqc.plotting.assessment`
+so numerical code does not also define presentation responsibilities.
 """
 
-from .analysis import MetaboIntAssessor
-from .visualization import MetaboVisualizerAssessor
+from .analysis import AssessmentDiagnostics, MetaboIntAssessor
+from .runner import AssessmentStageRunner
 
-__all__ = ["MetaboIntAssessor", "MetaboVisualizerAssessor"]
+__all__ = [
+    "AssessmentDiagnostics",
+    "AssessmentStageRunner",
+    "MetaboIntAssessor",
+]

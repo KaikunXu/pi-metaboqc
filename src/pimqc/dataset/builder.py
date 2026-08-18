@@ -8,12 +8,14 @@ pipeline stage.
 """
 
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from loguru import logger
 from typing import Optional, Dict, Any
 
-from ..io import utils as iu
+from ..io import ensure_directory
+from ..runtime import log_execution_time
 from ..core.model import MetaboInt
 
 
@@ -258,14 +260,14 @@ class MetaboIntBuilder:
         """
         logger.info("Executing dataset health audit...")
 
-        # 1. Blank Samples Check
+        # Blank Samples Check
         if metabo_obj._blank.empty:
             logger.warning(
                 "[Audit] No Blank samples detected. Pipeline will skip Stage-2 "
                 "Blank/QC ratio filtering and degrade to QC RSD check only."
             )
 
-        # 2. Biological Groups Check
+        # Biological Groups Check
         if not self.bio_group or self.bio_group not in metabo_obj.columns.names:
             logger.warning(
                 "[Audit] No Biological Group information detected. "
@@ -273,7 +275,7 @@ class MetaboIntBuilder:
                 "imputation and filtering will fall back to QC-only rescue."
             )
 
-        # 3. Internal Standards (IS) Check
+        # Internal Standards (IS) Check
         if len(getattr(metabo_obj, "valid_is", [])) == 0:
             logger.warning(
                 "[Audit] No Internal Standards (IS) detected. "
@@ -281,7 +283,7 @@ class MetaboIntBuilder:
                 "diagnostics will rely solely on global PCA statistics."
             )
 
-        # 4. Outlier Reference Features (ORF) Check
+        # Outlier Reference Features (ORF) Check
         if len(getattr(metabo_obj, "valid_orf", [])) == 0:
             logger.info(
                 "[Audit] No Outlier Reference Features (ORF) detected. This is "
@@ -289,8 +291,8 @@ class MetaboIntBuilder:
                 "will be skipped."
             )
 
-        # 5. High-throughput Cohort Check (Batch Count > 15)
-        # Threshold set to 15 to match the visualizer's MathText threshold
+        # High-throughput Cohort Check (Batch Count > 15)
+        # Threshold set to 15 to match the plotter's MathText threshold
         n_batches = len(metabo_obj.attrs.get("batch_list", []))
         if n_batches > 15:
             logger.info(
@@ -299,7 +301,7 @@ class MetaboIntBuilder:
                 "alphanumeric mode for readability."
             )
 
-        # 6. Critical QC Density Check
+        # Critical QC Density Check
         if metabo_obj._qc.empty:
             logger.error(
                 "[Audit] FATAL: No QC samples detected! Subsequent correction "
@@ -373,9 +375,9 @@ class MetaboIntBuilder:
         ).notnull()
         self.intensity_dataframe = self.intensity_dataframe.loc[:, valid_mask]
 
-        # =================================================================
+        # =====================================================================
         # Zero-value detection and conversion
-        # =================================================================
+        # =====================================================================
         zero_mask = self.intensity_dataframe == 0
         zero_count = int(zero_mask.sum().sum())
 
@@ -396,7 +398,7 @@ class MetaboIntBuilder:
         self.intensity_dataframe = self.intensity_dataframe.astype(float)
 
         if output_dir:
-            iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
+            ensure_directory(output_dir)
             output_path = os.path.join(output_dir, "Raw_Data_Intensity.csv")
             self.intensity_dataframe.to_csv(
                 output_path, na_rep="NA", encoding="utf-8-sig"
@@ -425,32 +427,10 @@ class MetaboIntBuilder:
 
         self._audit_dataset_health(metabo_obj)
 
-        # Generate Visualizations if output directory is specified
-        if output_dir:
-            vis = MetaboVisualizerBuilder(builder_obj=metabo_obj)
-            try:
-                summary_grid = vis.plot_builder_summary_grid()
-                if summary_grid:
-                    diag_path = os.path.join(
-                        output_dir, "Global_Acquisition_Overview.svg"
-                    )
-                    vis.save_and_show_pw(
-                        pw_obj=summary_grid, file_path=diag_path
-                    )
-                    logger.info(
-                        "Global acquisition overview plot saved as: "
-                        f"{diag_path}"
-                    )
-            except Exception as e:
-                logger.error(f"Dataset builder visualization failed: {e}")
-
         return metabo_obj
 
 
-from .visualization import MetaboVisualizerBuilder
-
-
-@iu._exe_time
+@log_execution_time
 def build_dataset(
     meta_info: pd.DataFrame,
     int_df: pd.DataFrame,
@@ -465,4 +445,41 @@ def build_dataset(
         meta_info=meta_info, int_df=int_df, pipeline_params=pipeline_params
     )
 
-    return builder.execute_build(output_dir=output_dir)
+    metabo_obj = builder.execute_build(output_dir=output_dir)
+    if output_dir is not None:
+        _render_dataset_dashboard(metabo_obj, output_dir)
+    return metabo_obj
+
+
+def _render_dataset_dashboard(
+    metabo_obj: MetaboInt,
+    output_dir: str | os.PathLike[str],
+) -> None:
+    """Render the dataset overview as part of dataset execution.
+
+    Plotting is imported lazily so dataset validation and construction remain
+    usable without importing the plotting stack. Notebook display is handled
+    by ``save_and_show_pw`` when the same execution runs in Jupyter.
+    """
+    from ..plotting.dataset import DatasetPlotter
+
+    try:
+        plotter = DatasetPlotter(builder_obj=metabo_obj)
+        dashboard = plotter.plot_dataset_dashboard()
+        if dashboard is None:
+            logger.warning(
+                "Dataset dashboard was skipped because no plotting backend "
+                "was available."
+            )
+            return
+
+        overview_path = Path(output_dir) / "Global_Acquisition_Overview.svg"
+        plotter.save_and_show_pw(
+            pw_obj=dashboard,
+            file_path=str(overview_path),
+        )
+        logger.info(
+            f"Global acquisition overview plot saved as: {overview_path}"
+        )
+    except Exception as exc:
+        logger.error(f"Dataset dashboard rendering failed: {exc}")

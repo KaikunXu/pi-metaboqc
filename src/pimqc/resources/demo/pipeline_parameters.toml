@@ -33,8 +33,8 @@ inject_order = "Inject Order"
 # [String] Statistical method for determining outliers in Boxplots. Options: "IQR" or "sigma".
 boundary = "IQR"
 
-# [Integer] Global random seed. Ensures 100% reproducibility across Random Forest, GMM, PCA, etc.
-global_seed = 123 
+# [Integer] Base seed for deterministic random components and simulations.
+global_seed = 0
 
 # [Array] Target feature IDs acting as internal standards for drift tracking and outlier detection.
 internal_standard = [

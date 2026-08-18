@@ -6,24 +6,26 @@ It evaluates masked reconstruction, distribution fidelity, and sample-structure
 preservation, then records the selected strategy and imputed stage metrics.
 """
 
-import os
-import copy
 import math
-import numpy as np
-import pandas as pd
 from functools import cached_property
-
-
-import scipy.stats as stats
-from sklearn.impute import KNNImputer
-from loguru import logger
 from typing import Any, Callable, Dict, Optional
 
-from ...io import utils as iu
-from ...statistics import metrics as su
-from ...statistics import selection as selection_utils
-from ...core import model
+import numpy as np
+import pandas as pd
+import scipy.stats as stats
+from loguru import logger
+from sklearn.impute import KNNImputer
+
 from ...config import resolve_stage_config
+from ...constants import DEFAULT_RANDOM_SEED
+from ...core import model
+from ...runtime import log_execution_time
+from ...statistics import metrics as su
+from ...statistics import sample_structure as structure_stats
+from ...statistics import selection as selection_utils
+from ..stage import StageResult
+from .methods import IMPUTATION_METHODS
+from .runner import ImputationStageRunner
 
 
 class BayesianPCAImputer:
@@ -246,6 +248,20 @@ class MetaboIntImputer(model.MetaboInt):
     """Missing value imputation engine with hybrid stratified evaluation."""
 
     _metadata = ["attrs", "stats"]
+    _RUNTIME_CONFIG_KEYS = frozenset(
+        {
+            "mar_method",
+            "mnar_method",
+            "mnar_fraction",
+            "knn_neighbors",
+            "lls_neighbors",
+            "bpca_components",
+            "bpca_max_iter",
+            "bpca_tol",
+            "sim_mask_ratio",
+            "global_seed",
+        }
+    )
 
     def __init__(
         self,
@@ -314,33 +330,9 @@ class MetaboIntImputer(model.MetaboInt):
         """Return the class constructor for stable subclassing."""
         return MetaboIntImputer
 
-    def __finalize__(
-        self,
-        other: object,
-        method: Optional[str] = None,
-        **kwargs: object,
-    ) -> "MetaboIntImputer":
-        """Ensure custom metadata (attrs) is preserved safely."""
-        try:
-            super().__finalize__(other, method=method, **kwargs)
-        except ValueError:
-            pass  # Bypass array comparison ValueError during concat
-
-        if method == "concat" and hasattr(other, "objs"):
-            for obj in other.objs:
-                if hasattr(obj, "attrs") and obj.attrs:
-                    self.attrs = copy.deepcopy(obj.attrs)
-                    break
-        elif hasattr(other, "attrs"):
-            self.attrs = copy.deepcopy(other.attrs)
-        if hasattr(other, "stats"):
-            self.stats = copy.deepcopy(other.stats)
-
-        return self
-
-    # ====================================================================
+    # =========================================================================
     # Imputation-related Metrics
-    # ====================================================================
+    # =========================================================================
     def calc_imp_quality_metrics(
         self, raw_obj: model.MetaboInt, imp_obj: model.MetaboInt
     ) -> dict[str, Any]:
@@ -375,13 +367,13 @@ class MetaboIntImputer(model.MetaboInt):
             r_slice = raw_log[cols].values.flatten()
             i_slice = imp_log[cols].values.flatten()
 
-            # 1. Data Before Imputation (All)
+            # Data Before Imputation (All)
             obs = r_slice[~np.isnan(r_slice)]
 
-            # 2. Data After Imputation (All)
+            # Data After Imputation (All)
             imp_all = i_slice[~np.isnan(i_slice)]
 
-            # 3. Imputed Data (Patches only)
+            # Imputed Data (Patches only)
             mask_missing = np.isnan(r_slice)
             imp_only = i_slice[mask_missing]
             imp_only = imp_only[~np.isnan(imp_only)]
@@ -418,9 +410,9 @@ class MetaboIntImputer(model.MetaboInt):
 
         return metrics
 
-    # ====================================================================
+    # =========================================================================
     # Core Algorithms (Log2 Space)
-    # ====================================================================
+    # =========================================================================
     @staticmethod
     def impute_by_constant(
         df_log: pd.DataFrame, fraction: float = 1.0, imp_mode: str = "row"
@@ -446,7 +438,7 @@ class MetaboIntImputer(model.MetaboInt):
         linear_mins = np.exp2(raw_mins) - 1.0
         target_mins = np.log2((linear_mins * fraction) + 1.0)
 
-        # 3. Broadcast the computed minimums to fill NaNs
+        # Broadcast the computed minimums to fill NaNs
         if imp_mode in ("row", "row-wise", "row min"):
             return df_log.apply(lambda x: x.fillna(target_mins[x.name]), axis=1)
         else:
@@ -454,7 +446,9 @@ class MetaboIntImputer(model.MetaboInt):
 
     @staticmethod
     def impute_by_qrilc(
-        df_log: pd.DataFrame, tune_sigma: float = 1.0, global_seed: int = 123
+        df_log: pd.DataFrame,
+        tune_sigma: float = 1.0,
+        global_seed: int = DEFAULT_RANDOM_SEED,
     ) -> pd.DataFrame:
         """Impute missing values using QRILC logic for left-censored data.
 
@@ -555,7 +549,7 @@ class MetaboIntImputer(model.MetaboInt):
         arr_log = df_log.values
         res_arr = arr_log.copy()
 
-        # 1. Identify complete features to serve as the candidate neighbor pool
+        # Identify complete features to serve as the candidate neighbor pool
         complete_mask = ~np.isnan(arr_log).any(axis=1)
         complete_features = arr_log[complete_mask]
         n_complete = complete_features.shape[0]
@@ -590,7 +584,7 @@ class MetaboIntImputer(model.MetaboInt):
                 )
                 continue
 
-            # 2. Vectorized Pearson correlation to find closest complete
+            # Vectorized Pearson correlation to find closest complete
             # features
             A_obs = complete_features[:, obs_mask]
 
@@ -611,17 +605,17 @@ class MetaboIntImputer(model.MetaboInt):
             # useful for regression
             corr[valid_corr] = np.abs(cov[valid_corr] / denom[valid_corr])
 
-            # 3. Select top K neighbors
+            # Select top K neighbors
             top_k_idx = np.argsort(corr)[-safe_k:]
 
-            # 4. Construct matrices for Least Squares estimation
+            # Construct matrices for Least Squares estimation
             # A_mat: neighbors' observed values (Shape: n_neighbors x
             # n_observed)
             A_mat = A_obs[top_k_idx]
             # B_mat: neighbors' values at target's missing positions
             B_mat = complete_features[top_k_idx][:, missing_mask]
 
-            # 5. Solve linear system: A_mat.T * x = w_obs
+            # Solve linear system: A_mat.T * x = w_obs
             try:
                 # Used for numerical stability over matrix inverse
                 x, _, _, _ = np.linalg.lstsq(A_mat.T, w_obs, rcond=None)
@@ -678,7 +672,8 @@ class MetaboIntImputer(model.MetaboInt):
 
     @staticmethod
     def impute_by_minprob(
-        df_log: pd.DataFrame, global_seed: int = 123
+        df_log: pd.DataFrame,
+        global_seed: int = DEFAULT_RANDOM_SEED,
     ) -> pd.DataFrame:
         """Impute using a normal distribution to simulate values below LOD.
 
@@ -730,7 +725,7 @@ class MetaboIntImputer(model.MetaboInt):
         res_dfs = []
         global_fallback = None  # Lazy evaluation for edge cases
 
-        # 1. Impute QC using strictly QC context
+        # Impute QC using strictly QC context
         if not qc_cols.empty:
             res_qc = imp_func(df_slice[qc_cols], **kwargs)
             if res_qc.isna().any().any():
@@ -738,7 +733,7 @@ class MetaboIntImputer(model.MetaboInt):
                 res_qc = res_qc.combine_first(global_fallback[qc_cols])
             res_dfs.append(res_qc)
 
-        # 2. Impute Samples using strictly Sample context
+        # Impute Samples using strictly Sample context
         if not sam_cols.empty:
             res_sam = imp_func(df_slice[sam_cols], **kwargs)
             if res_sam.isna().any().any():
@@ -753,16 +748,16 @@ class MetaboIntImputer(model.MetaboInt):
         # Reconstruct matrix ensuring original column order
         return pd.concat(res_dfs, axis=1)[df_slice.columns]
 
-    # ====================================================================
+    # =========================================================================
     # Evaluation Logic (Hybrid Masking & Stratified NRMSE)
-    # ====================================================================
+    # =========================================================================
 
     @staticmethod
     def generate_gmm_noise_mask(
         df_log: pd.DataFrame,
         mask_ratio: float,
         noise_factor: float = 1.5,
-        global_seed: int = 123,
+        global_seed: int = DEFAULT_RANDOM_SEED,
         batch_array: Optional[np.ndarray] = None,
     ) -> pd.DataFrame:
         """
@@ -865,8 +860,13 @@ class MetaboIntImputer(model.MetaboInt):
         df_imp: pd.DataFrame,
         mask_df: pd.DataFrame,
         lod_q: float = 0.25,
-    ) -> dict[str, float]:
-        """Calculate NRMSE stratified by low and high abundance regions."""
+    ) -> tuple[dict[str, float], np.ndarray, np.ndarray]:
+        """Calculate NRMSE by feature-median abundance strata.
+
+        Masked observations inherit the median of their source feature. The
+        ``lod_q`` quantile of those feature medians separates the low and high
+        strata; it is an evaluation cutoff, not an analytical detection limit.
+        """
         feat_meds = df_true.median(axis=1).fillna(0)
         lod_val = feat_meds.quantile(lod_q)
 
@@ -884,7 +884,7 @@ class MetaboIntImputer(model.MetaboInt):
             rmse = np.sqrt(np.mean((t - p) ** 2))
             return float(rmse / (np.max(t) - np.min(t)))
 
-        # 1. Compile the metrics dictionary
+        # Compile the metrics dictionary
         metrics = {
             "NRMSE_Total": _get_nrmse(t_all, p_all),
             "NRMSE_Low": _get_nrmse(t_all[low_m], p_all[low_m]),
@@ -892,9 +892,10 @@ class MetaboIntImputer(model.MetaboInt):
             "Count_Low": int(np.sum(low_m)),
             "Count_High": int(np.sum(hi_m)),
             "Threshold": float(lod_val),
+            "Threshold_Quantile": float(lod_q),
         }
 
-        # 2. Return exactly 3 objects to match the unpacking logic
+        # Return exactly 3 objects to match the unpacking logic
         return metrics, t_all, p_all
 
     @staticmethod
@@ -934,7 +935,7 @@ class MetaboIntImputer(model.MetaboInt):
         target_cols: pd.Index,
         method: str,
         ratio: float = 0.05,
-        global_seed: int = 123,
+        global_seed: int = DEFAULT_RANDOM_SEED,
         batch_array: Optional[np.ndarray] = None,
     ) -> tuple:
         """Evaluate one MAR imputation candidate on an artificial mask."""
@@ -959,21 +960,25 @@ class MetaboIntImputer(model.MetaboInt):
             "LOWVALUEREF",
         ):
             imp_res = self._low_value_reference_impute(masked_df)
-        elif method in ("Prob", "prob", "MinProb", "minprob"):
+        else:
+            method_spec = IMPUTATION_METHODS.resolve(method)
+            method_key = method_spec.key
+
+        if method_key == "MINPROB":
             imp_res = self._apply_isolated(
                 masked_df, self.impute_by_minprob, global_seed=global_seed
             )
-        elif method in ("knn", "KNN"):
+        elif method_key == "KNN":
             k_val = self.attrs.get("knn_neighbors", 5)
             imp_res = self._apply_isolated(
                 masked_df, self.impute_by_knn, n_neighbors=k_val
             )
-        elif method in ("lls", "LLS"):
+        elif method_key == "LLS":
             k_val = self.attrs.get("lls_neighbors", 15)
             imp_res = self._apply_isolated(
                 masked_df, self.impute_by_lls, n_neighbors=k_val
             )
-        elif method in ("bpca", "BPCA"):
+        elif method_key == "BPCA":
             imp_res = self._apply_isolated(
                 masked_df,
                 self.impute_by_bpca,
@@ -981,13 +986,13 @@ class MetaboIntImputer(model.MetaboInt):
                 max_iter=self.attrs.get("bpca_max_iter", 100),
                 threshold=self.attrs.get("bpca_tol", 1e-4),
             )
-        elif method_key in ("QRILC", "QRLIC"):
+        elif method_key == "QRILC":
             imp_res = self._apply_isolated(
                 masked_df,
                 self.impute_by_qrilc,
                 global_seed=global_seed,
             )
-        else:
+        elif method_key == "MEDIAN":
             imp_res = self._apply_isolated(
                 masked_df,
                 lambda df: df.apply(lambda x: x.fillna(x.median()), axis=1),
@@ -998,7 +1003,7 @@ class MetaboIntImputer(model.MetaboInt):
             mar_data, imp_res, mask
         )
         dist_metrics = su.calc_distribution_distance_metrics(t_vals, p_vals)
-        structure_metrics = su.calc_sample_structure_preservation(
+        structure_metrics = structure_stats.calc_sample_structure_preservation(
             raw_obj=mar_data,
             transformed_obj=imp_res,
             sample_cols=target_cols,
@@ -1123,12 +1128,12 @@ class MetaboIntImputer(model.MetaboInt):
         idx_mar: pd.Index,
         target_cols: pd.Index,
         ratio: float = 0.05,
-        global_seed: int = 123,
+        global_seed: int = DEFAULT_RANDOM_SEED,
         batch_array: Optional[np.ndarray] = None,
     ) -> tuple:
         """Select the best MAR imputer from masked-reconstruction benchmarks."""
         candidates = ["KNN", "MinProb", "QRILC", "Median", "LLS", "BPCA"]
-        best_method = "KNN"
+        selected_method = "KNN"
         cache = {}
         reference_metrics, _, _ = self._evaluate_imputation_candidate(
             df_log=df_log,
@@ -1160,7 +1165,7 @@ class MetaboIntImputer(model.MetaboInt):
                 score_column="auto_score",
                 tie_breakers=(("nrmse_total", True), ("method", True)),
             )
-            best_method = str(score_df.iloc[0]["method"])
+            selected_method = str(score_df.iloc[0]["method"])
             for row in score_df.itertuples():
                 metrics = cache[row.method][0]
                 metrics["Reconstruction_Score"] = su.finite_or_nan(
@@ -1192,19 +1197,19 @@ class MetaboIntImputer(model.MetaboInt):
                     )
                 )
         else:
-            best_method = min(
+            selected_method = min(
                 cache,
                 key=lambda method: cache[method][0].get(
                     "NRMSE_Total", float("inf")
                 ),
             )
 
-        best_score = cache[best_method][0].get("Auto_Score", float("nan"))
+        best_score = cache[selected_method][0].get("Auto_Score", float("nan"))
         logger.info(
-            f"Optimal MAR algorithm selected: {best_method} "
+            f"Optimal MAR algorithm selected: {selected_method} "
             f"(score={best_score:.3f})"
         )
-        return best_method, cache
+        return selected_method, cache
 
     @cached_property
     def imputation_metrics(self) -> Dict[str, Any]:
@@ -1213,8 +1218,9 @@ class MetaboIntImputer(model.MetaboInt):
         Returns:
             dict: A structured dictionary of imputation metadata for reporting.
         """
-        mar_req = self.attrs.get("mar_requested", "auto")
-        mar_sel = self.attrs.get("selected_mar_method", "Unknown")
+        requested_method = self.attrs.get("requested_method", "auto")
+        selected_method = self.attrs.get("selected_method", "Unknown")
+        selected_label = self.attrs.get("selected_label", selected_method)
         mnar_meth = self.attrs.get("mnar_method", "row")
         mnar_frac = self.attrs.get("mnar_fraction", 0.5)
 
@@ -1257,12 +1263,16 @@ class MetaboIntImputer(model.MetaboInt):
         metrics = {
             "imputation_status": status,
             "strategies": {
-                "mar_method_requested": mar_req,
-                "mar_method_selected": mar_sel,
                 "mnar_method": mnar_meth,
                 "mnar_fraction": reported_mnar_frac,
             },
-            "performance": perf_dict,
+            "candidate_metrics": perf_dict,
+            "selection": {
+                "requested_method": requested_method,
+                "selected_method": selected_method,
+                "selected_label": selected_label,
+                "is_auto": bool(self.attrs.get("is_auto", False)),
+            },
             "feature_distribution": {
                 "mar_count": len(idx_mar),
                 "mnar_count": len(idx_mnar),
@@ -1273,49 +1283,25 @@ class MetaboIntImputer(model.MetaboInt):
 
         return metrics
 
-    @iu._exe_time
-    def execute_imputation(
-        self,
-        mar_method: str = None,
-        mnar_method: str = None,
-        mnar_fraction: float = None,
-        knn_neighbors: int = None,
-        lls_neighbors: int = None,
-        sim_ratio: float = None,
-        output_dir: str = None,
-    ) -> pd.DataFrame:
-        """Executes hybrid imputation and exports complete visualizations."""
-        # ====================================================================
-        # 1. Parameter Extraction & Priority Fallback
-        # ====================================================================
-        _mnar = mnar_method or self.attrs.get("mnar_method", "QRILC")
-        _frac = (
-            mnar_fraction
-            if mnar_fraction is not None
-            else self.attrs.get("mnar_fraction", 0.5)
-        )
-
-        _mar = mar_method or self.attrs.get("mar_method", "Auto")
-        _knn_k = (
-            knn_neighbors
-            if knn_neighbors is not None
-            else self.attrs.get("knn_neighbors", 5)
-        )
-        _lls_k = (
-            lls_neighbors
-            if lls_neighbors is not None
-            else self.attrs.get("lls_neighbors", 15)
-        )
+    def transform_imputation(self) -> StageResult["MetaboIntImputer"]:
+        """Perform imputation without writing files or rendering figures."""
+        # =====================================================================
+        # Parameter Extraction
+        # =====================================================================
+        # StageRunner resolves defaults, TOML settings, and call-time notebook
+        # overrides before this calculation-only method is reached.
+        _mnar = self.attrs.get("mnar_method", "QRILC")
+        _frac = self.attrs.get("mnar_fraction", 0.5)
+        requested_mar = self.attrs.get("mar_method", "Auto")
+        _mar = requested_mar
+        _knn_k = self.attrs.get("knn_neighbors", 5)
+        _lls_k = self.attrs.get("lls_neighbors", 15)
         _bpca_k = self.attrs.get("bpca_components", 2)
         _bpca_max_iter = self.attrs.get("bpca_max_iter", 100)
         _bpca_tol = self.attrs.get("bpca_tol", 1e-4)
-        _ratio = (
-            sim_ratio
-            if sim_ratio is not None
-            else self.attrs.get("sim_mask_ratio", 0.05)
-        )
+        _ratio = self.attrs.get("sim_mask_ratio", 0.05)
 
-        _seed = self.attrs.get("global_seed", 123)
+        _seed = self.attrs.get("global_seed", DEFAULT_RANDOM_SEED)
         target_cols = self.columns.difference(self._blank.columns)
         target_matrix = self.loc[:, target_cols]
 
@@ -1330,25 +1316,31 @@ class MetaboIntImputer(model.MetaboInt):
             imputed_obj.attrs["imputation_skip_reason"] = (
                 "No missing values detected in target samples."
             )
-            imputed_obj.attrs["selected_mar_method"] = "Not required"
-            imputed_obj.attrs["mar_requested"] = mar_method or self.attrs.get(
-                "mar_method", "auto"
-            )
+            imputed_obj.attrs["selected_method"] = "Not required"
+            imputed_obj.attrs["selected_label"] = "Not required"
+            imputed_obj.attrs["requested_method"] = requested_mar
+            imputed_obj.attrs["is_auto"] = False
             imputed_obj.attrs["mnar_method"] = "Not required"
             imputed_obj.attrs["mnar_fraction"] = None
             imputed_obj.attrs["candidate_metrics"] = {}
             imputed_obj.attrs["imputation_qa_metrics"] = {}
 
-            if output_dir:
-                iu._check_dir_exists(output_dir, handle="makedirs")
-                imputed_obj.to_csv(
-                    os.path.join(output_dir, "Imputed_Data_NotRequired.csv")
-                )
-
             logger.success(
                 "Missing value imputation skipped: no missing values found."
             )
-            return imputed_obj
+            return StageResult(
+                data=imputed_obj,
+                metrics=imputed_obj.imputation_metrics,
+                candidates={},
+                metadata={
+                    "requested_method": requested_mar,
+                    "selected_method": "Not required",
+                    "selected_label": "Not required",
+                    "is_auto": False,
+                    "idx_mar_count": 0,
+                    "skipped": True,
+                },
+            )
 
         batch_col = self.attrs.get("batch", "Batch")
         batch_array = target_cols.get_level_values(batch_col).values
@@ -1359,17 +1351,17 @@ class MetaboIntImputer(model.MetaboInt):
             else (f"{_mnar} (LOD={_frac}x)")
         )
 
-        _mar_clean = str(_mar).upper()
-        if _mar_clean in ("AUTO", "BEST"):
+        mar_spec = IMPUTATION_METHODS.resolve(_mar)
+        if mar_spec.key == "AUTO":
             mar_info = (
                 f"Auto (Evaluating KNN={_knn_k}, LLS (K={_lls_k}), "
                 f"BPCA (PCs={_bpca_k}), MinProb, Median)"
             )
-        elif _mar_clean == "KNN":
+        elif mar_spec.key == "KNN":
             mar_info = f"KNN (K={_knn_k})"
-        elif _mar_clean == "LLS":
+        elif mar_spec.key == "LLS":
             mar_info = f"LLS (K={_lls_k})"
-        elif _mar_clean == "BPCA":
+        elif mar_spec.key == "BPCA":
             mar_info = f"BPCA (PCs={_bpca_k}, MaxIter={_bpca_max_iter})"
         else:
             mar_info = f"{_mar}"
@@ -1381,9 +1373,9 @@ class MetaboIntImputer(model.MetaboInt):
 
         df_log = np.log2(self.astype(float).replace({0: np.nan}) + 1.0)
 
-        # ====================================================================
-        # 2. ROUTE A: MNAR -> Localized LOD Imputation or QRILC
-        # ====================================================================
+        # =====================================================================
+        # MNAR Route: Localized LOD Imputation or QRILC
+        # =====================================================================
         idx_mnar = pd.Index(self.attrs.get("idx_mnar", [])).intersection(
             df_log.index
         )
@@ -1406,14 +1398,14 @@ class MetaboIntImputer(model.MetaboInt):
         else:
             logger.info("MNAR index empty. Bypassing MNAR imputation.")
 
-        # ====================================================================
-        # 3. ROUTE B: MAR -> ML Simulation & Impute
-        # ====================================================================
+        # =====================================================================
+        # MAR Route: Candidate Evaluation and Imputation
+        # =====================================================================
         idx_mar = pd.Index(self.attrs.get("idx_mar", [])).intersection(
             df_log.index
         )
         cache, eval_met, t_vals, p_vals = {}, {}, [], []
-        is_auto = _mar in ("auto", "Auto", "Best", "best")
+        is_auto = mar_spec.key == "AUTO"
 
         if len(idx_mar) > 0:
             if is_auto:
@@ -1421,6 +1413,7 @@ class MetaboIntImputer(model.MetaboInt):
                     df_log, idx_mar, target_cols, _ratio, _seed, batch_array
                 )
                 eval_met, t_vals, p_vals = cache[_mar]
+                mar_spec = IMPUTATION_METHODS.resolve(_mar)
             else:
                 eval_met, t_vals, p_vals = self._evaluate_imputation_candidate(
                     df_log,
@@ -1435,19 +1428,19 @@ class MetaboIntImputer(model.MetaboInt):
             logger.info(f"Executing isolated '{_mar}' on MAR features.")
             mar_slice = df_log.loc[idx_mar, target_cols]
 
-            if _mar in ("Prob", "prob", "MinProb", "minprob"):
+            if mar_spec.key == "MINPROB":
                 mar_imp = self._apply_isolated(
                     mar_slice, self.impute_by_minprob, global_seed=_seed
                 )
-            elif _mar in ("knn", "KNN"):
+            elif mar_spec.key == "KNN":
                 mar_imp = self._apply_isolated(
                     mar_slice, self.impute_by_knn, n_neighbors=_knn_k
                 )
-            elif _mar in ("lls", "LLS"):
+            elif mar_spec.key == "LLS":
                 mar_imp = self._apply_isolated(
                     mar_slice, self.impute_by_lls, n_neighbors=_lls_k
                 )
-            elif _mar in ("bpca", "BPCA"):
+            elif mar_spec.key == "BPCA":
                 mar_imp = self._apply_isolated(
                     mar_slice,
                     self.impute_by_bpca,
@@ -1455,7 +1448,7 @@ class MetaboIntImputer(model.MetaboInt):
                     max_iter=_bpca_max_iter,
                     threshold=_bpca_tol,
                 )
-            elif str(_mar).upper() in ("QRILC", "QRLIC"):
+            elif mar_spec.key == "QRILC":
                 mar_imp = self._apply_isolated(
                     mar_slice,
                     self.impute_by_qrilc,
@@ -1469,9 +1462,9 @@ class MetaboIntImputer(model.MetaboInt):
 
             df_log.loc[idx_mar, target_cols] = mar_imp
 
-        # ====================================================================
-        # 4. FINALIZATION: Matrix Reconstruction & Passport Update
-        # ====================================================================
+        # =====================================================================
+        # Matrix Reconstruction and Passport Update
+        # =====================================================================
         final_log = pd.concat(
             [df_log[target_cols], df_log[self._blank.columns]], axis=1
         )[self.columns]
@@ -1481,13 +1474,13 @@ class MetaboIntImputer(model.MetaboInt):
 
         imputed_obj.attrs["pipeline_stage"] = "Imputation"
         imputed_obj.attrs["imputation_status"] = "Completed"
-        display_mar_method = (
-            MetaboVisualizerImputer._format_imputation_method_label(str(_mar))
-        )
-        imputed_obj.attrs["selected_mar_method"] = display_mar_method
-        imputed_obj.attrs["mar_requested"] = mar_method or self.attrs.get(
-            "mar_method", "auto"
-        )
+        display_mar_method = IMPUTATION_METHODS.display_name(_mar)
+        imputed_obj.attrs["selected_method"] = _mar
+        imputed_obj.attrs["selected_label"] = display_mar_method
+        # Keep the requested mode separate from the selected candidate.  AUTO
+        # reuses ``_mar`` for the winning method during candidate selection.
+        imputed_obj.attrs["requested_method"] = requested_mar
+        imputed_obj.attrs["is_auto"] = is_auto
         imputed_obj.attrs["mnar_method"] = _mnar
         imputed_obj.attrs["mnar_fraction"] = _frac
 
@@ -1531,126 +1524,55 @@ class MetaboIntImputer(model.MetaboInt):
             }
         imputed_obj.attrs["candidate_metrics"] = cand_mets
 
-        # ====================================================================
-        # 5. EXPORT & VISUALIZATIONS
-        # ====================================================================
+        # =====================================================================
+        # Quality Metrics and Result Assembly
+        # =====================================================================
         logger.info("Calculating imputation-related metrics...")
         qa_metrics = self.calc_imp_quality_metrics(
             raw_obj=self, imp_obj=imputed_obj
         )
         imputed_obj.attrs["imputation_qa_metrics"] = qa_metrics
 
-        if output_dir:
-            iu._check_dir_exists(output_dir, handle="makedirs")
-            imputed_obj.to_csv(
-                os.path.join(output_dir, f"Imputed_Data_{_mar}.csv")
-            )
+        benchmark_results = (
+            (cache if cache else {_mar: (eval_met, t_vals, p_vals)})
+            if len(idx_mar) > 0
+            else {}
+        )
+        return StageResult(
+            data=imputed_obj,
+            metrics=imputed_obj.imputation_metrics,
+            candidates=benchmark_results,
+            metadata={
+                "selected_method": _mar,
+                "selected_label": display_mar_method,
+                "requested_method": requested_mar,
+                "is_auto": is_auto,
+                "idx_mar_count": len(idx_mar),
+                "has_candidate_cache": bool(cache),
+                "skipped": False,
+            },
+        )
 
-            logger.info("Generating diagnostic plots for imputation...")
-            vis = MetaboVisualizerImputer(raw_obj=self, imp_obj=imputed_obj)
+    @log_execution_time
+    def run_imputation(
+        self,
+        output_dir: str | None = None,
+        **runtime_overrides: object,
+    ) -> StageResult["MetaboIntImputer"]:
+        """Return the structured missing-value imputation stage result.
 
-            if len(idx_mar) > 0:
-                benchmark_results = (
-                    cache if cache else {_mar: (eval_met, t_vals, p_vals)}
-                )
-                if is_auto:
-                    fig_grid = vis.plot_imputation_auto_dashboard(
-                        benchmark_results, best_method=_mar
-                    )
-                else:
-                    fig_grid = vis.plot_imputation_method_dashboard(
-                        metrics=eval_met,
-                        true_vals=t_vals,
-                        pred_vals=p_vals,
-                        method_name=display_mar_method,
-                    )
-                if fig_grid is not None:
-                    grid_path = os.path.join(
-                        output_dir,
-                        f"Imputation_Dashboard_{display_mar_method}.svg",
-                    )
-                    vis.save_and_show_pw(
-                        pw_obj=fig_grid,
-                        file_path=grid_path,
-                        width="60%" if is_auto else "45%",
-                    )
-                    logger.info(f"Imputation dashboard saved as: {grid_path}")
-
-                fig_candidates = (
-                    vis.plot_imputation_nrmse_appendix_grid(benchmark_results)
-                    if is_auto and cache
-                    else None
-                )
-                if fig_candidates is not None:
-                    candidate_path = os.path.join(
-                        output_dir,
-                        "Imputation_Candidate_Dashboard_"
-                        f"{display_mar_method}.svg",
-                    )
-                    vis.save_and_show_pw(
-                        pw_obj=fig_candidates,
-                        file_path=candidate_path,
-                        width="60%",
-                    )
-                    logger.info(
-                        "Imputer candidate NRMSE grid saved as: "
-                        f"{candidate_path}"
-                    )
-
-                # Manuscript-only article dashboards are retained for manual
-                # figure assembly and are not generated by routine execution.
-                # if is_auto:
-                #     reconstruction_article = (
-                #         vis.plot_imputation_reconstruction_article_dashboard(
-                #             results_dict=benchmark_results,
-                #             best_method=_mar,
-                #         )
-                #     )
-                #     if reconstruction_article is not None:
-                #         reconstruction_path = os.path.join(
-                #             output_dir,
-                #             (
-                #                 "Imputation_Reconstruction_Article_Dashboard_"
-                #                 f"{display_mar_method}.svg"
-                #             ),
-                #         )
-                #         vis.save_and_show_pw(
-                #             pw_obj=reconstruction_article,
-                #             file_path=reconstruction_path,
-                #             width="45%",
-                #         )
-                #         logger.info(
-                # "Imputation reconstruction article dashboard saved as: "
-                #             f"{reconstruction_path}"
-                #         )
-
-                # if is_auto:
-                #     preservation_article = (
-                #         vis.plot_imputation_preservation_article_dashboard(
-                #             results_dict=benchmark_results,
-                #             best_method=_mar,
-                #         )
-                #     )
-                #     if preservation_article is not None:
-                #         preservation_path = os.path.join(
-                #             output_dir,
-                #             (
-                #                 "Imputation_Preservation_Article_Dashboard_"
-                #                 f"{display_mar_method}.svg"
-                #             ),
-                #         )
-                #         vis.save_and_show_pw(
-                #             pw_obj=preservation_article,
-                #             file_path=preservation_path,
-                #             width="45%",
-                #         )
-                #         logger.info(
-                # "Imputation preservation article dashboard saved as: "
-                #             f"{preservation_path}"
-                #         )
-
+        Keyword settings use the same names as the imputation configuration,
+        such as ``mar_method``, ``mnar_method``, ``knn_neighbors``,
+        ``bpca_components``, ``sim_mask_ratio``, and ``global_seed``. They
+        take precedence over TOML settings and built-in defaults for this
+        processor instance.
+        """
+        runner = ImputationStageRunner(
+            processor=self,
+            output_dir=output_dir,
+            runtime_overrides=runtime_overrides,
+            allowed_override_keys=self._RUNTIME_CONFIG_KEYS,
+        )
+        result = runner.run()
         logger.success("Missing value imputation completed successfully.")
-        return imputed_obj
-
-
-from .visualization import MetaboVisualizerImputer
+        return result

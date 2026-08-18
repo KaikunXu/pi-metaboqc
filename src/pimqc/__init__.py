@@ -1,35 +1,36 @@
-"""Public package API and runtime initialization for pi-metaboqc.
+"""Expose the public pi-metaboqc API and explicit runtime initialization.
 
-The module exposes the supported analysis entry points: the MetaboInt data
-container, dataset builder, stage processors, and end-to-end pipeline runner.
-It also initializes shared Loguru logging, progress-display settings, optional
-hardware diagnostics, and the Windows subprocess compatibility guard used by
-runtime dependencies.
+The package root re-exports the core data model, processing stages, dataset
+builder, and pipeline entry point. Importing it is side-effect free; optional
+logging, progress, and hardware diagnostics are enabled only through ``init``.
 """
 
-import sys
-import shlex
-import subprocess
 import multiprocessing
 from importlib.metadata import PackageNotFoundError, version
+
 from loguru import logger
 
-# Initialize Logger and Environment Check
-from .io import utils as iu
+from .constants import DEFAULT_RANDOM_SEED
 
 # Core Data Structure
 from .core import MetaboInt
 
 # Data Ingestion & Pipeline Management
 from .dataset.builder import build_dataset
-from .pipeline import run_pipeline
+from .pipeline import PipelineResult, run_pipeline
 
 # Processing Modules (Actors)
 from .processing.assessment import MetaboIntAssessor
 from .processing.correction import MetaboIntCorrector
+from .processing.filtering import MetaboIntFilter
 from .processing.imputation import MetaboIntImputer
 from .processing.normalization import MetaboIntNormalizer
-from .processing.filtering import MetaboIntFilter
+from .runtime import (
+    configure_joblib_cpu_limit,
+    configure_logging,
+    print_hardware_diagnostics,
+    set_progress_enabled,
+)
 
 # Package Version
 try:
@@ -46,11 +47,11 @@ __all__ = [
     "MetaboIntNormalizer",
     "MetaboIntFilter",
     "build_dataset",
+    "PipelineResult",
     "run_pipeline",
+    "DEFAULT_RANDOM_SEED",
 ]
 
-# Global initialization state lock
-iu.setup_loguru_logger(level="INFO")
 _IS_INITIALIZED = False
 
 
@@ -58,6 +59,7 @@ def init(
     check_hardware: bool = True,
     log_level: str = "DEBUG",
     show_progress: bool = True,
+    preserve_existing_sinks: bool = False,
 ) -> None:
     """Explicitly initialize the pi-metaboqc runtime environment.
 
@@ -65,8 +67,17 @@ def init(
         pimqc.init(
             check_hardware=False,
             log_level="DEBUG",
-            show_progress=False
+            show_progress=False,
+            preserve_existing_sinks=False,
         )
+
+    Args:
+        check_hardware: Emit hardware diagnostics in the main process.
+        log_level: Minimum severity emitted by the package console sink.
+        show_progress: Enable progress indicators for long calculations.
+        preserve_existing_sinks: Retain Loguru sinks set by a host framework.
+            The default removes the default sink so notebooks and scripts emit
+            each package log record only once.
     """
     global _IS_INITIALIZED
 
@@ -75,118 +86,18 @@ def init(
         logger.debug("pi-metaboqc already initialized. Skipping init().")
         return
 
-    # Dynamically update logger level if a custom level is specified.
-    if log_level.upper() != "INFO":
-        iu.setup_loguru_logger(level=log_level.upper())
-
-    # Dynamically toggle progress bar visibility in the IO utilities.
-    iu.SHOW_PROGRESS = show_progress
+    configure_logging(
+        level=log_level,
+        preserve_existing_sinks=preserve_existing_sinks,
+    )
+    configure_joblib_cpu_limit()
+    set_progress_enabled(show_progress)
 
     # Guard: Hardware diagnostics can be time-consuming due to system
     # register probes. Execute only in MainProcess if permitted by user.
     if multiprocessing.current_process().name == "MainProcess":
         if check_hardware:
-            iu.print_hardware_diagnostics()
+            print_hardware_diagnostics()
 
     # Mark the global initialization state as complete.
     _IS_INITIALIZED = True
-
-
-# --- Monkey Patch for subprocess on Windows ----------------------------------
-if sys.platform == "win32":
-    import threading
-
-    # Global toggle to control WinError 2 logging noise from 3rd-party libs.
-    # Set to True for deep debugging, False for clean production logs.
-    LOG_WINERROR2 = False
-
-    _original_popen = subprocess.Popen
-    _popen_patch_lock = threading.local()
-
-    def _safe_popen(*args: object, **kwargs: object) -> subprocess.Popen:
-        """Intercept subprocess calls to prevent crashes and infinite loops.
-
-        Includes a thread-local lock to prevent RecursionError when logging
-        triggers nested subprocess calls, and filters WinError 2 noise.
-        """
-        # 1. Recursion Guard: If already patching in this thread, bypass.
-        if getattr(_popen_patch_lock, "is_active", False):
-            return _original_popen(*args, **kwargs)
-
-        # 2. Activate the recursion lock for the current thread.
-        _popen_patch_lock.is_active = True
-
-        try:
-            # Extract custom toggle safely without passing it to the OS.
-            log_winerror = kwargs.pop("log_winerror2", LOG_WINERROR2)
-
-            # Extract arguments and format for clean logging.
-            cmd_args = args[0] if args else kwargs.get("args", [])
-
-            if isinstance(cmd_args, list):
-                cmd_str_log = shlex.join([str(x) for x in cmd_args])
-                cmd_str_lower = str(cmd_args).lower()
-            else:
-                cmd_str_log = str(cmd_args)
-                cmd_str_lower = cmd_str_log.lower()
-
-            # Define safe probes commonly used by system libraries.
-            safe_probes = [
-                "--version",
-                "--list",
-                "powershell",
-                "win32_processor",
-                "msiexec",
-                "where",
-            ]
-            is_probe = any(p in cmd_str_lower for p in safe_probes)
-
-            # Heuristic to detect blind absolute path hunting.
-            is_hunting = is_probe and (
-                "\\" in cmd_str_log or "/" in cmd_str_log
-            )
-
-            # 3. Controlled Logging.
-            if is_probe:
-                # Hide hunting attempts if the WinError switch is off.
-                if log_winerror or not is_hunting:
-                    logger.debug(f"Permitted probe: {cmd_str_log}")
-
-                # Prevent flashing command prompt windows on Windows.
-                if "powershell" in cmd_str_lower:
-                    kwargs.setdefault("creationflags", 0x08000000)
-            else:
-                # Functional commands logged at DEBUG level.
-                logger.debug(f"Functional subprocess: {cmd_str_log}")
-
-            # Ensure text streams do not crash on decode errors.
-            err_keys = ("encoding", "text", "universal_newlines")
-            if any(k in kwargs for k in err_keys):
-                kwargs["errors"] = "ignore"
-
-            # 4. Execute original call with explicit error toggling.
-            try:
-                return _original_popen(*args, **kwargs)
-
-            except FileNotFoundError as e:
-                if getattr(e, "winerror", None) == 2:
-                    # Explicitly respect the WinError 2 toggle.
-                    if log_winerror:
-                        logger.debug("Suppressed: [WinError 2] Not found.")
-                else:
-                    logger.debug(f"Probe suppressed: {e}")
-                raise
-
-            except Exception as e:
-                if is_probe and log_winerror:
-                    logger.debug(f"Probe suppressed: {e}")
-                raise
-
-        finally:
-            # 5. Critical: Release the lock before returning or raising.
-            _popen_patch_lock.is_active = False
-
-    # Apply the monkey-patch to global subprocess module.
-    subprocess.Popen = _safe_popen
-    logger.debug("Windows subprocess patch with recursion lock applied.")
-# -----------------------------------------------------------------------------

@@ -1,10 +1,11 @@
-"""Input, output, logging, and runtime helper exports.
+"""Expose focused configuration and filesystem interfaces.
 
-The package provides the public configuration loader and Loguru setup function;
-the remaining utilities stay in io.utils for internal use by the pipeline,
-notebook, CLI, reporting, and processing modules.
+Configuration parsing and schema validation are separated from directory
+operations internally, while this package exports the small set of I/O helpers
+used by pipeline execution and public examples.
 """
 
-from .utils import load_pipeline_config, setup_loguru_logger
+from .config import load_pipeline_config
+from .filesystem import dir_tree, ensure_directory
 
-__all__ = ["load_pipeline_config", "setup_loguru_logger"]
+__all__ = ["dir_tree", "ensure_directory", "load_pipeline_config"]

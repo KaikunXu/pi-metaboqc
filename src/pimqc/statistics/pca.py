@@ -8,10 +8,12 @@ visualization modules consume these structured results for stage comparison.
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from scipy.stats import chi2, f
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 
+from ..constants import DEFAULT_RANDOM_SEED
 from . import metrics as su
 
 PCAWorkflowResult = dict[str, np.ndarray | pd.DataFrame | float | PCA]
@@ -25,7 +27,7 @@ class PCAEngine:
         n_components: int = 2,
         alpha: float = 0.05,
         od_method: str = "box",
-        global_seed: int = 123,
+        global_seed: int = DEFAULT_RANDOM_SEED,
     ) -> None:
         """
         Initialize the PCA computational engine.
@@ -56,14 +58,14 @@ class PCAEngine:
         on the current sample subset to prevent data leakage.
         """
 
-        # 1. Isolate target samples (Features as rows, Samples as columns)
+        # Isolate target samples (Features as rows, Samples as columns)
         sample_types = metabo_obj.columns.get_level_values(sample_type)
         valid_sample_mask = sample_types.isin([actual_label, qc_label])
         subset_df = metabo_obj.loc[:, valid_sample_mask].astype(float)
 
-        # ====================================================================
+        # =====================================================================
         # State-Aware Transient Log Transformation
-        # ====================================================================
+        # =====================================================================
         is_logged = metabo_obj.attrs.get("is_logged", False)
         norm_method = str(metabo_obj.attrs.get("norm_method", "None")).upper()
 
@@ -71,18 +73,18 @@ class PCAEngine:
         if not is_logged and norm_method not in ["VSN", "QUANTILE"]:
             subset_df = su.robust_log2_transform(subset_df)
 
-        # ====================================================================
+        # =====================================================================
         # Just-In-Time (JIT) Feature Scaling
-        # ====================================================================
+        # =====================================================================
         # Executed BEFORE transposition to properly scale feature rows
         subset_df = su.apply_feature_scaling(
             df=subset_df, method=scaling_method
         )
 
-        # 2. Transpose to (Samples x Features) required by scikit-learn PCA
+        # Transpose to (Samples x Features) required by scikit-learn PCA
         feature_dataframe = subset_df.transpose()
 
-        # 3. Missing Value (NaN) Handling for PCA
+        # Missing Value (NaN) Handling for PCA
         if feature_dataframe.isna().any().any():
             # Fill NaNs with the median of each feature
             feature_dataframe = feature_dataframe.apply(
@@ -92,7 +94,7 @@ class PCAEngine:
             if feature_dataframe.isna().any().any():
                 feature_dataframe = feature_dataframe.fillna(0)
 
-        # 4. Extract labels and format return
+        # Extract labels and format return
         labels = feature_dataframe.index.to_frame().reset_index(drop=True)
         feature_columns = list(
             set(feature_dataframe.index.names) - {sample_name}
@@ -310,10 +312,10 @@ if __name__ == "__main__":
 
     warnings.filterwarnings("ignore")
 
-    print("--- Testing PCAEngine with Mock Data ---")
+    logger.info("Testing PCAEngine with mock data...")
 
-    # 1. Generate Mock MultiIndex Data (Features as rows, Samples as columns)
-    np.random.seed(42)
+    # Generate Mock MultiIndex Data (Features as rows, Samples as columns)
+    rng = np.random.default_rng(DEFAULT_RANDOM_SEED)
     col_arrays = [
         ["Sample", "Sample", "Sample", "QC", "QC", "QC"],
         ["Batch1", "Batch1", "Batch2", "Batch1", "Batch1", "Batch2"],
@@ -325,16 +327,19 @@ if __name__ == "__main__":
     )
 
     # 100 features, 6 samples (log-normal distribution to mimic MS data)
-    mock_data = np.random.lognormal(mean=2.0, sigma=0.5, size=(100, 6))
+    mock_data = rng.lognormal(mean=2.0, sigma=0.5, size=(100, 6))
     mock_df = pd.DataFrame(mock_data, columns=multi_columns)
     mock_df.index = [f"Feature_{i}" for i in range(100)]
 
-    # 2. Initialize Engine
+    # Initialize Engine
     engine = PCAEngine(
-        n_components=2, alpha=0.05, od_method="box", global_seed=123
+        n_components=2,
+        alpha=0.05,
+        od_method="box",
+        global_seed=DEFAULT_RANDOM_SEED,
     )
 
-    # 3. Extract Features (Handling transformations automatically)
+    # Extract Features (Handling transformations automatically)
     features, labels = engine.extract_features(
         df=mock_df,
         sample_type="Sample Type",
@@ -342,25 +347,33 @@ if __name__ == "__main__":
         actual_label="Sample",
         qc_label="QC",
     )
-    print(
-        f"\n[1] Extracted Features Shape: {features.shape} (Samples x Features)"
+    logger.info(
+        "[1] Extracted features shape: {} (samples x features)",
+        features.shape,
     )
 
-    # 4. Run Core Workflow
+    # Run Core Workflow
     results = engine.run_pca_workflow(features=features)
 
-    print("\n[2] PCA Explained Variance:")
-    print(f"    PC1: {results['variance'][0] * 100:.2f}%")
-    print(f"    PC2: {results['variance'][1] * 100:.2f}%")
+    logger.info(
+        "[2] PCA explained variance: PC1={:.2f}%, PC2={:.2f}%",
+        results["variance"][0] * 100,
+        results["variance"][1] * 100,
+    )
 
-    print(f"\n[3] Statistical Limits (Alpha={engine.alpha}):")
-    print(f"    SD Limit (Hotelling's T2): {results['sd_limit']:.2f}")
-    print(f"    OD Limit (SPE / DModX): {results['od_limit']:.2f}")
+    logger.info(
+        "[3] Statistical limits (alpha={}): SD={:.2f}, OD={:.2f}",
+        engine.alpha,
+        results["sd_limit"],
+        results["od_limit"],
+    )
 
-    print("\n[4] Outlier Detection Metrics (Head):")
     # Attach sample names for readable output
     metrics_preview = results["metrics"].copy()
     metrics_preview.index = labels["Sample Name"]
-    print(metrics_preview[["SD", "OD", "Category"]].head())
+    logger.info(
+        "[4] Outlier detection metrics (head):\n{}",
+        metrics_preview[["SD", "OD", "Category"]].head().to_string(),
+    )
 
-    print("\n--- Test Completed Successfully ---")
+    logger.success("PCAEngine mock-data test completed successfully.")

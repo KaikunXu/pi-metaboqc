@@ -1,11 +1,10 @@
-"""Dataset construction and entry-level acquisition diagnostics.
+"""Public dataset-construction and input-validation API.
 
-The package exports the builder that validates metadata and intensity inputs,
-along with the corresponding visualization class used to document the initial
-project state before any processing stage changes the dataset.
+The package validates input tables, constructs the core ``MetaboInt`` matrix,
+and records acquisition metadata required by downstream processing. Dataset
+figures are intentionally exposed from :mod:`pimqc.plotting.dataset`.
 """
 
 from .builder import MetaboIntBuilder, build_dataset
-from .visualization import MetaboVisualizerBuilder
 
-__all__ = ["MetaboIntBuilder", "MetaboVisualizerBuilder", "build_dataset"]
+__all__ = ["MetaboIntBuilder", "build_dataset"]

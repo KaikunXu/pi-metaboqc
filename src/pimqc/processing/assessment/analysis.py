@@ -6,25 +6,46 @@ flags. It materializes reusable assessment metrics and tables for raw data and
 for each processed stage before their visual summaries are generated.
 """
 
-import os
-import copy
-import warnings
+from dataclasses import dataclass, field
+from functools import cached_property
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import pandas as pd
-from functools import cached_property
-
-
 from loguru import logger
-from typing import Dict, Any, Optional, Union
 
-from ...io import utils as iu
-from ...core import model
 from ...config import resolve_stage_config
+from ...constants import DEFAULT_RANDOM_SEED
+from ...core import model
+from ...runtime import log_execution_time
 from ...statistics import pca as pca_utils
+from ..stage import StageResult
 
-warnings.filterwarnings(action="ignore", category=FutureWarning)
-warnings.filterwarnings(action="ignore", category=RuntimeWarning)
+
+@dataclass(frozen=True)
+class AssessmentDiagnostics:
+    """Hold computed QA artifacts independently of filesystem output.
+
+    Assessment is observational: unlike filtering or normalization, it does
+    not produce a replacement intensity matrix. The diagnostic tables and
+    plot inputs are therefore the data payload carried by its ``StageResult``.
+    """
+
+    qc_correlation: pd.DataFrame = field(default_factory=pd.DataFrame)
+    batch_qc_correlation: pd.DataFrame = field(default_factory=pd.DataFrame)
+    pca: dict[str, Any] = field(default_factory=dict)
+    rsd_distribution: dict[str, dict[str, int]] = field(default_factory=dict)
+    internal_standard_evaluation: pd.DataFrame = field(
+        default_factory=pd.DataFrame
+    )
+    outlier_reference_evaluation: pd.DataFrame = field(
+        default_factory=pd.DataFrame
+    )
+    outliers: pd.DataFrame = field(default_factory=pd.DataFrame)
+    internal_standard_flags: pd.Series | None = None
+    outlier_reference_flags: pd.Series | None = None
+    internal_standard_data: pd.DataFrame | None = None
+    outlier_reference_data: pd.DataFrame | None = None
 
 
 class MetaboIntAssessor(model.MetaboInt):
@@ -32,6 +53,14 @@ class MetaboIntAssessor(model.MetaboInt):
 
     # Register "stats" for pandas metadata propagation
     _metadata = ["attrs", "stats"]
+    _RUNTIME_CONFIG_KEYS = frozenset(
+        {
+            "corr_method",
+            "scaling_method",
+            "is_outlier_threshold",
+            "orf_outlier_threshold",
+        }
+    )
 
     def __init__(
         self,
@@ -77,7 +106,7 @@ class MetaboIntAssessor(model.MetaboInt):
             },
         )
 
-        # 4. Flatten strictly into lifecycle attributes (SSOT)
+        # Flatten strictly into lifecycle attributes (SSOT)
         self.attrs.update(configs)
 
     @property
@@ -85,21 +114,8 @@ class MetaboIntAssessor(model.MetaboInt):
         """Override constructor to return MetaboIntAssessor."""
         return MetaboIntAssessor
 
-    def __finalize__(
-        self,
-        other: object,
-        method: Optional[str] = None,
-        **kwargs: object,
-    ) -> "MetaboIntAssessor":
-        """Explicitly preserve custom attributes and state during operations."""
-        super().__finalize__(other, method=method, **kwargs)
-        for name in self._metadata:
-            if hasattr(other, name):
-                setattr(self, name, copy.deepcopy(getattr(other, name)))
-        return self
-
     # =========================================================================
-    # Core Statistical Calculations (Refactored to Cached Properties)
+    # Cached Statistical Calculations
     # =========================================================================
 
     @cached_property
@@ -148,10 +164,10 @@ class MetaboIntAssessor(model.MetaboInt):
             if data.empty:
                 return {label: 0 for label in labels}
 
-            # ==========================================================
+            # =================================================================
             # State-Aware Pseudo-linearization (The Magic Trick)
             # Restore exponential distribution to calculate meaningful RSD
-            # ==========================================================
+            # =================================================================
             if self.attrs.get("is_logged", False):
                 # Use exp2 to reverse both robust_log and approximate VSN glog.
                 # Since RSD(C*X) == RSD(X), the constants don't affect the
@@ -209,7 +225,7 @@ class MetaboIntAssessor(model.MetaboInt):
         )
 
         # Initialize PCA engine with strict statistical bounds
-        _seed = self.attrs.get("global_seed", 123)
+        _seed = self.attrs.get("global_seed", DEFAULT_RANDOM_SEED)
         engine = pca_utils.PCAEngine(
             n_components=2, alpha=0.05, od_method="box", global_seed=_seed
         )
@@ -291,7 +307,7 @@ class MetaboIntAssessor(model.MetaboInt):
         threshold_key = f"{feat_type_lower}_outlier_threshold"
         raw_threshold = self.attrs.get(threshold_key, default_thresh)
 
-        # 1. Evaluate boundaries per individual reference feature
+        # Evaluate boundaries per individual reference feature
         res_dict = {}
         for feat in valid_feats:
             # Perfectly leveraging your inherited static method
@@ -306,7 +322,7 @@ class MetaboIntAssessor(model.MetaboInt):
         df_eval[f"{feat_type_upper}_Outliers_Count"] = df_eval.sum(axis=1)
         df_eval[f"{feat_type_upper}_Total_Count"] = len(valid_feats)
 
-        # 2. Dynamic Cutoff Resolution (Ratio vs Absolute)
+        # Dynamic Cutoff Resolution (Ratio vs Absolute)
         total_feats = len(valid_feats)
 
         if isinstance(raw_threshold, float) and 0.0 <= raw_threshold <= 1.0:
@@ -321,7 +337,7 @@ class MetaboIntAssessor(model.MetaboInt):
             )
             effective_cutoff = max(1, int(np.ceil(total_feats * 0.5)))
 
-        # 3. Final Adjudication
+        # Final Adjudication
         df_eval[f"{feat_type_upper}_Outlier_Flag"] = (
             df_eval[f"{feat_type_upper}_Outliers_Count"] >= effective_cutoff
         )
@@ -329,26 +345,24 @@ class MetaboIntAssessor(model.MetaboInt):
         return df_eval
 
     # =========================================================================
-    # Pipeline Execution Method
+    # Assessment Execution
     # =========================================================================
 
-    @iu._exe_time
-    def execute_assessment(
-        self, output_dir: str, legend_mode: str = "external"
-    ) -> None:
-        """Execute the entire QA workflow, save tables, and render plots.
-
-        ``legend_mode='external'`` keeps the standalone diagnostic plots free
-        of repeated legends and writes matching ``*_Legend.svg`` sidecars for
-        report assembly. Dashboard rendering remains intentionally local.
-        """
+    def compute_assessment(
+        self,
+    ) -> StageResult[AssessmentDiagnostics]:
+        """Compute QA diagnostics without writing files or rendering figures."""
         if self.empty:
             logger.warning(
                 "Empty matrix detected. Terminating QA assessment execution."
             )
-            return
+            return StageResult(
+                data=AssessmentDiagnostics(),
+                metrics={},
+                candidates=pd.DataFrame(),
+                metadata={"skipped": True},
+            )
 
-        # Configuration metadata extraction (Single Source of Truth)
         sample_type = self.attrs.get("sample_type", "Sample Type")
         batch = self.attrs.get("batch", "Batch")
         inject_order = self.attrs.get("inject_order", "Inject Order")
@@ -360,24 +374,17 @@ class MetaboIntAssessor(model.MetaboInt):
 
         corr_method = self.attrs.get("corr_method", "Spearman")
         bound_type = self.attrs.get("boundary", "IQR")
-        mask_flag = True
-
-        iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
-
         qc_data = self._qc
 
-        # Directly access the cached properties
         corr_mat = self.qc_corr_matrix
         batch_corr = self.batch_qc_corr_matrix
-        pca_res = self.pca_res
+        pca_result = self.pca_res
         rsd_data = self.rsd_distribution
 
-        # Evaluate reference features for both symmetrical dimensions
         is_eval = self.evaluate_reference_features(feat_type="IS")
         orf_eval = self.evaluate_reference_features(feat_type="ORF")
-        outliers_export = pca_res["outliers"].copy()
+        outliers_export = pca_result["outliers"].copy()
 
-        # Align and join Internal Standard assessment results
         if not is_eval.empty:
             is_eval_multi = is_eval.copy()
             is_eval_multi.columns = pd.MultiIndex.from_product(
@@ -394,7 +401,6 @@ class MetaboIntAssessor(model.MetaboInt):
                 is_eval_align, on=sample_name, how="left"
             )
 
-        # Align and join Outlier Reference Feature assessment results
         if not orf_eval.empty:
             orf_eval_multi = orf_eval.copy()
             orf_eval_multi.columns = pd.MultiIndex.from_product(
@@ -411,10 +417,6 @@ class MetaboIntAssessor(model.MetaboInt):
                 orf_eval_align, on=sample_name, how="left"
             )
 
-        out_path = os.path.join(output_dir, "QA_Diagnostics_Outliers.csv")
-        outliers_export.to_csv(out_path, encoding="utf-8-sig", na_rep="NA")
-
-        # Extract independent boolean masks for precise plot mapping
         is_flags = None
         if ("Internal Standard", "IS_Outlier_Flag") in outliers_export.columns:
             is_flags = (
@@ -436,203 +438,76 @@ class MetaboIntAssessor(model.MetaboInt):
                 .astype(bool)
             )
 
-        # Initialize Visualizer and generate plots
-        vis = MetaboVisualizerAssessor(self)
-        legend_mode = vis._validate_legend_mode(legend_mode)
-        batches = qc_data.columns.get_level_values(batch).unique()
-        qc_mask = (
-            np.triu(np.ones_like(corr_mat, dtype=bool), k=1)
-            if mask_flag
-            else None
-        )
-
-        # These panel files are report-assembly intermediates.  SVG retains
-        # editable vectors while avoiding duplicate PDF files before cleanup.
-        vis.save_and_close_fig(
-            fig=vis.plot_qc_corr_heatmap(
-                corr_matrix=corr_mat,
-                corr_mask=qc_mask,
-                batches=batches,
-                method=corr_method,
-                cluster="none",
-                show_colorbar=legend_mode != "external",
-                title_mode="stage" if legend_mode == "external" else "full",
+        valid_is = tuple(self.valid_is)
+        valid_orf = tuple(self.valid_orf)
+        diagnostics = AssessmentDiagnostics(
+            qc_correlation=corr_mat,
+            batch_qc_correlation=batch_corr,
+            pca=pca_result,
+            rsd_distribution=rsd_data,
+            internal_standard_evaluation=is_eval,
+            outlier_reference_evaluation=orf_eval,
+            outliers=outliers_export,
+            internal_standard_flags=is_flags,
+            outlier_reference_flags=orf_flags,
+            internal_standard_data=(
+                self.int_order_info(feat_type="IS") if valid_is else None
             ),
-            file_path=os.path.join(output_dir, "QC_Correlation_Heatmap"),
-            save_format=vis.QA_PANEL_SAVE_FORMAT,
-        )
-
-        vis.save_and_close_fig(
-            fig=vis.plot_batch_corr_heatmap(
-                batch_corr_matrix=batch_corr,
-                method=corr_method,
-                show_colorbar=legend_mode != "external",
-                title_mode="stage" if legend_mode == "external" else "full",
+            outlier_reference_data=(
+                self.int_order_info(feat_type="ORF") if valid_orf else None
             ),
-            file_path=os.path.join(output_dir, "Batch_Correlation_Heatmap"),
-            save_format=vis.QA_PANEL_SAVE_FORMAT,
+        )
+        qc_mask = np.triu(
+            np.ones_like(corr_mat, dtype=bool),
+            k=1,
+        )
+        return StageResult(
+            data=diagnostics,
+            metrics=self.assessment_metrics,
+            candidates=outliers_export,
+            metadata={
+                "skipped": False,
+                "sample_type": sample_type,
+                "batch": batch,
+                "inject_order": inject_order,
+                "qc_label": qc_label,
+                "actual_label": actual_label,
+                "correlation_method": corr_method,
+                "boundary_type": bound_type,
+                "qc_batches": qc_data.columns.get_level_values(batch).unique(),
+                "qc_mask": qc_mask,
+                "valid_is": valid_is,
+                "valid_orf": valid_orf,
+            },
         )
 
-        vis.save_and_close_fig(
-            fig=vis.plot_pca_scatter(
-                pca_df=pca_res["pca_scatter"],
-                pca_var=pca_res["pca_variance"],
-                pca_diagnostics=pca_res["diagnostics"],
-                sample_type=sample_type,
-                batch=batch,
-                qc_label=qc_label,
-                actual_label=actual_label,
-                legend_mode=legend_mode,
-                title_mode="stage" if legend_mode == "external" else "full",
-            ),
-            file_path=os.path.join(output_dir, "PCA_Scatter_QC_Sample"),
-            save_format=vis.QA_PANEL_SAVE_FORMAT,
-        )
+    @log_execution_time
+    def run_assessment(
+        self,
+        output_dir: str | None = None,
+        legend_mode: str = "external",
+        **runtime_overrides: object,
+    ) -> StageResult[AssessmentDiagnostics]:
+        """Compute, export, and render QA diagnostics through a stage runner.
 
-        vis.save_and_close_fig(
-            fig=vis.plot_sd_od_scatter(
-                metrics_df=pca_res["metrics_df"],
-                sd_limit=pca_res["sd_limit"],
-                od_limit=pca_res["od_limit"],
-                is_flags=is_flags,
-                orf_flags=orf_flags,
-                show_legend=legend_mode == "local",
-                legend_mode=legend_mode,
-                title_mode="stage" if legend_mode == "external" else "full",
-                annotate_thresholds=legend_mode == "external",
-            ),
-            file_path=os.path.join(output_dir, "Outlier_Scatter"),
-            save_format=vis.QA_PANEL_SAVE_FORMAT,
-        )
+        When ``output_dir`` is omitted, the complete structured result is
+        returned without CSV or visualization side effects. Supplying a
+        directory preserves the established artifacts while returning the same
+        result for downstream in-memory consumers. Call-time settings take
+        precedence over pipeline configuration and module defaults.
+        """
+        from .runner import AssessmentStageRunner
 
-        vis.save_and_close_fig(
-            fig=vis.plot_rsd_bar(
-                rsd_data=rsd_data,
-                qc_label=qc_label,
-                actual_label=actual_label,
-                legend_mode=legend_mode,
-                title_mode="stage" if legend_mode == "external" else "full",
-            ),
-            file_path=os.path.join(output_dir, "RSD_Barplot"),
-            save_format=vis.QA_PANEL_SAVE_FORMAT,
-        )
-
-        if legend_mode == "external":
-            corr_legend_prefix = (
-                "Batch_Correlation_Heatmap"
-                if self.attrs.get("is_multi_batch", False)
-                else "QC_Correlation_Heatmap"
-            )
-            vis.save_and_close_fig(
-                fig=vis.plot_correlation_colorbar_legend(method=corr_method),
-                file_path=os.path.join(
-                    output_dir, f"{corr_legend_prefix}_Legend"
-                ),
-                save_format=vis.QA_LEGEND_SAVE_FORMAT,
-                bbox_inches="tight",
-                pad_inches=0.03,
-            )
-            vis.save_and_close_fig(
-                fig=vis.plot_rsd_standalone_legend(
-                    qc_label=qc_label, actual_label=actual_label
-                ),
-                file_path=os.path.join(output_dir, "RSD_Barplot_Legend"),
-                save_format=vis.QA_LEGEND_SAVE_FORMAT,
-                bbox_inches="tight",
-                pad_inches=0.03,
-            )
-            vis.save_and_close_fig(
-                fig=vis.plot_pca_standalone_legend(
-                    pca_df=pca_res["pca_scatter"],
-                    sample_type=sample_type,
-                    batch=batch,
-                    qc_label=qc_label,
-                    actual_label=actual_label,
-                ),
-                file_path=os.path.join(
-                    output_dir, "PCA_Scatter_QC_Sample_Legend"
-                ),
-                save_format=vis.QA_LEGEND_SAVE_FORMAT,
-                bbox_inches="tight",
-                pad_inches=0.03,
-            )
-            vis.save_and_close_fig(
-                fig=vis.plot_outlier_standalone_legend(
-                    metrics_df=pca_res["metrics_df"],
-                    sd_limit=pca_res["sd_limit"],
-                    od_limit=pca_res["od_limit"],
-                    is_flags=is_flags,
-                    orf_flags=orf_flags,
-                    complete_categories=True,
-                    include_bar_diagnostics=False,
-                    include_thresholds=False,
-                ),
-                file_path=os.path.join(output_dir, "Outlier_Scatter_Legend"),
-                save_format=vis.QA_LEGEND_SAVE_FORMAT,
-                bbox_inches="tight",
-                pad_inches=0.03,
-            )
-
-        # Symmetrical execution of control chart visualization factory (PW Mode)
-        if len(self.valid_is) > 0:
-            is_data = self.int_order_info(feat_type="IS")
-            is_grid = vis.plot_ref_shewhart_chart(
-                ref_data=is_data,
-                valid_feats=self.valid_is,
-                sample_type=sample_type,
-                batch=batch,
-                inject_order=inject_order,
-                qc_label=qc_label,
-                actual_label=actual_label,
-                bound_type=bound_type,
-                ref_type="IS",
-            )
-            vis.save_and_show_pw(
-                pw_obj=is_grid,
-                show_plot=False,
-                file_path=os.path.join(output_dir, "IS_Shewhart_Chart"),
-            )
-
-        if len(self.valid_orf) > 0:
-            orf_data = self.int_order_info(feat_type="ORF")
-            orf_grid = vis.plot_ref_shewhart_chart(
-                ref_data=orf_data,
-                valid_feats=self.valid_orf,
-                sample_type=sample_type,
-                batch=batch,
-                inject_order=inject_order,
-                qc_label=qc_label,
-                actual_label=actual_label,
-                bound_type=bound_type,
-                ref_type="ORF",
-            )
-            vis.save_and_show_pw(
-                pw_obj=orf_grid,
-                show_plot=False,
-                file_path=os.path.join(output_dir, "ORF_Shewhart_Chart"),
-            )
-
-        fig_summary = vis.plot_assessor_summary_grid(
-            pca_res=pca_res,
-            rsd_data=rsd_data,
-            batch_corr=batch_corr,
-            corr_mat=corr_mat,
-            qc_mask=qc_mask,
-            batches=batches,
-            method=corr_method,
-            sample_type=sample_type,
-            batch=batch,
-            qc_label=qc_label,
-            actual_label=actual_label,
-            is_flags=is_flags,
-            orf_flags=orf_flags,
-        )
-
-        grid_path = os.path.join(output_dir, "QA_Summary_Dashboard.svg")
-        vis.save_and_show_pw(pw_obj=fig_summary, file_path=grid_path)
-
-        logger.info(f"Assessor summary dashboard saved as: {grid_path}")
-        logger.success("Data quality assessment completed.")
+        # Preserve the previous empty-input behavior: validate and compute, but
+        # do not create an otherwise empty artifact directory.
+        effective_output_dir = None if self.empty else output_dir
+        return AssessmentStageRunner(
+            self,
+            effective_output_dir,
+            legend_mode=legend_mode,
+            runtime_overrides=runtime_overrides,
+            allowed_override_keys=self._RUNTIME_CONFIG_KEYS,
+        ).run()
 
     def _extract_correlation_metrics(
         self,
@@ -722,7 +597,7 @@ class MetaboIntAssessor(model.MetaboInt):
             "rsd_distribution": {},
         }
 
-        # 1. Pooled QC Correlation Metrics
+        # Pooled QC Correlation Metrics
         qc_data = self._qc
         if not qc_data.empty:
             corr_mat = self.qc_corr_matrix
@@ -739,7 +614,7 @@ class MetaboIntAssessor(model.MetaboInt):
                 "corr_method", "Spearman"
             )
 
-        # 2. PCA and Multivariate Diagnostics
+        # PCA and Multivariate Diagnostics
         try:
             res = self.pca_res
             diag = res.get("diagnostics", {})
@@ -760,7 +635,7 @@ class MetaboIntAssessor(model.MetaboInt):
                 "centrality_shift": _safe_float(diag.get("centrality_shift")),
             }
 
-            # 3. Statistical Outlier Statistics
+            # Statistical Outlier Statistics
             metrics_df = res["metrics_df"]
             actual_sample_mask = (
                 metrics_df.index.get_level_values(sample_type) == actual_label
@@ -787,7 +662,7 @@ class MetaboIntAssessor(model.MetaboInt):
                 "extreme_samples": extreme_samples,
             }
 
-            # 4. Reference Features Outlier Metrics (IS & ORF)
+            # Reference Features Outlier Metrics (IS & ORF)
             # --- Evaluate Internal Standards (IS) ---
             is_df = self.evaluate_reference_features(feat_type="IS")
             if not is_df.empty:
@@ -870,9 +745,6 @@ class MetaboIntAssessor(model.MetaboInt):
         except Exception as e:
             logger.warning(f"QA metrics extraction encountered an error: {e}")
 
-        # 5. Feature RSD Distribution Statistics
+        # Feature RSD Distribution Statistics
         metrics["rsd_distribution"] = self.rsd_distribution
         return metrics
-
-
-from .visualization import MetaboVisualizerAssessor

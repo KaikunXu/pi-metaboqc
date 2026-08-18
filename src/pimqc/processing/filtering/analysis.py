@@ -6,7 +6,6 @@ by blank-to-QC abundance and QC RSD. It stores retained indices and tracking
 tables required by imputation, assessment, and reporting.
 """
 
-import os
 import copy
 import numpy as np
 import pandas as pd
@@ -16,15 +15,33 @@ from functools import cached_property
 from loguru import logger
 from typing import Dict, Any, Optional
 
-from ...io import utils as iu
+from ...runtime import log_execution_time
 from ...core import model
 from ...config import resolve_stage_config
+from ..stage import StageResult
+from .runner import (
+    MissingValueFilteringStageRunner,
+    QualityFilteringStageRunner,
+    SampleFilteringStageRunner,
+)
 
 
 class MetaboIntFilter(model.MetaboInt):
     """Filtering engine for metabolomics datasets with QC enforcement."""
 
     _metadata = ["attrs", "stats"]
+    _RUNTIME_CONFIG_KEYS = frozenset(
+        {
+            "sample_mv_tol",
+            "mv_group_tol",
+            "mv_qc_tol",
+            "mnar_group_mv_tol",
+            "mnar_qc_mv_tol",
+            "mnar_intensity_pct",
+            "qc_rsd_tol",
+            "blank_qc_ratio_tol",
+        }
+    )
 
     _INVALID_STRS = {
         "unknown",
@@ -84,7 +101,7 @@ class MetaboIntFilter(model.MetaboInt):
         if not hasattr(self, "stats"):
             self.stats = {}
 
-        # 1. Explicitly inherit runtime stats from upstream data object
+        # Explicitly inherit runtime stats from upstream data object
         input_data = data if data is not None else kwargs.get("data")
         if input_data is None and len(args) > 0:
             input_data = args[0]
@@ -92,7 +109,7 @@ class MetaboIntFilter(model.MetaboInt):
         if input_data is not None and hasattr(input_data, "stats"):
             self.stats.update(copy.deepcopy(input_data.stats))
 
-        # 2. Initialize runtime tracking if not inherited
+        # Initialize runtime tracking if not inherited
         if "feature_counts" not in self.stats:
             self.stats["feature_counts"] = {}
 
@@ -136,42 +153,29 @@ class MetaboIntFilter(model.MetaboInt):
             }
         )
 
+    def _audit_snapshot(self) -> dict[str, Any]:
+        """Copy runtime audit values into the explicit stage result."""
+        return copy.deepcopy(self.stats)
+
     @property
     def _constructor(self) -> type["MetaboIntFilter"]:
         """Override constructor to return MetaboIntFilter."""
         return MetaboIntFilter
 
-    def __finalize__(
-        self,
-        other: object,
-        method: Optional[str] = None,
-        **kwargs: object,
-    ) -> "MetaboIntFilter":
-        """Deepcopy custom attributes during pandas operations."""
-        self = super().__finalize__(other, method=method, **kwargs)
-        for name in self._metadata:
-            if hasattr(other, name):
-                setattr(self, name, copy.deepcopy(getattr(other, name)))
-        return self
-
     # =========================================================================
-    # 1. Sample-Level Filtering
+    # Sample-Level Filtering
     # =========================================================================
-    @iu._exe_time
-    def execute_sample_filtering(self, output_dir: str = None) -> pd.DataFrame:
-        """
-        Filters out high-MV samples by evaluating only QC and Actual Samples.
-        Generates tracking tables for sample-level attrition.
-        """
+    def transform_sample_filtering(self) -> StageResult[pd.DataFrame]:
+        """Filter high-MV samples and retain their attrition audit table."""
         batch = self.attrs.get("batch", "Batch")
         inject_order = self.attrs.get("inject_order", "Inject Order")
         sample_mv_tol = self.attrs.get("sample_mv_tol", 0.5)
 
-        # 1. Strictly evaluate only QC and Actual Samples via concatenation
+        # Strictly evaluate only QC and Actual Samples via concatenation
         df_check = pd.concat([self._qc, self._actual_sample], axis=1)
         sample_mv_rates = df_check.isna().mean(axis=0)
 
-        # 2. Determine status
+        # Determine status
         bad_mask = sample_mv_rates > sample_mv_tol
         bad_samples = sample_mv_rates[bad_mask].index
 
@@ -202,7 +206,7 @@ class MetaboIntFilter(model.MetaboInt):
 
         df_filtered = self.loc[:, retained_samples].copy()
 
-        # 3. Physically reorder the remaining columns by injection sequence
+        # Physically reorder the remaining columns by injection sequence
         sort_levels = [
             lvl
             for lvl in [batch, inject_order]
@@ -211,21 +215,34 @@ class MetaboIntFilter(model.MetaboInt):
         if sort_levels:
             df_filtered = df_filtered.sort_index(axis=1, level=sort_levels)
 
-        if output_dir:
-            iu._check_dir_exists(output_dir, handle="makedirs")
-            df_filtered.to_csv(
-                os.path.join(output_dir, "Filtered_Data_High-MV_Samples.csv")
-            )
-            track_df.to_csv(
-                os.path.join(
-                    output_dir, "Filtering_Tracking_High-MV_Samples.csv"
-                )
-            )
+        return StageResult(
+            data=df_filtered,
+            candidates=track_df,
+            metadata={"dropped_samples": bad_samples},
+            audit_tables={"sample_tracking": track_df},
+        )
 
-        return df_filtered
+    @log_execution_time
+    def run_sample_filtering(
+        self,
+        output_dir: str | None = None,
+        **runtime_overrides: object,
+    ) -> StageResult[pd.DataFrame]:
+        """Return the structured sample-filtering stage result.
+
+        Named overrides take precedence over pipeline configuration and module
+        defaults. This stage accepts ``sample_mv_tol``.
+        """
+        runner = SampleFilteringStageRunner(
+            self,
+            output_dir,
+            runtime_overrides=runtime_overrides,
+            allowed_override_keys=frozenset({"sample_mv_tol"}),
+        )
+        return runner.run()
 
     # =========================================================================
-    # 2. Feature-Level Missing Value Classification
+    # Feature-Level Missing Value Classification
     # =========================================================================
 
     def _get_valid_bio_groups(self) -> list[object]:
@@ -249,7 +266,7 @@ class MetaboIntFilter(model.MetaboInt):
                 valid_bio_groups.append(group)
         return valid_bio_groups
 
-    @iu._exe_time
+    @log_execution_time
     def classify_missing_types(self) -> tuple[pd.Index, pd.Index, pd.Index]:
         """Classifies features with strict QC enforcement and dynamic tol."""
         total_missing = self.isna().sum().sum()
@@ -282,7 +299,7 @@ class MetaboIntFilter(model.MetaboInt):
             idx_mnar_group = pd.Index([])
             valid_bio_groups = self._get_valid_bio_groups()
 
-            # 1. Group Rescue (Tier 1 - Optimal)
+            # Group Rescue (Tier 1 - Optimal)
             if valid_bio_groups:
                 na_rate_group = self.isna().T.groupby(level=bio_group).mean().T
                 na_rate_valid = na_rate_group[valid_bio_groups]
@@ -291,7 +308,7 @@ class MetaboIntFilter(model.MetaboInt):
                 ) & (na_rate_valid <= mv_group_tol).any(axis=1)
                 idx_mnar_group = self.index[cond_group_mnar]
 
-            # 2. QC Rescue (Enforced QC standard)
+            # QC Rescue (Enforced QC standard)
             df_qc = self.loc[:, qc_mask]
             qc_na_rate = df_qc.isna().mean(axis=1)
             qc_median = df_qc.median(axis=1)
@@ -311,7 +328,7 @@ class MetaboIntFilter(model.MetaboInt):
 
             idx_mnar_all = idx_mnar_group.union(idx_mnar_qc)
 
-            # 3. Base Health (Tiered Degradation)
+            # Base Health (Tiered Degradation)
             if valid_bio_groups:
                 cond_healthy = (na_rate_valid <= mv_group_tol).any(axis=1)
             else:
@@ -337,15 +354,15 @@ class MetaboIntFilter(model.MetaboInt):
             return empty_idx, empty_idx, empty_idx
 
     # =========================================================================
-    # 3. Filtering Execution Flow
+    # Filtering Execution Flow
     # =========================================================================
 
-    @iu._exe_time
-    def execute_mv_filtering(self, output_dir: str = None) -> pd.DataFrame:
-        """Orchestrates Stage-1 MV filtering and exports diagnostics."""
+    def transform_mv_filtering(self) -> StageResult[pd.DataFrame]:
+        """Classify missingness and retain accepted feature classes."""
         # Execute sample filtering before feature-level missingness checks.
         # Update current instance data with sample-filtered dataframe
-        df_clean_samples = self.execute_sample_filtering(output_dir)
+        sample_result = self.transform_sample_filtering()
+        df_clean_samples = sample_result.data
         self._update_inplace(df_clean_samples)
 
         feature_counts = self.stats["feature_counts"]
@@ -395,24 +412,42 @@ class MetaboIntFilter(model.MetaboInt):
         )
         self.stats["stage1_tracking"] = df_tracking
 
-        if output_dir:
-            iu._check_dir_exists(output_dir, handle="makedirs")
-            df_final.attrs["pipeline_stage"] = "High-missing values filtering"
-            df_final.to_csv(
-                os.path.join(output_dir, "Filtered_Data_High-MV_Features.csv")
-            )
-            df_tracking.to_csv(
-                os.path.join(
-                    output_dir, "Filtering_Tracking_High-MV_Features.csv"
-                )
-            )
+        df_final.attrs["pipeline_stage"] = "High-missing values filtering"
+        return StageResult(
+            data=df_final,
+            metrics=self.mv_filtering_metrics,
+            candidates=df_tracking,
+            metadata={
+                "qc_mask": qc_mask,
+                "valid_groups": valid_groups,
+                "sample_filtered": df_clean_samples,
+                "sample_tracking": sample_result.candidates,
+            },
+            audit_tables=self._audit_snapshot(),
+        )
 
-            self._execute_s1_visualization(
-                output_dir, df_tracking, qc_mask, valid_groups
-            )
+    @log_execution_time
+    def run_mv_filtering(
+        self,
+        output_dir: str | None = None,
+        **runtime_overrides: object,
+    ) -> StageResult[pd.DataFrame]:
+        """Return the structured missingness-filtering stage result.
 
-        logger.success("High-missing value feature filtering completed.")
-        return df_final
+        Supported settings are ``sample_mv_tol``, ``mv_group_tol``,
+        ``mv_qc_tol``, ``mnar_group_mv_tol``, ``mnar_qc_mv_tol``, and
+        ``mnar_intensity_pct``. They override pipeline configuration only for
+        the current processor instance.
+        """
+        runner = MissingValueFilteringStageRunner(
+            self,
+            output_dir,
+            runtime_overrides=runtime_overrides,
+            allowed_override_keys=self._RUNTIME_CONFIG_KEYS.difference(
+                {"qc_rsd_tol", "blank_qc_ratio_tol"}
+            ),
+        )
+        return runner.run()
 
     def _generate_s1_tracking_table(
         self,
@@ -490,53 +525,6 @@ class MetaboIntFilter(model.MetaboInt):
         df_tracking = pd.DataFrame(track_data).set_index("Feature_ID")
         return df_tracking.sort_values(by="_sort").drop(columns=["_sort"])
 
-    def _execute_s1_visualization(
-        self,
-        output_dir: str,
-        df_tracking: pd.DataFrame,
-        qc_mask: np.ndarray,
-        valid_groups: list[object],
-    ) -> None:
-        """Helper for orchestrating dashboard generation."""
-        vis = MetaboVisualizerFilter(self)
-
-        active_base_tol = self.attrs.get(
-            "mv_group_tol" if valid_groups else "mv_qc_tol", 0.5
-        )
-
-        mnar_int_threshold = None
-        if qc_mask.any():
-            mnar_intensity_pct = self.attrs.get("mnar_intensity_pct", 0.1)
-            raw_threshold = (
-                self.loc[:, qc_mask].median(axis=1).quantile(mnar_intensity_pct)
-            )
-            mnar_int_threshold = np.log2(raw_threshold + 1)
-
-        fig_grid = vis.plot_mv_filtering_summary_grid(
-            tracking_df=df_tracking,
-            active_base_tol=active_base_tol,
-            mnar_group_mv_tol=self.attrs.get("mnar_group_mv_tol", 0.8),
-            mnar_qc_mv_tol=self.attrs.get("mnar_qc_mv_tol", 0.2),
-            mnar_int_threshold=mnar_int_threshold,
-            mnar_intensity_pct=self.attrs.get("mnar_intensity_pct", 0.1),
-        )
-        if fig_grid:
-            grid_path = os.path.join(
-                output_dir, "MV_Classification_Dashboard.svg"
-            )
-            vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
-            logger.info(
-                f"High-MV Filter summary dashboard saved as: {grid_path}"
-            )
-
-        # article_grid = vis.plot_high_mv_filter_article_dashboard()
-        # if article_grid:
-        #     article_path = os.path.join(
-        #         output_dir, "High_MV_Filter_Article_Dashboard.svg"
-        #     )
-        #     vis.save_and_show_pw(pw_obj=article_grid, file_path=article_path)
-        #     logger.info(f"High-MV article dashboard saved as: {article_path}")
-
     @cached_property
     def mv_filtering_metrics(self) -> Dict[str, Any]:
         """
@@ -546,7 +534,7 @@ class MetaboIntFilter(model.MetaboInt):
         feature_counts = self.stats.get("feature_counts", {})
 
         # =====================================================================
-        # 1. Sample-wise Metrics Extraction
+        # Sample-wise Metrics Extraction
         # =====================================================================
         track_df = self.stats.get("sample_tracking", pd.DataFrame())
         sample_metrics = {}
@@ -573,7 +561,7 @@ class MetaboIntFilter(model.MetaboInt):
             }
 
         # =====================================================================
-        # 2. Feature-wise Metrics Extraction
+        # Feature-wise Metrics Extraction
         # =====================================================================
         valid_groups = self._get_valid_bio_groups()
         sample_type = self.attrs.get("sample_type", "Sample Type")
@@ -634,18 +622,16 @@ class MetaboIntFilter(model.MetaboInt):
         }
 
         # =====================================================================
-        # 3. Unified Export
+        # Unified Metric Assembly
         # =====================================================================
         return {"sample_wise": sample_metrics, "feature_wise": feature_metrics}
 
-    @iu._exe_time
-    def execute_quality_filtering(
+    def transform_quality_filtering(
         self,
         idx_mar: pd.Index | list[object] | None = None,
         idx_mnar: pd.Index | list[object] | None = None,
-        output_dir: str | None = None,
-    ) -> pd.DataFrame:
-        """Executes Stage-2 quality filter (Blank Ratio & QC RSD)."""
+    ) -> StageResult[pd.DataFrame]:
+        """Apply blank-ratio and QC-RSD feature-quality rules."""
         if idx_mar is None:
             idx_mar = self.attrs.get("idx_mar")
         if idx_mnar is None:
@@ -682,7 +668,7 @@ class MetaboIntFilter(model.MetaboInt):
         current_idx = self.index
         logger.info(f"Features before filtering: {len(current_idx)}")
 
-        # 1. Blank Ratio Quality Check
+        # Blank Ratio Quality Check
         if blank_mask.any() and qc_mask.any():
             qc_mean = self.loc[:, qc_mask].mean(axis=1)
             blank_mean = self.loc[:, blank_mask].mean(axis=1)
@@ -704,7 +690,7 @@ class MetaboIntFilter(model.MetaboInt):
 
         feature_counts["post_stage2_blank"] = len(current_idx)
 
-        # 2. QC RSD Quality Check
+        # QC RSD Quality Check
         if qc_mask.any():
             df_qc = self.loc[current_idx, qc_mask]
             std_qc = df_qc.std(axis=1, ddof=1)
@@ -742,37 +728,45 @@ class MetaboIntFilter(model.MetaboInt):
             final_idx
         ).tolist()
 
-        # 3. Generate detailed tracking table via private helper
+        # Generate detailed tracking table via private helper
         start_idx = idx_mar.union(idx_mnar).intersection(self.index)
         df_tracking = self._generate_s2_tracking_table(
             start_idx=start_idx, idx_mar=idx_mar, idx_mnar=idx_mnar
         )
         self.stats["stage2_tracking"] = df_tracking
 
-        # 4. Handle output and visualizations
-        if output_dir:
-            iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
+        df_final.attrs["pipeline_stage"] = "Low-quality filtering"
+        return StageResult(
+            data=df_final,
+            metrics=df_final.quality_filtering_metrics,
+            candidates=df_tracking,
+            audit_tables=self._audit_snapshot(),
+        )
 
-            df_final.attrs["pipeline_stage"] = "Low-quality filtering"
-            csv_path = os.path.join(
-                output_dir, "Filtered_Data_Low-quality_Features.csv"
-            )
-            df_final.to_csv(csv_path, encoding="utf-8-sig", na_rep="NA")
-            logger.info(
-                "Data after low-quality features filtering saved as: "
-                f"{csv_path}"
-            )
+    @log_execution_time
+    def run_quality_filtering(
+        self,
+        idx_mar: pd.Index | list[object] | None = None,
+        idx_mnar: pd.Index | list[object] | None = None,
+        output_dir: str | None = None,
+        **runtime_overrides: object,
+    ) -> StageResult[pd.DataFrame]:
+        """Return the structured quality-filtering stage result.
 
-            trk_path2 = os.path.join(
-                output_dir, "Filtering_Tracking_Low-quality_Features.csv"
-            )
-            df_tracking.to_csv(trk_path2, na_rep="N/A")
-
-            # Execute visualization routing
-            self._execute_s2_visualization(output_dir, df_final)
-
-        logger.success("Low-quality features filtering completed.")
-        return df_final
+        This stage accepts ``qc_rsd_tol`` and ``blank_qc_ratio_tol``. MAR and
+        MNAR indices remain explicit data inputs rather than configuration.
+        """
+        runner = QualityFilteringStageRunner(
+            self,
+            output_dir,
+            idx_mar=idx_mar,
+            idx_mnar=idx_mnar,
+            runtime_overrides=runtime_overrides,
+            allowed_override_keys=frozenset(
+                {"qc_rsd_tol", "blank_qc_ratio_tol"}
+            ),
+        )
+        return runner.run()
 
     def _generate_s2_tracking_table(
         self, start_idx: pd.Index, idx_mar: pd.Index, idx_mnar: pd.Index
@@ -859,38 +853,6 @@ class MetaboIntFilter(model.MetaboInt):
         df_tracking = df_tracking.sort_values(by=["_sort", "Base_Type"])
         return df_tracking.drop(columns=["_sort"])
 
-    def _execute_s2_visualization(
-        self, output_dir: str, df_final: pd.DataFrame
-    ) -> None:
-        """Helper for orchestrating Stage 2 dashboard generation."""
-        vis = MetaboVisualizerFilter(engine=df_final)
-
-        try:
-            fig_grid = vis.plot_quality_filtering_summary_grid()
-            if fig_grid:
-                grid_path = os.path.join(
-                    output_dir, "Low-quality_Filtering_Dashboard.svg"
-                )
-                vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
-                logger.info(
-                    "Low-quality Filter summary dashboard saved as: "
-                    f"{grid_path}"
-                )
-
-            # article_grid = vis.plot_low_quality_filter_article_dashboard()
-            # if article_grid:
-            #     article_path = os.path.join(
-            #         output_dir, "Low_Quality_Filter_Article_Dashboard.svg"
-            #     )
-            # vis.save_and_show_pw(pw_obj=article_grid, file_path=article_path)
-            #     logger.info(
-            #         f"Low-quality article dashboard saved as: {article_path}"
-            #     )
-        except Exception as e:
-            logger.error(
-                f"Grid of low-quality features filtering generation failed: {e}"
-            )
-
     @cached_property
     def quality_filtering_metrics(self) -> dict:
         """Extracts metrics from Stage-2 low-quality feature filtering."""
@@ -950,6 +912,3 @@ class MetaboIntFilter(model.MetaboInt):
             },
         }
         return metrics
-
-
-from .visualization import MetaboVisualizerFilter

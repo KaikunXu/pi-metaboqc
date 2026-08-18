@@ -1,11 +1,10 @@
-"""Feature and sample filtering computation and visualization exports.
+"""Public feature- and sample-filtering computation API.
 
-MetaboIntFilter applies the two filtering stages and MetaboVisualizerFilter
-renders their decisions. The package-level interface keeps filtering callers
-independent from the analysis and visualization file layout.
+The package implements missing-value and low-quality filtering decisions and
+their structured stage execution. Filtering dashboards and diagnostic panels
+are provided independently by :mod:`pimqc.plotting.filtering`.
 """
 
 from .analysis import MetaboIntFilter
-from .visualization import MetaboVisualizerFilter
 
-__all__ = ["MetaboIntFilter", "MetaboVisualizerFilter"]
+__all__ = ["MetaboIntFilter"]

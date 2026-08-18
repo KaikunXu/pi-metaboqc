@@ -12,25 +12,22 @@
 
 * **Matrix-level LC-MS metabolomics QC workflow:** π-MetaboQC focuses on feature-intensity matrices from large, multi-batch metabolomics studies. It integrates dataset construction, missing-value triage, blank/QC filtering, signal correction, imputation, normalization, QA diagnostics, and report generation in a single reproducible workflow.
 
-* **Python-native data model and method implementations:** The core `MetaboInt` object inherits from `pandas.DataFrame`, allowing users to work with standard tabular operations while preserving pipeline metadata. Classical preprocessing methods that often require R dependencies, including quantile normalization, VSN, QRILC, BPCA, RUV-III, and WaveICA 2.0, are implemented or reconstructed in Python and checked against R reference implementations where applicable.
+* **Python-native data model and method implementations:** The core `MetaboInt` object inherits from `pandas.DataFrame`, allowing users to work with standard tabular operations while preserving pipeline metadata. Classical preprocessing methods that often require R dependencies, including quantile normalization, VSN, QRILC, BPCA, RUV-III, and WaveICA 2.0, are implemented or reconstructed in Python and checked against optional R reference tests where applicable.
 
 * **Adaptive missing-value classification and imputation:** High-missing-value features are routed through biological-group MNAR rescue, QC-level MNAR rescue, MAR eligibility checking, or exclusion. MAR candidates are compared using a GMM- and low-intensity-noise mask that reflects the greater dropout risk of low-abundance MS signals. Selection integrates total and low-intensity NRMSE with masked-value distribution fidelity and study-sample structure preservation.
 
-* **Evidence- and preservation-aware adaptive selection:** `AUTO` mode uses a common design across correction, imputation, and normalization. Correction combines median and feature-wise QC-RSD improvements; imputation combines masked reconstruction and distribution fidelity; normalization combines QC RLE alignment, variance stabilization, and QC structure improvement. Each ranking also includes a study-sample structure-preservation guardrail.
+* **Evidence- and preservation-aware adaptive selection:** `AUTO` mode uses a common design across correction, imputation, and normalization. Candidate methods are evaluated with stage-specific evidence and a study-sample structure-preservation guardrail; the selected method and candidate metrics remain available for audit.
 
-* **End-to-end quality assessment and traceability:** QA dashboards are generated across pipeline stages to summarize feature retention, missing-value behavior, QC precision, batch correlation, PCA structure, outlier diagnostics, correction performance, imputation quality, and normalization effects. These outputs make the preprocessing trajectory inspectable rather than hidden behind a single final matrix.
+* **End-to-end quality assessment and traceability:** Each stage has an explicit processing result, while a fixed QA suite tracks QC or batch correlation, RSD distributions, PCA structure, and multivariate outliers across stage snapshots. Processing dashboards carry method-selection evidence; QA dashboards show how each transformation changed the data.
 
 * **Parallel computation and scalable execution:** Computationally intensive steps, including feature-wise correction, model fitting, candidate evaluation, and large-matrix transformations, use `joblib`, `Numba`, and vectorized Scientific Python routines where appropriate. The workflow is designed for clinical-scale cohorts while remaining runnable from notebooks, scripts, and command-line workflows.
 
 * **Automated reporting and publication-ready visualization:** The pipeline records stage-level decisions, retained feature counts, selected methods, evaluation metrics, and diagnostic figures. Users can generate **Brief** or **Comprehensive** reports in Markdown, HTML, or PDF, while diagnostic plots are exported as editable **SVG** or **PDF** files for downstream inspection and manuscript preparation.
 
-### Correction and AUTO selection
-
-Correction `AUTO` compares `SERRF`, `RUV-III`, `WaveICA 2.0`, `QC-RLSC`, `robust QC-RLSC`, and `QC-SVR`. `QC-RFSC` remains available when explicitly selected with `base_est = "QC-RFSC"`, but is not evaluated by `AUTO`. `QC-RLSC` uses the Numba-accelerated LOESS fitter and supports optional Tukey-bisquare robust residual weighting through `rlsc_robust` and `rlsc_robust_iterations`. Standard and robust QC-RLSC share optional `loess_degree`, constrained-grid `rlsc_span_selection`, `rlsc_span_grid`, and `rlsc_min_qc` settings; defaults retain fixed-span linear LOESS.
 
 ## 📦 Installation
 
-We strongly recommend installing π-MetaboQC (`pi-metaboqc`) within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/), or [Anaconda](https://www.anaconda.com/download).
+We strongly recommend installing π-MetaboQC (`pi-metaboqc`) within a **Conda** virtual environment using [Miniforge](https://github.com/conda-forge/miniforge) (preferred), [Miniconda](https://docs.anaconda.com/free/miniconda/), or [Anaconda](https://www.anaconda.com/download). The package metadata supports Python 3.10 and newer; Python 3.13 is the recommended environment for the current release.
 
 Generating high-fidelity HTML and PDF reports requires advanced graphical engines (`pandoc`, `weasyprint`, `tinycss2` and `librsvg`). These tools depend on complex, system-level C libraries (e.g., GTK3, Pango) that are notoriously difficult to compile and configure via standard `pip`, particularly on Windows.
 
@@ -128,27 +125,39 @@ pi-metaboqc/
 ├── src/pimqc/
 │   ├── core/                  # Core data model
 │   ├── config/                # Configuration schema and resolution
-│   ├── dataset/               # Dataset construction and diagnostics
-│   ├── processing/            # Stage-specific analysis and visualization
+│   ├── dataset/               # Dataset construction and validation
+│   ├── io/                    # Configuration and filesystem I/O
+│   ├── runtime/               # Opt-in logging, progress, and diagnostics
+│   ├── processing/            # Processing stages and shared lifecycle
+│   │   ├── assessment/
+│   │   ├── correction/        # Orchestration and correction engines
+│   │   ├── filtering/
+│   │   ├── imputation/
+│   │   ├── normalization/
+│   │   ├── methods.py         # Shared method specifications
+│   │   └── stage.py           # Transform/export/render lifecycle
+│   ├── statistics/            # Metrics, PCA, and candidate selection
+│   ├── plotting/              # Shared plotting infrastructure
 │   │   ├── assessment/
 │   │   ├── correction/
 │   │   ├── filtering/
 │   │   ├── imputation/
 │   │   └── normalization/
-│   ├── statistics/            # Metrics, PCA, and candidate selection
-│   ├── visualization/         # Shared plotting infrastructure
 │   ├── reporting/             # Report assembly and rendering
 │   ├── templates/             # Markdown report templates
 │   ├── resources/demo/        # Example tables and TOML/JSON configurations
 │   └── pipeline.py            # Automated pipeline orchestrator
-└── tests/                     # Unit and integration tests
+└── tests/
+    ├── unit/                  # Fast isolated behavior
+    ├── integration/           # End-to-end pipeline execution
+    └── reference/             # Optional Python-to-R comparisons
 ```
 
-> *💡 **Note on Configuration:** The entire analytical workflow of π-MetaboQC is centrally governed by a `pipeline_parameters.toml` or `pipeline_parameters.json` file. Users can fine-tune all analysis parameters exclusively through this file, without modifying any underlying Python code.
+> *💡 **Note on Configuration:** The analytical workflow can be configured with either a `pipeline_parameters.toml` or `pipeline_parameters.json` file. Notebook or runtime keyword arguments take priority over file configuration, and file configuration takes priority over built-in defaults. Most users can therefore change datasets and analysis settings without modifying package source code.
 
 ## 📖 Hands-on Case Study
 
-To demonstrate the robustness, reproducibility, and correction efficacy of π-MetaboQC in real-world scenarios, we provide a dedicated case study repository.
+To demonstrate the robustness, reproducibility, and correction efficacy of π-MetaboQC in real-world scenarios, we provide a dedicated case study repository. It contains paper-reproduction materials and is not a runtime dependency of π-MetaboQC.
 
 👉 **[pi-metaboqc-casestudy](https://github.com/PHOENIXcenter/pi-metaboqc-casestudy)**
 
@@ -162,7 +171,7 @@ The case study repository contains:
 
 * **Project-Specific Analytical Notebooks**: For every dataset, you will find a dedicated, interactive Jupyter Notebook that executes the complete π-MetaboQC analytical pipeline under the `scripts/evaluation` directory, providing step-by-step demonstrations and embedded diagnostic visualizations.
 
-We highly recommend new users start with the case study to familiarize themselves with the pipeline's configuration and capabilities.
+The case study is intended for reproducibility and method comparison; new users should first use the interactive notebook to learn the pipeline's configuration and capabilities.
 
 ## 🤝 Contributing & License
 

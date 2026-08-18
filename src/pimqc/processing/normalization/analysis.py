@@ -7,28 +7,33 @@ matrix and its traceable candidate metrics for downstream reporting.
 """
 
 import os
-import copy
+from functools import cached_property
+from typing import Any, Dict, Optional
+
 import numpy as np
 import pandas as pd
-from functools import cached_property
 import scipy.stats as stats
-from scipy.optimize import minimize
-from scipy.spatial.distance import pdist
-from numba import njit
 from joblib import Parallel, delayed
 from loguru import logger
-from typing import Dict, Any, Optional
+from numba import njit
+from scipy.optimize import minimize
+from scipy.spatial.distance import pdist
 
-from ...core import model
 from ...config import resolve_stage_config
-from ...io import utils as iu
+from ...constants import DEFAULT_RANDOM_SEED
+from ...core import model
+from ...runtime import joblib_execution_context
 from ...statistics import metrics as su
+from ...statistics import sample_structure as structure_stats
 from ...statistics import selection as selection_utils
+from ..stage import StageResult
+from .methods import NORMALIZATION_METHODS
+from .runner import NormalizationStageRunner
 
 
-# =====================================================================
-# 1. Private Numba JIT Engines for Normalization
-# =====================================================================
+# =============================================================================
+# Private Numba JIT Engines for Normalization
+# =============================================================================
 @njit(fastmath=True)
 def _numba_vsn_nll(params: np.ndarray, fit_data: np.ndarray) -> float:
     """Compute negative log-likelihood for VSN compiled via Numba."""
@@ -77,13 +82,14 @@ def _numba_vsn_nll(params: np.ndarray, fit_data: np.ndarray) -> float:
     return -ll
 
 
-# =====================================================================
-# 2. Main Normalization Class (Calculation Logic Only)
-# =====================================================================
+# =============================================================================
+# Normalization Processor
+# =============================================================================
 class MetaboIntNormalizer(model.MetaboInt):
     """Normalization engine for global sample-wise preprocessing."""
 
     _metadata = ["attrs", "stats"]
+    _RUNTIME_CONFIG_KEYS = frozenset({"norm_method", "global_seed", "n_jobs"})
     _AUTO_CANDIDATES = (
         "ROBUST_LOG_ONLY",
         "TIC",
@@ -157,78 +163,16 @@ class MetaboIntNormalizer(model.MetaboInt):
         """Override pandas constructor to return current subclass type."""
         return MetaboIntNormalizer
 
-    def __finalize__(
-        self,
-        other: object,
-        method: Optional[str] = None,
-        **kwargs: object,
-    ) -> "MetaboIntNormalizer":
-        """Deepcopy custom attributes during pandas operations."""
-        self = super().__finalize__(other, method=method, **kwargs)
-        for name in self._metadata:
-            if hasattr(other, name):
-                setattr(self, name, copy.deepcopy(getattr(other, name)))
-        return self
-
-    # ====================================================================
+    # =========================================================================
     # Lightweight Auto-normalization Metrics
-    # ====================================================================
-    @staticmethod
-    def _canonical_norm_method(method: object) -> str:
-        """Normalize method names into the internal uppercase representation."""
-        method_upper = str(method or "ROBUST_LOG_ONLY").strip().upper()
-        compact = method_upper.replace("-", "_").replace(" ", "_")
-        aliases = {
-            "ROBUSTLOGONLY": "ROBUST_LOG_ONLY",
-            "ROBUST_LOG2_ONLY": "ROBUST_LOG_ONLY",
-            "LOG2_ONLY": "ROBUST_LOG_ONLY",
-            "LOG_ONLY": "ROBUST_LOG_ONLY",
-        }
-        return aliases.get(compact, compact)
-
+    # =========================================================================
     @classmethod
     def _uses_external_log_for_method(cls, method: str) -> bool:
         """Return the fixed log-transform policy for a normalization method."""
-        method_upper = cls._canonical_norm_method(method)
+        method_upper = NORMALIZATION_METHODS.canonicalize(
+            method or "ROBUST_LOG_ONLY", strict=False
+        )
         return cls._DEFAULT_EXTERNAL_LOG.get(method_upper, True)
-
-    @staticmethod
-    def _median_signed_change_lower_better(
-        before_values: pd.Series,
-        after_values: pd.Series,
-        min_abs_change: float = 0.0,
-        min_rel_change: float = 0.0,
-    ) -> float:
-        """Return median paired signed change for lower-is-better values."""
-        common_index = before_values.index.intersection(after_values.index)
-        if len(common_index) == 0:
-            return float("nan")
-
-        before_arr = before_values.loc[common_index].to_numpy(dtype=float)
-        after_arr = after_values.loc[common_index].to_numpy(dtype=float)
-        finite_mask = np.isfinite(before_arr) & np.isfinite(after_arr)
-        before_arr = before_arr[finite_mask]
-        after_arr = after_arr[finite_mask]
-        if before_arr.size == 0:
-            return float("nan")
-
-        denominator = np.maximum(before_arr, np.finfo(float).eps)
-        signed_change = (before_arr - after_arr) / denominator
-        abs_change = np.abs(before_arr - after_arr)
-        finite_change = np.isfinite(signed_change) & np.isfinite(abs_change)
-        signed_change = signed_change[finite_change]
-        abs_change = abs_change[finite_change]
-        if signed_change.size == 0:
-            return float("nan")
-
-        median_signed_change = float(np.nanmedian(signed_change))
-        median_abs_change = float(np.nanmedian(abs_change))
-        if (
-            median_abs_change < min_abs_change
-            or abs(median_signed_change) < min_rel_change
-        ):
-            return 0.0
-        return median_signed_change
 
     @classmethod
     def _calc_qc_rle_values(
@@ -272,7 +216,7 @@ class MetaboIntNormalizer(model.MetaboInt):
         log_df: pd.DataFrame,
         qc_cols: pd.Index,
         max_features: Optional[int] = 5000,
-        seed: int = 123,
+        seed: int = DEFAULT_RANDOM_SEED,
     ) -> dict[str, Any]:
         """
         Calculate multivariate QC compactness around the pooled-QC centroid.
@@ -471,45 +415,17 @@ class MetaboIntNormalizer(model.MetaboInt):
 
         return metrics
 
-    @classmethod
-    def _calc_sample_structure_arrays(
-        cls,
-        raw_obj: model.MetaboInt,
-        norm_obj: model.MetaboInt,
-        max_features: Optional[int] = 5000,
-        seed: int = 123,
-    ) -> dict[str, dict[str, Any]]:
-        """Calculate robust-geometry sample structure arrays."""
-        return su.calc_sample_structure_arrays(
-            raw_obj=raw_obj,
-            transformed_obj=norm_obj,
-            max_features=max_features,
-            seed=seed,
-        )
-
-    def _extract_auto_eval_target(
-        self,
-        norm_obj: model.MetaboInt,
-    ) -> pd.DataFrame | None:
-        """Extract a common log-like evaluation view for Auto scoring.
-
-        Candidate outputs keep their delivered scale for export. Auto scoring,
-        however, evaluates all candidates through the same log-like view so
-        log2/glog-transformed strategies remain comparable.
-        """
-        return su._extract_log2_target(norm_obj)
-
     def _sample_structure_preservation_metrics(
         self,
         norm_obj: model.MetaboInt,
         max_features: Optional[int] = 5000,
     ) -> dict[str, float]:
         """Quantify local sample structure preservation without labels."""
-        return su.calc_sample_structure_preservation(
+        return structure_stats.calc_sample_structure_preservation(
             raw_obj=self,
             transformed_obj=norm_obj,
             max_features=max_features,
-            seed=int(self.attrs.get("global_seed", 123)),
+            seed=int(self.attrs.get("global_seed", DEFAULT_RANDOM_SEED)),
             scale_log_ratio_tol=self._SAMPLE_SCALE_LOG_RATIO_TOL,
             scale_rel_delta_tol=self._SAMPLE_SCALE_REL_DELTA_TOL,
         )
@@ -549,8 +465,10 @@ class MetaboIntNormalizer(model.MetaboInt):
             self._AUTO_STRUCTURE_SCORE_COL: float("nan"),
         }
 
-        log_raw = self._extract_auto_eval_target(self)
-        log_norm = self._extract_auto_eval_target(norm_obj)
+        # Candidate outputs retain their delivered scale for export, while
+        # AUTO scoring compares all candidates through one log-like view.
+        log_raw = su._extract_log2_target(self)
+        log_norm = su._extract_log2_target(norm_obj)
         if (
             log_raw is None
             or log_raw.empty
@@ -666,13 +584,17 @@ class MetaboIntNormalizer(model.MetaboInt):
                 log_raw,
                 qc_cols=qc_cols,
                 max_features=5000,
-                seed=int(self.attrs.get("global_seed", 123)),
+                seed=int(
+                    self.attrs.get("global_seed", DEFAULT_RANDOM_SEED)
+                ),
             )
             qc_structure_after = self._calc_qc_structure_values(
                 log_norm,
                 qc_cols=qc_cols,
                 max_features=5000,
-                seed=int(self.attrs.get("global_seed", 123)),
+                seed=int(
+                    self.attrs.get("global_seed", DEFAULT_RANDOM_SEED)
+                ),
             )
             metrics["qc_structure_distance_before"] = qc_structure_before[
                 "qc_centroid_distance_median"
@@ -918,9 +840,9 @@ class MetaboIntNormalizer(model.MetaboInt):
         ]
         return summary[ordered_cols]
 
-    # ====================================================================
+    # =========================================================================
     # Mathematical Operators (Sample-wise & Global)
-    # ====================================================================
+    # =========================================================================
     @staticmethod
     def calc_tic_normalization(df: pd.DataFrame) -> pd.DataFrame:
         """Apply Total Ion Current (TIC) normalization sample-wise."""
@@ -1094,7 +1016,7 @@ class MetaboIntNormalizer(model.MetaboInt):
         """
         df_safe = df.replace({0: np.nan})
 
-        # 1. Define high-quality reference spectrum
+        # Define high-quality reference spectrum
         if qc_cols is not None and not qc_cols.empty:
             ref_spectrum = df_safe[qc_cols].median(axis="columns")
         else:
@@ -1106,7 +1028,7 @@ class MetaboIntNormalizer(model.MetaboInt):
         data_matrix = df_safe.values
         num_samples = data_matrix.shape[1]
 
-        # 2. Pure function: Process a chunk to avoid IPC overhead
+        # Pure function: Process a chunk to avoid IPC overhead
         def _process_mdfc_chunk(
             chunk_arr: np.ndarray, ref_arr: np.ndarray, pts: int
         ) -> np.ndarray:
@@ -1134,7 +1056,7 @@ class MetaboIntNormalizer(model.MetaboInt):
                         shift = 0.0
                 else:
                     try:
-                        # 3. Kernel Density Estimation
+                        # Kernel Density Estimation
                         kde = stats.gaussian_kde(clean_log_fc)
                         grid = np.linspace(
                             np.min(clean_log_fc), np.max(clean_log_fc), pts
@@ -1150,13 +1072,13 @@ class MetaboIntNormalizer(model.MetaboInt):
                         # Fallback 4: KDE singular matrix failure
                         shift = np.median(clean_log_fc)
 
-                # 4. Apply back-transformation
+                # Apply back-transformation
                 norm_factor = 2**shift
                 out_chunk[:, i] = sample_vals / norm_factor
 
             return out_chunk
 
-        # 5. Calculate safe threading and optimal chunking strategy
+        # Calculate safe threading and optimal chunking strategy
         actual_cores = (os.cpu_count() or 1) if n_jobs == -1 else n_jobs
         safe_n_jobs = max(1, int(actual_cores / 2))
 
@@ -1172,22 +1094,23 @@ class MetaboIntNormalizer(model.MetaboInt):
             f"(backend='loky', cores={safe_n_jobs}, chunks={n_chunks})..."
         )
 
-        # 6. Execute parallel processing via Joblib
-        normed_chunks = Parallel(n_jobs=safe_n_jobs, backend="loky")(
-            delayed(_process_mdfc_chunk)(chunk, log2_ref, kde_points)
-            for chunk in chunks
-        )
+        # Execute parallel processing via Joblib
+        with joblib_execution_context("loky"):
+            normed_chunks = Parallel(n_jobs=safe_n_jobs)(
+                delayed(_process_mdfc_chunk)(chunk, log2_ref, kde_points)
+                for chunk in chunks
+            )
 
-        # 7. Reconstruct the output DataFrame
+        # Reconstruct the output DataFrame
         res_df = df.copy()
         if normed_chunks:
             res_df.iloc[:, :] = np.column_stack(normed_chunks)
 
         return res_df.fillna(0)
 
-    # ====================================================================
-    # Core Execution Logic (Single Lane Refactored)
-    # ====================================================================
+    # =========================================================================
+    # Normalization Method Execution
+    # =========================================================================
     def _extract_ordered_target_matrix(self) -> pd.DataFrame:
         """Return QC and biological samples in the original injection order."""
         df_target = pd.concat([self._qc, self._actual_sample], axis=1)
@@ -1207,7 +1130,9 @@ class MetaboIntNormalizer(model.MetaboInt):
         """
         Apply one fixed normalization strategy to an ordered target matrix.
         """
-        method = self._canonical_norm_method(method)
+        method = NORMALIZATION_METHODS.canonicalize(
+            method or "ROBUST_LOG_ONLY", strict=False
+        )
         df_norm = df_target.copy()
 
         meta_stamps: dict[str, Any] = {
@@ -1215,10 +1140,10 @@ class MetaboIntNormalizer(model.MetaboInt):
             "is_logged": False,
         }
 
-        # -------------------------------------------------------------
+        # ---------------------------------------------------------------------
         # Category A: Linear Scale Methods and log-only baseline
         # Logic: Normalize first, then robust Log2 for variance stabilization.
-        # -------------------------------------------------------------
+        # ---------------------------------------------------------------------
         if method in ["TIC", "MEDIAN", "PQN", "MDFC", "ROBUST_LOG_ONLY"]:
             if method == "TIC":
                 df_norm = self.calc_tic_normalization(df_norm)
@@ -1239,10 +1164,10 @@ class MetaboIntNormalizer(model.MetaboInt):
                 df_norm = su.robust_log2_transform(df_norm)
                 meta_stamps["is_logged"] = True
 
-        # -------------------------------------------------------------
+        # ---------------------------------------------------------------------
         # Category B: Distribution Alignment (Quantile)
         # Logic: Robust Log2 first, then align distributions.
-        # -------------------------------------------------------------
+        # ---------------------------------------------------------------------
         elif method == "QUANTILE":
             meta_stamps["normalization_applied"] = True
             if apply_external_log:
@@ -1250,10 +1175,10 @@ class MetaboIntNormalizer(model.MetaboInt):
                 meta_stamps["is_logged"] = True
             df_norm = self.calc_quantile_normalization(df_norm)
 
-        # -------------------------------------------------------------
+        # ---------------------------------------------------------------------
         # Category C: Variance Stabilizing Normalization (VSN)
         # Logic: Intrinsic glog; no external robust Log2.
-        # -------------------------------------------------------------
+        # ---------------------------------------------------------------------
         elif method == "VSN":
             meta_stamps["normalization_applied"] = True
             df_norm, vsn_meta = self.calc_vsn_normalization(df_norm)
@@ -1388,13 +1313,17 @@ class MetaboIntNormalizer(model.MetaboInt):
         meta_stamps = dict(meta_stamps)
         meta_stamps.update(
             {
-                "requested_norm_method": "Auto",
-                "auto_selected_method": selected_method,
-                "auto_selected_score": selected_score,
-                "auto_selection_margin": selected_margin,
-                "normalization_auto_summary": auto_summary.to_dict(
-                    orient="records"
-                ),
+                "selection": {
+                    "requested_method": "Auto",
+                    "selected_method": selected_method,
+                    "selected_label": selected_method,
+                    "is_auto": True,
+                    "selected_score": selected_score,
+                    "selection_margin": selected_margin,
+                    "candidate_summary": auto_summary.to_dict(
+                        orient="records"
+                    ),
+                },
             }
         )
 
@@ -1410,8 +1339,10 @@ class MetaboIntNormalizer(model.MetaboInt):
         - VSN: Intrinsic glog
         """
         df_target = self._extract_ordered_target_matrix()
-        method = self._canonical_norm_method(
+        method = NORMALIZATION_METHODS.canonicalize(
             self.attrs.get("norm_method", "ROBUST_LOG_ONLY")
+            or "ROBUST_LOG_ONLY",
+            strict=False,
         )
 
         if method == "AUTO":
@@ -1423,12 +1354,30 @@ class MetaboIntNormalizer(model.MetaboInt):
             method=method,
             apply_external_log=apply_external_log,
         )
+        meta_stamps["selection"] = {
+            "requested_method": method,
+            "selected_method": method,
+            "selected_label": method,
+            "is_auto": False,
+        }
         return self._finalize_normalized_object(df_norm, meta_stamps)
 
     @cached_property
     def normalization_metrics(self) -> Dict[str, Any]:
         """Extracts configuration and QA metrics from the workflow."""
         curr_stage = self.attrs.get("pipeline_stage", "Unknown")
+
+        selection = self.attrs.get("selection")
+        if selection is None:
+            requested_method = self.attrs.get(
+                "norm_method", "ROBUST_LOG_ONLY"
+            )
+            selection = {
+                "requested_method": requested_method,
+                "selected_method": requested_method,
+                "selected_label": requested_method,
+                "is_auto": str(requested_method).upper() == "AUTO",
+            }
 
         metrics = {
             "current_stage": curr_stage,
@@ -1440,21 +1389,9 @@ class MetaboIntNormalizer(model.MetaboInt):
                     "normalization_applied", False
                 ),
                 "log_transform_active": self.attrs.get("is_logged", False),
-                "requested_norm_method": self.attrs.get(
-                    "requested_norm_method",
-                    self.attrs.get("norm_method", "ROBUST_LOG_ONLY"),
-                ),
             },
+            "selection": selection,
         }
-
-        auto_summary = self.attrs.get("normalization_auto_summary")
-        if auto_summary:
-            metrics["auto_selection"] = {
-                "selected_method": self.attrs.get("auto_selected_method"),
-                "selected_score": self.attrs.get("auto_selected_score"),
-                "selection_margin": self.attrs.get("auto_selection_margin"),
-                "summary": auto_summary,
-            }
 
         if self.attrs.get("norm_method", "ROBUST_LOG_ONLY").upper() == "VSN":
             metrics["vsn_parameters"] = {
@@ -1464,85 +1401,21 @@ class MetaboIntNormalizer(model.MetaboInt):
 
         return metrics
 
-    @iu._exe_time
-    def execute_normalization(self, output_dir: str) -> "MetaboIntNormalizer":
-        """Execute workflow, save outputs, and generate plots."""
-        iu._check_dir_exists(dir_path=output_dir, handle="makedirs")
+    def run_normalization(
+        self,
+        output_dir: str | None = None,
+        **runtime_overrides: object,
+    ) -> StageResult["MetaboIntNormalizer"]:
+        """Return the structured normalization stage result.
 
-        requested_method = self.attrs.get("norm_method", "ROBUST_LOG_ONLY")
-
-        blank_count = len(self._blank.columns)
-        if blank_count > 0:
-            logger.info(f"Permanently dropping {blank_count} Blank samples.")
-
-        logger.info(f"Applying Normalization | Method: {requested_method}")
-
-        # 1. Execute Core Calculation
-        clean_obj = self.apply_normalization()
-        method = clean_obj.attrs.get("norm_method", "ROBUST_LOG_ONLY")
-        is_log = clean_obj.attrs.get("is_logged", False)
-
-        # 2. Dynamic Suffix and Export
-        suffix_parts = [method]
-        if is_log and method.upper() not in {"VSN", "ROBUST_LOG_ONLY"}:
-            suffix_parts.append("Log2")
-        suffix = "_".join(suffix_parts)
-
-        filename = f"Normalized_Data_{suffix}.csv"
-        file_path = os.path.join(output_dir, filename)
-
-        clean_obj.attrs["pipeline_stage"] = "Normalization"
-        clean_obj.to_csv(
-            path_or_buf=file_path, na_rep="NA", encoding="utf-8-sig"
-        )
-
-        auto_summary = clean_obj.attrs.get("normalization_auto_summary")
-        if auto_summary:
-            summary_path = os.path.join(
-                output_dir, "Normalization_Auto_Summary.csv"
-            )
-            pd.DataFrame(auto_summary).to_csv(
-                path_or_buf=summary_path,
-                index=False,
-                na_rep="NA",
-                encoding="utf-8-sig",
-            )
-            logger.info(f"Auto normalization summary saved as: {summary_path}")
-
-        # 3. Visualization Phase (2-Stage)
-        logger.info("Generating diagnostic plots for normalization...")
-        vis = MetaboVisualizerNormalizer(raw_obj=self, norm_obj=clean_obj)
-
-        grid_path = None
-        fig_grid = vis.plot_normalization_dashboard()
-        if fig_grid:
-            grid_path = os.path.join(
-                output_dir, f"Normalization_Dashboard_{suffix}.svg"
-            )
-            vis.save_and_show_pw(pw_obj=fig_grid, file_path=grid_path)
-
-        # if auto_summary:
-        #     article_obj = vis.plot_normalization_article_dashboard()
-        #     if article_obj is not None:
-        #         article_path = os.path.join(
-        #             output_dir,
-        #             f"Normalization_Article_Dashboard_{suffix}.svg",
-        #         )
-        #         vis.save_and_show_pw(
-        #             pw_obj=article_obj,
-        #             width="60%",
-        #             file_path=article_path,
-        #         )
-        #         logger.info(
-        # f"Normalization article dashboard saved as: {article_path}"
-        #         )
-
-        if grid_path is not None:
-            logger.info(
-                f"Normalization summary dashboard saved as: {grid_path}"
-            )
+        ``norm_method``, ``global_seed``, or ``n_jobs`` supplied here take
+        precedence over pipeline configuration and module defaults.
+        """
+        result = NormalizationStageRunner(
+            self,
+            output_dir,
+            runtime_overrides=runtime_overrides,
+            allowed_override_keys=self._RUNTIME_CONFIG_KEYS,
+        ).run()
         logger.success("Data normalization completed successfully.")
-        return clean_obj
-
-
-from .visualization import MetaboVisualizerNormalizer
+        return result

@@ -1,11 +1,10 @@
-"""Missing-value imputation computation and visualization exports.
+"""Public missing-value imputation computation API.
 
-The package exports the MAR/MNAR imputation engine, BPCA estimator, and
-visualizer so callers can use supported functionality without depending on
-internal module placement.
+The package exposes the MAR/MNAR imputation engine and BPCA estimator used by
+the staged pipeline. Candidate scorecards and imputation diagnostics belong to
+the separate :mod:`pimqc.plotting.imputation` package.
 """
 
 from .analysis import BayesianPCAImputer, MetaboIntImputer
-from .visualization import MetaboVisualizerImputer
 
-__all__ = ["BayesianPCAImputer", "MetaboIntImputer", "MetaboVisualizerImputer"]
+__all__ = ["BayesianPCAImputer", "MetaboIntImputer"]

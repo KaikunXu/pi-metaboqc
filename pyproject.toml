@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 # ==============================================================================
 [project]
 name = "pi-metaboqc"           # Distribution name used by PyPI and pip
-version = "1.2.0"              # Static release version following PEP 440
+version = "1.3.0"              # Release version following PEP 440
 dynamic = ["readme"]           # README content is loaded from README.md
 
 # Maintainer information displayed in package metadata.
@@ -82,9 +82,10 @@ dependencies = [
     "py-cpuinfo>=9.0.0",     # Accurate CPU model and architecture ID
 
     # --- Data Visualization ---
-    "matplotlib>=3.3.0",     # Fundamental 2D plotting engine
+    "matplotlib>=3.4.0",     # Colormap.with_extremes and 2D plotting engine
     "seaborn>=0.11.0",       # Statistical data visualization based on mpl
-    "plotnine>=0.10.1",      # Grammar of Graphics implementation
+    "plotnine>=0.10.1",      # Compatibility dependency: patchworklib 0.6.6
+                             # imports plotnine at module import
     
     # --- Report Assembly & Image Handling ---
     "patchworklib>=0.6.2",   # Composition tool for matplotlib subplots

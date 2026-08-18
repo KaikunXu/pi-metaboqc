@@ -7,9 +7,9 @@ references and removes intermediate assets after report assembly when required.
 """
 
 import os
+from datetime import datetime
 import sys
 import math
-from datetime import datetime
 
 import subprocess
 import ctypes
@@ -19,6 +19,8 @@ from jinja2 import Environment, FileSystemLoader
 from tabulate import tabulate
 
 from loguru import logger
+
+from .models import ReportInput
 from typing import Union, Optional, Dict, Any
 
 # CairoSVG defaults to a 96 dpi raster surface.  Report previews are displayed
@@ -27,9 +29,9 @@ from typing import Union, Optional, Dict, Any
 STITCHED_PNG_SCALE = 3.0
 
 
-# =========================================================================
+# =============================================================================
 # Atomic Utility Functions
-# =========================================================================
+# =============================================================================
 def _get_optimal_cols(n_docs: int, max_cols: int = 4) -> int:
     """Calculates optimal grid columns for subplot layout.
 
@@ -118,7 +120,7 @@ def stitch_svg_grids(
         return False
 
     try:
-        # 1. Validate and filter input paths
+        # Validate and filter input paths
         valid_paths = [
             p
             for p in svg_paths
@@ -127,20 +129,20 @@ def stitch_svg_grids(
         if not valid_paths:
             return False
 
-        # 2. Calculate optimal grid dimensions
+        # Calculate optimal grid dimensions
         n_docs = len(valid_paths)
         active_cols = (
             _get_optimal_cols(n_docs, max_cols) if cols == "auto" else int(cols)
         )
         rows = (n_docs + active_cols - 1) // active_cols
 
-        # 3. Robust UTF-8 reading to prevent GBK codec errors on Windows
+        # Robust UTF-8 reading to prevent GBK codec errors on Windows
         svg_figs = []
         for p in valid_paths:
             with open(p, "r", encoding="utf-8") as f:
                 svg_figs.append(sg.fromstring(f.read()))
 
-        # 4. Extract maximum dimensions for uniform grid alignment
+        # Extract maximum dimensions for uniform grid alignment
         def parse_dim(val: str) -> float:
             import re
 
@@ -180,10 +182,24 @@ def stitch_svg_grids(
             figure_dims(legend_fig) if legend_fig is not None else (0.0, 0.0)
         )
 
-        native_grid_w = max_w * active_cols
-        native_grid_h = max_h * rows
-        title_h = max(14.0, max_h * 0.10) if suptitle else 0.0
-        native_total_h = native_grid_h + title_h
+        # Source QA panels are intentionally compact. Reserve explicit gutters
+        # between their SVG canvases so axis labels and tick labels are never
+        # covered by the white background of the following panel. The outer
+        # padding also protects the first-column y label and last-row x label.
+        panel_gap_x = max(4.0, max_w * 0.04) if active_cols > 1 else 0.0
+        panel_gap_y = max(6.0, max_h * 0.07) if rows > 1 else 0.0
+        outer_pad_x = max(3.0, max_w * 0.025)
+        outer_pad_y = max(3.0, max_h * 0.025)
+        native_grid_w = (
+            max_w * active_cols
+            + panel_gap_x * max(0, active_cols - 1)
+            + 2.0 * outer_pad_x
+        )
+        native_grid_h = (
+            max_h * rows + panel_gap_y * max(0, rows - 1) + 2.0 * outer_pad_y
+        )
+        native_title_h = max(18.0, max_h * 0.13) if suptitle else 0.0
+        native_total_h = native_grid_h + native_title_h
 
         # Seven correction candidates naturally leave one slot in a 2 x 4
         # grid. Reuse it for the legend; six candidates retain a 2 x 3 grid
@@ -212,12 +228,10 @@ def stitch_svg_grids(
             target_width = float(target_width_cm) * 72.0 / 2.54
             scale = target_width / native_total_w if native_total_w > 0 else 1.0
             total_w = target_width
-        title_h *= scale
+        title_h = native_title_h * scale
         total_h = native_total_h * scale
-        cell_w = max_w * scale
-        cell_h = max_h * scale
 
-        # 5. Initialize the master canvas with a white background
+        # Initialize the master canvas with a white background
         fig = sg.SVGFigure(f"{total_w}", f"{total_h}")
         bg_svg = sg.fromstring(
             '<svg><rect width="100%" height="100%" fill="white"/></svg>'
@@ -228,9 +242,9 @@ def stitch_svg_grids(
         if suptitle:
             title = sg.TextElement(
                 (native_grid_w * scale) / 2,
-                title_h * 0.62,
+                title_h * 0.66,
                 str(suptitle),
-                size=8,
+                size=max(10.0, 9.0 * scale),
                 weight="bold",
             )
             title.root.set("text-anchor", "middle")
@@ -241,32 +255,40 @@ def stitch_svg_grids(
             )
             plots.append(title)
 
-        # 6. Position each subplot into the calculated grid slot
+        # Position each subplot into the calculated grid slot
         for i, s_fig in enumerate(svg_figs):
             row, col = divmod(i, active_cols)
             plot = s_fig.getroot()
-            plot.moveto(col * cell_w, title_h + row * cell_h, scale_x=scale)
+            x_pos = (outer_pad_x + col * (max_w + panel_gap_x)) * scale
+            y_pos = (
+                title_h + (outer_pad_y + row * (max_h + panel_gap_y)) * scale
+            )
+            plot.moveto(x_pos, y_pos, scale_x=scale)
             plots.append(plot)
 
         if legend_fig is not None:
             legend = legend_fig.getroot()
             if embed_legend:
                 row, col = divmod(n_docs, active_cols)
-                x_pos = col * cell_w + max(2.0, max_w * 0.015) * scale
+                x_pos = (
+                    outer_pad_x
+                    + col * (max_w + panel_gap_x)
+                    + max(2.0, max_w * 0.015)
+                ) * scale
                 y_pos = (
                     title_h
-                    + row * cell_h
+                    + (outer_pad_y + row * (max_h + panel_gap_y)) * scale
                     + max(0.0, (max_h - legend_h) / 2) * scale
                 )
             else:
-                x_pos = active_cols * cell_w + max(2.0, max_w * 0.015) * scale
+                x_pos = (native_grid_w + max(2.0, max_w * 0.015)) * scale
                 y_pos = (
                     title_h + max(0.0, (native_grid_h - legend_h) / 2) * scale
                 )
             legend.moveto(x_pos, y_pos, scale_x=scale)
             plots.append(legend)
 
-        # 7. Assemble and set viewBox
+        # Assemble and set viewBox
         fig.append(plots)
         fig.root.set("viewBox", f"0 0 {total_w} {total_h}")
         # Keep a physical width for PDF/Illustrator consumers while retaining
@@ -278,7 +300,7 @@ def stitch_svg_grids(
         merged_svg_bytes = fig.to_str()
         merged_svg_str = merged_svg_bytes.decode("utf-8")
 
-        # 8. Format Normalization & Physical Storage Logic
+        # Format Normalization & Physical Storage Logic
         filepath_str = str(file_path)
         base_path = (
             filepath_str.rsplit(".", 1)[0]
@@ -321,12 +343,12 @@ def stitch_svg_grids(
                             "not installed. Run `pip install cairosvg`."
                         )
 
-        # 9. Environment-safe Jupyter rendering logic
+        # Environment-safe Jupyter rendering logic
         if show_plot:
             try:
-                from ..io import utils as iu
+                from ..runtime import is_jupyter
 
-                if iu.is_jupyter():
+                if is_jupyter():
                     from IPython.display import HTML, Image, display
                     import re
 
@@ -407,10 +429,12 @@ def stitch_svg_grids(
         return False
 
 
-# =========================================================================
-# Class 1: VisualAssetReporter (Handles QA Grids & Images)
-# =========================================================================
+# =============================================================================
+# Visual Asset Reporter
+# =============================================================================
 class VisualAssetReporter:
+    """Collect and arrange pipeline visual assets for report generation."""
+
     def __init__(self, base_dir: Union[str, Path]) -> None:
         """
         Initialize the reporter at the project workspace level.
@@ -436,7 +460,7 @@ class VisualAssetReporter:
         report_folder: str = "13_Report_Markdown",
         cols: Union[int, str] = "auto",
         cleanup_source_svgs: bool = True,
-    ) -> None:
+    ) -> dict[str, str]:
         """Compile QA SVG plots into grids and deploy to report assets.
 
         When a stage exports ``*_Legend.svg`` sidecars, one is shared by the
@@ -446,7 +470,9 @@ class VisualAssetReporter:
         """
         if not self.qa_folders:
             logger.error("No QA folders detected in the base directory.")
-            return
+            return {}
+
+        asset_manifest: dict[str, str] = {}
 
         report_path = self.base_dir / report_folder
         assets_path = report_path / "assets"
@@ -527,6 +553,8 @@ class VisualAssetReporter:
                 save_format="svg",
                 display_format="png",
             )
+            if stitched:
+                asset_manifest[prefix] = str(svg_out.relative_to(report_path))
             if stitched and cleanup_source_svgs:
                 # The four QA panels and their sidecar legends are intermediate
                 # assets. Remove both vector formats after the final grid has
@@ -565,11 +593,12 @@ class VisualAssetReporter:
                             f"{source_path}: {exc}"
                         )
         logger.success(f"Report SVG assets compiled at: {assets_path}")
+        return asset_manifest
 
 
-# =========================================================================
-# Class 2: NarrativeStatsReporter (Handles attrs & Markdown Text)
-# =========================================================================
+# =============================================================================
+# Narrative Statistics Reporter
+# =============================================================================
 class NarrativeStatsReporter:
     """Extracts metadata from MetaboInt objects to generate a single report."""
 
@@ -958,7 +987,7 @@ class NarrativeStatsReporter:
         Dynamically adapts columns based on whether the dataset is single
         or multi-batch.
         """
-        # 1. Determine if the dataset is multi-batch by scanning QA metrics
+        # Determine if the dataset is multi-batch by scanning QA metrics
         is_multi_batch = False
         for stage_key, _ in self._QA_STAGES:
             qa_data = qa_metrics.get(stage_key, {})
@@ -1011,7 +1040,7 @@ class NarrativeStatsReporter:
 
             rows.append(row)
 
-        # 2. Dynamically set headers based on batch design
+        # Dynamically set headers based on batch design
         if is_multi_batch:
             headers = [
                 "Pipeline Stage",
@@ -1023,7 +1052,7 @@ class NarrativeStatsReporter:
         else:
             headers = ["Pipeline Stage", "Median Correlation"]
 
-        # 3. Render table with disable_numparse=True to preserve trailing zeros
+        # Render table with disable_numparse=True to preserve trailing zeros
         table_str = tabulate(
             rows,
             headers=headers,
@@ -1044,20 +1073,20 @@ class NarrativeStatsReporter:
             if not q_data:
                 continue
 
-            # 1. SD-OD Extreme Outliers
+            # SD-OD Extreme Outliers
             outliers = q_data.get("outliers", {})
             ext_samples = outliers.get("extreme_samples", [])
             ext_str = (
                 ", ".join(map(str, ext_samples)) if ext_samples else "None"
             )
 
-            # 2. IS Outliers
+            # IS Outliers
             is_qc = q_data.get("internal_standard_qc", {})
             is_samples = is_qc.get("is_outlier_samples", [])
             is_rate = is_qc.get("is_outlier_standard", "N/A")
             is_str = ", ".join(map(str, is_samples)) if is_samples else "None"
 
-            # 3. ORF Outliers
+            # ORF Outliers
             orf_qc = q_data.get("orf_qc", {})
             orf_samples = orf_qc.get("orf_outlier_samples", [])
             orf_rate = orf_qc.get("orf_outlier_standard", "N/A")
@@ -1087,10 +1116,11 @@ class NarrativeStatsReporter:
         )
         return f"\n\n{table_str}\n\n" if rows else ""
 
-    def consolidate_metrics(
-        self, pipeline_metrics: Dict[str, Any], qa_metrics: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def consolidate_metrics(self, report_input: ReportInput) -> Dict[str, Any]:
         """Consolidates pipeline and QA metrics into a unified context."""
+
+        pipeline_metrics = report_input.pipeline_metrics
+        qa_metrics = report_input.qa_metrics
 
         def get_val(
             d: Dict[str, Any], *keys: str, default: object = "N/A"
@@ -1108,14 +1138,27 @@ class NarrativeStatsReporter:
         )
 
         stats = {
-            "metadata": {
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "mode": get_val(
-                    pipeline_metrics, "raw_dataset", "mode", default="N/A"
-                ),
-                "is_multi_batch": batch_count > 1,
-            }
+            "metadata": dict(report_input.metadata),
+            "resolved_config": dict(report_input.resolved_config),
+            "asset_manifest": dict(report_input.asset_manifest),
         }
+        stats["metadata"].setdefault(
+            "date", datetime.now().strftime("%Y-%m-%d %H:%M")
+        )
+        stats["metadata"].setdefault(
+            "version",
+            get_val(
+                pipeline_metrics,
+                "raw_dataset",
+                "pi-metaboqc_version",
+                default="Unknown",
+            ),
+        )
+        stats["metadata"].setdefault(
+            "mode",
+            get_val(pipeline_metrics, "raw_dataset", "mode", default="N/A"),
+        )
+        stats["metadata"].setdefault("is_multi_batch", batch_count > 1)
 
         # [REFACTOR]: Core stages iteration fully handles new 2-Stage Norm logic
         for stage_key, _ in self._QA_STAGES:
@@ -1143,15 +1186,15 @@ class NarrativeStatsReporter:
         mar_sel = get_val(
             pipeline_metrics,
             "missing_value_imputation",
-            "strategies",
-            "mar_method_selected",
+            "selection",
+            "selected_method",
             default="",
         )
         if mar_sel and mar_sel != "N/A":
             nrmse = get_val(
                 pipeline_metrics,
                 "missing_value_imputation",
-                "performance",
+                "candidate_metrics",
                 mar_sel,
                 "nrmse_low",
                 default="N/A",
@@ -1179,7 +1222,7 @@ class NarrativeStatsReporter:
 
         logger.info(f"--- Starting Template Debugger for '{template_name}' ---")
 
-        # 1. Static Analysis (Informational only, downgraded to DEBUG level)
+        # Static Analysis (Informational only, downgraded to DEBUG level)
         try:
             template_src = self.env.loader.get_source(self.env, template_name)[
                 0
@@ -1203,7 +1246,7 @@ class NarrativeStatsReporter:
                 f"Static analysis skipped due to parser limitation: {e}"
             )
 
-        # 2. Runtime Analysis (The Ultimate Source of Truth)
+        # Runtime Analysis (The Ultimate Source of Truth)
         # Create an isolated, strict environment. Any truly undefined variable
         # evaluated at runtime will instantly trigger an exception.
         strict_env = jinja2.Environment(
@@ -1495,8 +1538,7 @@ class NarrativeStatsReporter:
 
     def generate_markdown(
         self,
-        pipeline_metrics: dict,
-        qa_metrics: dict,
+        report_input: ReportInput,
         report_folder: str = "08_Report_Summary",
     ) -> None:
         """
@@ -1505,8 +1547,8 @@ class NarrativeStatsReporter:
         Iterates through defined template versions and generates distinct
         markdown documents based on the unified metrics context.
         """
-        # Step 1: Consolidate double-source data
-        context = self.consolidate_metrics(pipeline_metrics, qa_metrics)
+        # Consolidate double-source data
+        context = self.consolidate_metrics(report_input)
         out_dir = self.base_dir / report_folder
 
         try:
@@ -1514,6 +1556,8 @@ class NarrativeStatsReporter:
         except IOError as e:
             logger.error(f"Failed to create report directory: {e}")
             return
+
+        report_input.write_json(out_dir / "Report_Input.json")
 
         # Initialize a list to track all generated markdown paths
         self._generated_md_paths = []
@@ -1524,7 +1568,7 @@ class NarrativeStatsReporter:
             "Brief": "report_brief.md.j2",
         }
 
-        # Step 2: Loop through versions and render
+        # Loop through versions and render
         for label, template_name in versions.items():
             logger.info(f"Generating {label.upper()} narrative report...")
             try:
@@ -1586,7 +1630,7 @@ class NarrativeStatsReporter:
         ]
 
         # =====================================================================
-        # INTERNAL EXECUTORS (Refactored to accept explicit paths)
+        # Internal Rendering Functions
         # =====================================================================
         def _render_html(
             src_md: str, out_html: str, is_fallback: bool = False
@@ -1684,7 +1728,7 @@ class NarrativeStatsReporter:
                 return None
 
         # =====================================================================
-        # MAIN ROUTING LOGIC WITH GUARANTEED CLEANUP
+        # Rendering Route and Guaranteed Cleanup
         # =====================================================================
         overall_success = True
 

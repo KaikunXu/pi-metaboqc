@@ -6,19 +6,20 @@ and correction-method label handling. These functions fit or predict correction
 models but leave stage orchestration and file export to the analysis module.
 """
 
-import re
 import math
-
-import numpy as np
-
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.compose import TransformedTargetRegressor
-from sklearn.model_selection import KFold
-from sklearn.base import clone
-from sklearn.pipeline import Pipeline
-from numba import njit, prange
+import re
 from typing import Callable, Tuple
 
+import numpy as np
+from numba import njit, prange
+from sklearn.base import clone
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import KFold
+from sklearn.pipeline import Pipeline
+
+from ...constants import DEFAULT_RANDOM_SEED
+from .methods import CORRECTION_METHODS
 
 FitPredictCallable = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 CorrectionModel = (
@@ -58,24 +59,7 @@ def _format_correction_method_label(method: object) -> str:
 def _normalize_correction_method(method: object) -> str:
     """Normalize correction method aliases to canonical public names."""
     method_text, _ = _split_rlsc_robust_label(method)
-    method_upper = method_text.upper()
-    method_compact = re.sub(r"[\s_.-]+", "", method_upper)
-
-    if method_upper == "AUTO":
-        return "AUTO"
-    if method_compact in ("QCRLSC", "RLSC", "LOESS"):
-        return "QC-RLSC"
-    if method_compact in ("QCRFSC", "RFSC", "RF"):
-        return "QC-RFSC"
-    if method_compact in ("QCSVR", "QCSVRC", "SVR"):
-        return "QC-SVR"
-    if method_compact == "SERRF":
-        return "SERRF"
-    if method_compact in ("RUV", "RUVIII", "RUV3"):
-        return "RUV-III"
-    if method_compact in ("WAVEICA2", "WAVEICA20"):
-        return "WaveICA 2.0"
-    return method_text
+    return CORRECTION_METHODS.canonicalize(method_text, strict=False)
 
 
 def _parse_correction_candidate(
@@ -103,16 +87,16 @@ def _format_correction_method_file_label(method: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', "-", _format_correction_method_label(method))
 
 
-# ==============================================================================
+# =============================================================================
 # Cross-Validation Engine for Robust Drift Correction to Prevent Overfitting
-# ==============================================================================
+# =============================================================================
 def fit_predict_intra_batch_safely(
     base_model: CorrectionModel,
     x_qc: np.ndarray,
     y_qc: np.ndarray,
     x_all: np.ndarray,
     cv_folds: int = 5,
-    random_state: int = 123,
+    random_state: int = DEFAULT_RANDOM_SEED,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return both continuous full baseline and OOF baseline for metrics."""
     n_qc = len(y_qc)
@@ -152,9 +136,9 @@ def fit_predict_intra_batch_safely(
     )
 
 
-# ==============================================================================
+# =============================================================================
 # Numba JIT Engines for Fast Robust QC-RLSC
-# ==============================================================================
+# =============================================================================
 @njit(fastmath=True)
 def _tricube_kernel(x: float) -> float:
     abs_x = abs(x)
@@ -450,8 +434,3 @@ def _select_batch_loess_spans(
             random_state,
         )
     return selected
-
-
-# ==============================================================================
-# Engine 1: RegressionCorrector
-# ==============================================================================

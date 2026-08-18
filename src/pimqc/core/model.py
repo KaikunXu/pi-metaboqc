@@ -7,10 +7,13 @@ for sample selection, intensity boundaries, and metabolomics-specific checks.
 """
 
 import copy
+from functools import cached_property
+from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
-from functools import cached_property
-from typing import Dict, List, Any, Optional, Union
+
+from ..constants import DEFAULT_RANDOM_SEED
 
 
 class MetaboInt(pd.DataFrame):
@@ -61,7 +64,7 @@ class MetaboInt(pd.DataFrame):
         if not hasattr(self, "attrs"):
             self.attrs: Dict[str, Any] = {}
         if not hasattr(self, "stats"):
-            self.stats: Dict[str, Any] = {}
+            object.__setattr__(self, "stats", {})
 
         # Safely inherit attributes if instantiated from an existing MetaboInt
         input_data = kwargs.get("data")
@@ -73,11 +76,12 @@ class MetaboInt(pd.DataFrame):
         if input_data is not None and hasattr(input_data, "stats"):
             self.stats.update(copy.deepcopy(input_data.stats))
 
-        # ====================================================================
+        # =====================================================================
         # Category 1: Structural & Mapping Attributes
-        # ====================================================================
-        # 1. Hardcoded base defaults
-        base_configs = {
+        # =====================================================================
+        # Defaults fill only genuinely new objects. Pandas-derived stage
+        # objects already carry structural attrs that must survive slicing.
+        default_configs = {
             "mode": "ESI+",
             "sample_name": "Sample Name",
             "sample_type": "Sample Type",
@@ -91,14 +95,14 @@ class MetaboInt(pd.DataFrame):
             },
             "internal_standard": [],
             "outlier_ref_feat": [],
-            "global_seed": 123,
+            "global_seed": DEFAULT_RANDOM_SEED,
         }
 
-        # 2. TOML configuration overrides base defaults
+        configured = {}
         if pipeline_params and "MetaboInt" in pipeline_params:
-            base_configs.update(pipeline_params["MetaboInt"])
+            configured.update(pipeline_params["MetaboInt"])
 
-        # 3. Explicit kwargs override TOML (Highest priority)
+        # Explicit kwargs override TOML (Highest priority)
         local_args = locals()
         explicit_params = [
             "mode",
@@ -112,22 +116,20 @@ class MetaboInt(pd.DataFrame):
         ]
         for param in explicit_params:
             if local_args[param] is not None:
-                base_configs[param] = local_args[param]
-
-        # 4. Action: Initialize numpy global random state
-        np.random.seed(base_configs.get("global_seed", 123))
+                configured[param] = local_args[param]
 
         if internal_standard is not None:
-            base_configs["internal_standard"] = self._to_list(internal_standard)
+            configured["internal_standard"] = self._to_list(internal_standard)
         if outlier_ref_feat is not None:
-            base_configs["outlier_ref_feat"] = self._to_list(outlier_ref_feat)
+            configured["outlier_ref_feat"] = self._to_list(outlier_ref_feat)
 
-        # 5. Finalize state
-        self.attrs.update(base_configs)
+        for key, default in default_configs.items():
+            self.attrs.setdefault(key, copy.deepcopy(default))
+        self.attrs.update(configured)
 
-        # ====================================================================
+        # =====================================================================
         # Category 2: Lifecycle & State Attributes
-        # ====================================================================
+        # =====================================================================
         # Initialize default baseline state ONLY if not inherited from upstream.
         # This acts as the genesis state for downstream dynamic visualizations.
         if "pipeline_stage" not in self.attrs:
@@ -152,6 +154,31 @@ class MetaboInt(pd.DataFrame):
         """Override constructor to return MetaboInt."""
         return MetaboInt
 
+    def _invalidate_cached_properties(self) -> None:
+        """Clear cached values after an in-place dataframe mutation."""
+        for cls in type(self).__mro__:
+            for name, descriptor in vars(cls).items():
+                if isinstance(descriptor, cached_property):
+                    self.__dict__.pop(name, None)
+
+    def __setitem__(self, key: object, value: object) -> None:
+        """Invalidate derived values after assigning dataframe data."""
+        super().__setitem__(key, value)
+        self._invalidate_cached_properties()
+
+    def _update_inplace(self, result: pd.DataFrame) -> None:
+        """Invalidate derived values after pandas replaces the manager."""
+        super()._update_inplace(result)
+        self._invalidate_cached_properties()
+
+    def drop(self, *args: object, **kwargs: object) -> pd.DataFrame:
+        """Drop labels and clear caches when the operation mutates in place."""
+        inplace = bool(kwargs.get("inplace", False))
+        result = super().drop(*args, **kwargs)
+        if inplace:
+            self._invalidate_cached_properties()
+        return result
+
     def __finalize__(
         self, other: object, method: Optional[str] = None, **kwargs: object
     ) -> "MetaboInt":
@@ -170,7 +197,7 @@ class MetaboInt(pd.DataFrame):
         elif hasattr(other, "attrs"):
             self.attrs = copy.deepcopy(other.attrs)
         if hasattr(other, "stats"):
-            self.stats = copy.deepcopy(other.stats)
+            object.__setattr__(self, "stats", copy.deepcopy(other.stats))
 
         return self
 

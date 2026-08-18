@@ -2,63 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
+
+## [1.3.0] - 2026-08-18
+
+> **Breaking release:** 1.3.0 refactors the processing-stage and report execution lifecycle. Processing computation, artifact export, rendering, metrics aggregation, and report generation now use explicit structured contracts. Dataset construction retains the `build_dataset(output_dir=...)` execution entry point, while its drawing implementation is separately packaged under `pimqc.plotting`. Existing custom code built against pre-1.3.0 stage or visualization APIs may require migration.
+
+### Added
+
+- **[Stage lifecycle]** Added explicit `compute`, `export`, and `render` execution phases through `StageRunner` and `StageResult`. `run_pipeline()` now returns a structured `PipelineResult`.
+- **[Reporting]** Added the `ReportInput` report contract and a persistent `Report_Input.json` snapshot containing the metrics, resolved configuration, metadata, and rendered-asset manifest used to generate the report.
+- **[Plotting]** Added the public `pimqc.plotting` namespace for dataset, assessment, filtering, correction, imputation, and normalization visualizations, including dashboards and scorecards.
+- **[Configuration]** Added equivalent TOML and JSON configuration loading with the documented precedence of notebook/runtime overrides, pipeline configuration, and module defaults.
+
+### Changed
+
+- **[Public execution]** Updated the pipeline, CLI, notebook, demo resources, and report templates to use the structured stage and report contracts. `build_dataset(output_dir=...)` remains the dataset-construction entry point.
+- **[Metrics and reporting]** Pipeline and report generation now consume metrics and audit tables captured during each stage instead of deriving them again from final DataFrames.
+- **[Visualization]** Standardized report-facing annotation, reference-line, legend, colorbar, and axis-layout behavior across stage dashboards. Dataset construction and all processing-stage plotting are exposed through the plotting namespace.
+- **[Runtime]** Optional R tooling is loaded only when an R-backed method is selected; unavailable R packages are reported as clear skips instead of preventing normal package import.
+
+### Breaking Changes
+
+- Stage methods now return `StageResult` objects, and pipeline execution returns `PipelineResult`.
+- Report generation now consumes `ReportInput` rather than reconstructing report data from final DataFrames.
+- Former `pimqc.visualization` and stage-local visualization import paths are removed without compatibility wrappers.
+- Custom code calling pre-1.3.0 stage or visualization APIs must migrate to the new contracts.
 
 ## [1.2.0] - 2026-08-08
 
 ### Added
 
-- **[Correction]** Extended QC-RLSC with optional Tukey-bisquare residual
-  reweighting, quadratic LOESS, and QC-only constrained-grid/OOF span
-  selection, while retaining fixed-span linear LOESS as the default. The robust
-  fitting design was informed by the [UGent-LIMET Metanorm project](https://github.com/UGent-LIMET/Metanorm).
-  Blank-aware fitting and frozen-model prediction are applied where the
-  correction method supports them.
-- **[Configuration]** Added validated configuration fields for the new QC-RLSC
-  options, including span selection, polynomial degree, minimum QC count, and
-  robust-reweighting iterations.
-- **[Visualization]** Added compact, article-ready dashboard builders and
-  dedicated panel/legend layouts for filtering, correction, imputation, and
-  normalization results.
+- **[Correction]** Extended QC-RLSC with optional Tukey-bisquare residual reweighting, quadratic LOESS, and QC-only constrained-grid/OOF span selection, while retaining fixed-span linear LOESS as the default. The robust fitting design was informed by the [UGent-LIMET Metanorm project](https://github.com/UGent-LIMET/Metanorm). Blank-aware fitting and frozen-model prediction are applied where the correction method supports them.
+- **[Configuration]** Added validated configuration fields for the new QC-RLSC options, including span selection, polynomial degree, minimum QC count, and robust-reweighting iterations.
+- **[Visualization]** Added compact, article-ready dashboard builders and dedicated panel/legend layouts for filtering, correction, imputation, and normalization results.
 
 ### Changed
 
-- **[Architecture]** Reorganized the former monolithic stage scripts into
-  domain subpackages under `processing/`, separating analysis, visualization,
-  and algorithm responsibilities. `MetaboInt` now lives in `core`, while
-  dataset construction, statistics, visualization infrastructure, reporting,
-  I/O, and configuration each have dedicated packages.
-- **[Configuration and packaging]** Added centralized stage-configuration
-  resolution with one precedence rule for defaults, TOML/JSON sections, and
-  runtime overrides. Bundled demo tables/configuration now live under
-  `resources/demo`, and report templates are packaged under `templates`.
-- **[Correction]** Consolidated correction candidate labels, parameters,
-  scoring, and diagnostics. AUTO correction compares fixed-span standard and
-  robust QC-RLSC together with the supported alternatives; QC-RFSC remains
-  available for explicit selection, while WaveICA 2.0 uses full-data QC-RSD
-  evaluation and other candidates use OOF evaluation where applicable.
-- **[Visualization and reporting]** Centralized adaptive figure sizing,
-  annotation/tick scaling, colorbar and legend styling, and publication-ready
-  SVG layout. Sequential QA dashboards now emit compact shared sidecars, and
-  intermediate source panels/sidecars are removed after final grid assembly.
-- **[Documentation]** Updated the runnable notebook, CLI defaults, pipeline
-  descriptions, and project structure documentation for the reorganized
-  seven-stage workflow.
+- **[Architecture]** Reorganized the former monolithic stage scripts into domain subpackages under `processing/`, separating analysis, visualization, and algorithm responsibilities. `MetaboInt` now lives in `core`, while dataset construction, statistics, visualization infrastructure, reporting, I/O, and configuration each have dedicated packages.
+- **[Configuration and packaging]** Added centralized stage-configuration resolution with one precedence rule for defaults, TOML/JSON sections, and runtime overrides. Bundled demo tables/configuration now live under `resources/demo`, and report templates are packaged under `templates`.
+- **[Correction]** Consolidated correction candidate labels, parameters, scoring, and diagnostics. AUTO correction compares fixed-span standard and robust QC-RLSC together with the supported alternatives; QC-RFSC remains available for explicit selection, while WaveICA 2.0 uses full-data QC-RSD evaluation and other candidates use OOF evaluation where applicable.
+- **[Visualization and reporting]** Centralized adaptive figure sizing, annotation/tick scaling, colorbar and legend styling, and publication-ready SVG layout. Sequential QA dashboards now emit compact shared sidecars, and intermediate source panels/sidecars are removed after final grid assembly.
+- **[Documentation]** Updated the runnable notebook, CLI defaults, pipeline descriptions, and project structure documentation for the reorganized seven-stage workflow.
 
 ### Fixed
 
-- **[Configuration and resources]** Fixed package-relative resolution of demo
-  data and report templates, added JSON loading alongside TOML, and corrected
-  unsupported-format errors to advertise the formats that are actually
-  supported.
-- **[Correction and diagnostics]** Aligned the new QC-RLSC options with AUTO
-  candidate evaluation, method-specific scoring, and downstream dashboards;
-  renamed the span parameter from `loess_frac` to `loess_span` and documented
-  fixed-span and GCV modes consistently.
-- **[Reports and visualizers]** Fixed report assembly edge cases involving
-  conditional IS/ORF legends, shared diagnostic sidecars, stale PDF
-  intermediates, and stage-specific dashboard titles.
+- **[Configuration and resources]** Fixed package-relative resolution of demo data and report templates, added JSON loading alongside TOML, and corrected unsupported-format errors to advertise the formats that are actually supported.
+- **[Correction and diagnostics]** Aligned the new QC-RLSC options with AUTO candidate evaluation, method-specific scoring, and downstream dashboards; renamed the span parameter from `loess_frac` to `loess_span` and documented fixed-span and GCV modes consistently.
+- **[Reports and visualizers]** Fixed report assembly edge cases involving conditional IS/ORF legends, shared diagnostic sidecars, stale PDF intermediates, and stage-specific dashboard titles.
 
 ## [1.1.5] - 2026-07-23
 
@@ -164,8 +155,8 @@ This release focused on codebase standardization, maintainability, and packaging
 
 ### Added
 - Added `CHANGELOG.md` to the project root directory.
-- **[Correction]** Implemented **SERRF** (Systematic Error Removal using Random Forest) method for signal correction. 
-- **[Correction]** Implemented **RUV-III** (Remove Unwanted Variation) method, which utilizes Singular Value Decomposition (SVD) to eliminate the need for cross-validation. 
+- **[Correction]** Implemented **SERRF** (Systematic Error Removal using Random Forest) method for signal correction.
+- **[Correction]** Implemented **RUV-III** (Remove Unwanted Variation) method, which utilizes Singular Value Decomposition (SVD) to eliminate the need for cross-validation.
 - **[Correction]** Introduced **AUTO** mode, which dynamically evaluates multiple correction algorithms and automatically selects the optimal method based on out-of-fold QC RSD.
 - **[Imputation]** Added **QRILC** (Quantile Regression Imputation of Left-Censored data) algorithm, specifically tailored for the imputation of MNAR (Missing Not At Random) features.
 - **[Normalization]** Added **MDFC** (Median Difference from Control) approach for data normalization.
