@@ -159,7 +159,7 @@ class NormalizationDashboardMixin:
         pw.clear()
 
         auto_summary = self.norm.attrs.get("selection", {}).get(
-            "candidate_summary"
+            "candidate_results"
         )
         is_auto = bool(auto_summary)
 
@@ -282,7 +282,7 @@ class NormalizationDashboardMixin:
             return None
 
         auto_summary = self.norm.attrs.get("selection", {}).get(
-            "candidate_summary"
+            "candidate_results"
         )
         if not auto_summary:
             return None

@@ -17,6 +17,10 @@
 
 {%- set sc_perf = signal_correction.get('overall_performance', {}) -%}
 {%- set sc_stages = signal_correction.get('stages_executed', []) -%}
+{%- set sc_selection = signal_correction.get('selection', {}) -%}
+{%- set sc_requested_method = sc_selection.get('requested_method', 'N/A') -%}
+{%- set sc_selected_method = sc_selection.get('selected_label', sc_selection.get('selected_method', 'N/A')) -%}
+{%- set sc_is_auto = sc_selection.get('is_auto', sc_requested_method | upper == 'AUTO') -%}
 
 {%- set imp_params = missing_value_imputation.get('pipeline_params', {}) -%}
 {%- set imp_strat = imp_params.get('strategies', {}) -%}
@@ -51,18 +55,24 @@ The analytical dataset, acquired in **{{ meta.get('mode', 'Unknown') }}** ioniza
 
 {%- set primary_algo = sc_stages[0].get('algorithm', 'a QC-anchored') if sc_stages else 'a QC-anchored' %}
 
-Systematic technical variations, including time-dependent instrument drift and batch discrepancies, were mitigated utilizing the **{{ primary_algo }}** algorithm.
+Systematic technical variations, including time-dependent instrument drift and batch discrepancies, were mitigated utilizing the **{{ primary_algo }}** algorithm{% if sc_is_auto %}; AUTO selection delivered **{{ sc_selected_method }}**{% endif %}.
 
-{%- set rsd_before = sc_perf.get('median_qc_rsd_baseline') or 0 %}
-{%- set final_rsd_full = sc_perf.get('median_qc_rsd_current_full') or 0 %}
+{%- set rsd_before = sc_perf.get('median_qc_rsd_baseline') %}
+{%- set final_rsd_full = sc_perf.get('median_qc_rsd_current_full') %}
 {%- set final_rsd_oof = sc_perf.get('median_qc_rsd_current_oof') %}
 
+{% if rsd_before is number and final_rsd_full is number %}
 The correction architecture reduced the median QC RSD from an initial baseline of {{ (rsd_before * 100) | round(2) }}% to a delivered matrix RSD of **{{ (final_rsd_full * 100) | round(2) }}%**{% if final_rsd_oof is not none %} (CV/OOF evaluated: **{{ (final_rsd_oof * 100) | round(2) }}%**){% endif %}.
+{% elif final_rsd_full is number %}
+The correction architecture produced a delivered matrix median QC RSD of **{{ (final_rsd_full * 100) | round(2) }}%**{% if final_rsd_oof is number %} (CV/OOF evaluated: **{{ (final_rsd_oof * 100) | round(2) }}%**){% endif %}.
+{% else %}
+Signal correction was applied, but QC RSD metrics are unavailable for this report.
+{% endif %}
 
 {%- if imp_status == 'Skipped' %}
 Subsequently, missing-value imputation was bypassed because no missing values were detected in the target analytical matrix; the matrix was propagated unchanged.
 {%- else %}
-Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed using **{{ imp_selected_label }}** to preserve global structural fidelity. Low-abundance NRMSE evaluates masked observations from features whose median intensity is at or below the 25th percentile of all feature medians.
+Subsequently, structurally missing values were reconstructed. MNAR components were deterministically substituted via a **{{ imp_strat.get('mnar_method', 'N/A') }}** strategy, while MAR components were reconstructed using **{{ imp_selected_label }}**{% if imp_selection.get('is_auto') %} selected by AUTO benchmarking{% endif %} to preserve global structural fidelity. Low-abundance NRMSE evaluates masked observations from features whose median intensity is at or below the 25th percentile of all feature medians.
 {%- endif %}
 
 {% if is_auto_norm %}

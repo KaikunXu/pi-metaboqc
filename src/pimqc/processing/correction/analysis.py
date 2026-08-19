@@ -758,11 +758,53 @@ class MetaboIntCorrector(model.MetaboInt):
                 df.attrs["base_est"] = selected_method
                 df.attrs["correction_method_label"] = selected_label
 
+        candidate_results = [
+            {
+                "method": str(label),
+                "selected": str(label) == str(selected_label),
+                "status": "ok",
+                "eval_rsd": result.get("eval_rsd"),
+                "final_rsd_oof": result.get("final_rsd_oof"),
+                "final_rsd_full": result.get("final_rsd_full"),
+                "median_qc_rsd_improvement_score": result.get(
+                    "median_qc_rsd_improvement_score"
+                ),
+                "featurewise_qc_rsd_improvement_score": result.get(
+                    "featurewise_qc_rsd_improvement_score"
+                ),
+                "sample_structure_score": result.get("sample_structure_score"),
+                "auto_score": result.get("auto_score"),
+            }
+            for label, result in results_store.items()
+        ] if is_auto else []
+        valid_scores = sorted(
+            (
+                score
+                for result in candidate_results
+                if np.isfinite(
+                    score := su.finite_or_nan(result.get("auto_score"))
+                )
+            ),
+            reverse=True,
+        )
         selection = {
             "requested_method": requested_method,
             "selected_method": selected_method,
             "selected_label": selected_label,
             "is_auto": is_auto,
+            "selected_score": (
+                float(selected_result.get("auto_score"))
+                if is_auto and np.isfinite(
+                    su.finite_or_nan(selected_result.get("auto_score"))
+                )
+                else None
+            ),
+            "selection_margin": (
+                valid_scores[0] - valid_scores[1]
+                if is_auto and len(valid_scores) > 1
+                else None
+            ),
+            "candidate_results": candidate_results,
         }
         self.attrs["selection"] = selection
         self.attrs["is_auto"] = is_auto
@@ -840,6 +882,9 @@ class MetaboIntCorrector(model.MetaboInt):
                         "correction_method_label", method
                     ),
                     "is_auto": self.attrs.get("is_auto", False),
+                    "selected_score": None,
+                    "selection_margin": None,
+                    "candidate_results": [],
                 },
             ),
             "overall_performance": {

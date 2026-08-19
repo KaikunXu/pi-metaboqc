@@ -430,7 +430,7 @@ class MetaboIntNormalizer(model.MetaboInt):
             scale_rel_delta_tol=self._SAMPLE_SCALE_REL_DELTA_TOL,
         )
 
-    def calc_auto_norm_candidate_metrics(
+    def calc_auto_norm_candidate_results(
         self,
         norm_obj: model.MetaboInt,
     ) -> dict[str, float]:
@@ -1247,7 +1247,7 @@ class MetaboIntNormalizer(model.MetaboInt):
                     df_norm, meta_stamps
                 )
                 candidate_obj.attrs["pipeline_stage"] = "Normalization"
-                auto_metrics = self.calc_auto_norm_candidate_metrics(
+                auto_metrics = self.calc_auto_norm_candidate_results(
                     candidate_obj,
                 )
 
@@ -1320,7 +1320,7 @@ class MetaboIntNormalizer(model.MetaboInt):
                     "is_auto": True,
                     "selected_score": selected_score,
                     "selection_margin": selected_margin,
-                    "candidate_summary": auto_summary.to_dict(
+                    "candidate_results": auto_summary.to_dict(
                         orient="records"
                     ),
                 },
@@ -1359,6 +1359,9 @@ class MetaboIntNormalizer(model.MetaboInt):
             "selected_method": method,
             "selected_label": method,
             "is_auto": False,
+            "selected_score": None,
+            "selection_margin": None,
+            "candidate_results": [],
         }
         return self._finalize_normalized_object(df_norm, meta_stamps)
 
@@ -1377,6 +1380,9 @@ class MetaboIntNormalizer(model.MetaboInt):
                 "selected_method": requested_method,
                 "selected_label": requested_method,
                 "is_auto": str(requested_method).upper() == "AUTO",
+                "selected_score": None,
+                "selection_margin": None,
+                "candidate_results": [],
             }
 
         metrics = {

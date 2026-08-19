@@ -1116,6 +1116,175 @@ class NarrativeStatsReporter:
         )
         return f"\n\n{table_str}\n\n" if rows else ""
 
+    @staticmethod
+    def _format_candidate_metric(value: Any) -> str:
+        """Format candidate scores without replacing missing values by zero."""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return f"{value:.3f}"
+        return "N/A" if value in (None, "") else str(value)
+
+    def _create_imputation_candidate_table(
+        self, pipeline_metrics: Dict[str, Any]
+    ) -> str:
+        """Render the structured AUTO imputation candidate comparison."""
+        stage = pipeline_metrics.get("missing_value_imputation", {})
+        selection = stage.get("selection", {})
+        requested = str(selection.get("requested_method", ""))
+        is_auto = selection.get("is_auto", requested.upper() == "AUTO")
+        candidates = selection.get("candidate_results", [])
+        if not is_auto or not isinstance(candidates, list) or not candidates:
+            return ""
+
+        selected = selection.get("selected_method")
+        rows = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            method = candidate.get("method", "N/A")
+            label = str(method)
+            if candidate.get("selected") or method == selected:
+                label += " (selected)"
+            rows.append(
+                [
+                    label,
+                    self._format_candidate_metric(candidate.get("nrmse_low")),
+                    self._format_candidate_metric(candidate.get("nrmse_total")),
+                    self._format_candidate_metric(candidate.get("jsd_total")),
+                    self._format_candidate_metric(
+                        candidate.get("wasserstein_normalized")
+                    ),
+                    self._format_candidate_metric(candidate.get("auto_score")),
+                ]
+            )
+
+        headers = [
+            "Candidate",
+            "Low NRMSE",
+            "Total NRMSE",
+            "JSD",
+            "Norm. Wasserstein",
+            "AUTO score",
+        ]
+        table = tabulate(
+            rows,
+            headers=headers,
+            tablefmt="github",
+            disable_numparse=True,
+        )
+        return f"\n\n{table}\n\n"
+
+    def _create_normalization_candidate_table(
+        self, pipeline_metrics: Dict[str, Any]
+    ) -> str:
+        """Render the structured AUTO normalization candidate comparison."""
+        stage = pipeline_metrics.get("normalization", {})
+        selection = stage.get("selection", {})
+        requested = str(selection.get("requested_method", ""))
+        is_auto = selection.get("is_auto", requested.upper() == "AUTO")
+        candidates = selection.get("candidate_results", [])
+        if not is_auto or not isinstance(candidates, list) or not candidates:
+            return ""
+
+        rows = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            method = str(candidate.get("method", "N/A")).replace("_", " ")
+            if candidate.get("selected"):
+                method += " (selected)"
+            rows.append(
+                [
+                    method,
+                    self._format_candidate_metric(
+                        candidate.get("overall_score")
+                    ),
+                    self._format_candidate_metric(
+                        candidate.get("rle_alignment_change_score")
+                    ),
+                    self._format_candidate_metric(
+                        candidate.get("variance_stabilization_score")
+                    ),
+                    self._format_candidate_metric(
+                        candidate.get("qc_structure_change_score")
+                    ),
+                    self._format_candidate_metric(
+                        candidate.get("sample_structure_score")
+                    ),
+                ]
+            )
+
+        if not rows:
+            return ""
+        headers = [
+            "Candidate",
+            "Overall",
+            "RLE",
+            "Variance",
+            "QC structure",
+            "Sample structure",
+        ]
+        table = tabulate(
+            rows,
+            headers=headers,
+            tablefmt="github",
+            disable_numparse=True,
+        )
+        return f"\n\n{table}\n\n"
+
+    def _create_correction_candidate_table(
+        self, pipeline_metrics: Dict[str, Any]
+    ) -> str:
+        """Render the structured AUTO correction candidate comparison."""
+        stage = pipeline_metrics.get("signal_correction", {})
+        selection = stage.get("selection", {})
+        requested = str(selection.get("requested_method", ""))
+        is_auto = selection.get("is_auto", requested.upper() == "AUTO")
+        candidates = selection.get("candidate_results", [])
+        if not is_auto or not isinstance(candidates, list) or not candidates:
+            return ""
+
+        rows = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            method = str(candidate.get("method", "N/A"))
+            if candidate.get("selected"):
+                method += " (selected)"
+            rows.append(
+                [
+                    method,
+                    self._format_candidate_metric(candidate.get("auto_score")),
+                    self._format_candidate_metric(candidate.get("eval_rsd")),
+                    self._format_candidate_metric(
+                        candidate.get("median_qc_rsd_improvement_score")
+                    ),
+                    self._format_candidate_metric(
+                        candidate.get("featurewise_qc_rsd_improvement_score")
+                    ),
+                    self._format_candidate_metric(
+                        candidate.get("sample_structure_score")
+                    ),
+                ]
+            )
+
+        if not rows:
+            return ""
+        headers = [
+            "Candidate",
+            "AUTO score",
+            "Eval. QC RSD",
+            "Median RSD gain",
+            "Feature RSD gain",
+            "Sample structure",
+        ]
+        table = tabulate(
+            rows,
+            headers=headers,
+            tablefmt="github",
+            disable_numparse=True,
+        )
+        return f"\n\n{table}\n\n"
+
     def consolidate_metrics(self, report_input: ReportInput) -> Dict[str, Any]:
         """Consolidates pipeline and QA metrics into a unified context."""
 
@@ -1163,6 +1332,9 @@ class NarrativeStatsReporter:
         # [REFACTOR]: Core stages iteration fully handles new 2-Stage Norm logic
         for stage_key, _ in self._QA_STAGES:
             pipe_data = pipeline_metrics.get(stage_key, {})
+            if isinstance(pipe_data, dict):
+                pipe_data = dict(pipe_data)
+                pipeline_metrics[stage_key] = pipe_data
             qa_data = qa_metrics.get(stage_key, {})
             stats[stage_key] = {
                 "pipeline_params": pipe_data,
@@ -1191,14 +1363,23 @@ class NarrativeStatsReporter:
             default="",
         )
         if mar_sel and mar_sel != "N/A":
-            nrmse = get_val(
+            candidate_rows = get_val(
                 pipeline_metrics,
                 "missing_value_imputation",
-                "candidate_metrics",
-                mar_sel,
-                "nrmse_low",
-                default="N/A",
+                "selection",
+                "candidate_results",
+                default=[],
             )
+            selected_row = next(
+                (
+                    row
+                    for row in candidate_rows
+                    if isinstance(row, dict)
+                    and row.get("method") == mar_sel
+                ),
+                {},
+            )
+            nrmse = selected_row.get("nrmse_low", "N/A")
             stats["missing_value_imputation"]["best_nrmse_low"] = nrmse
 
         stats["summary_tables"] = {
@@ -1206,6 +1387,15 @@ class NarrativeStatsReporter:
             "pca": self._create_pca_summary_table(qa_metrics),
             "correlation": self._create_corr_summary_table(qa_metrics),
             "outliers": self._create_outlier_summary_table(qa_metrics),
+            "correction_candidates": self._create_correction_candidate_table(
+                pipeline_metrics
+            ),
+            "imputation_candidates": self._create_imputation_candidate_table(
+                pipeline_metrics
+            ),
+            "normalization_candidates": self._create_normalization_candidate_table(
+                pipeline_metrics
+            ),
         }
         stats["rsd_guardrail"] = self._summarize_rsd_guardrail(qa_metrics)
 

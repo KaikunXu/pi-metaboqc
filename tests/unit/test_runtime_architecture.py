@@ -240,6 +240,13 @@ def test_auto_imputation_keeps_request_and_selection_separate() -> None:
     assert selection["requested_method"] == "Auto"
     assert selection["selected_method"] == "LLS"
     assert selection["is_auto"] is True
+    candidate_result = next(
+        candidate
+        for candidate in result.metrics["selection"]["candidate_results"]
+        if candidate["method"] == "LLS"
+    )
+    assert candidate_result["jsd_total"] == 0.1
+    assert candidate_result["wasserstein_normalized"] == 0.1
     assert result.metadata["requested_method"] == "Auto"
     assert result.metadata["is_auto"] is True
 

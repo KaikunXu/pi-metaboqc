@@ -40,7 +40,7 @@ class NormalizationStageRunner(
             data=normalized,
             metrics=normalized.normalization_metrics,
             candidates=normalized.attrs.get("selection", {}).get(
-                "candidate_summary"
+                "candidate_results"
             ),
             metadata={
                 "output_suffix": self._output_suffix(normalized),

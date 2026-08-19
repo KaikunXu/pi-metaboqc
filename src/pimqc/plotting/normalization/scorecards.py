@@ -68,7 +68,7 @@ class NormalizationScorecardMixin:
         """Plot Auto normalization weighted score components as stacked bars."""
         if auto_summary is None:
             auto_summary = self.norm.attrs.get("selection", {}).get(
-                "candidate_summary"
+                "candidate_results"
             )
         if not auto_summary:
             return None
@@ -158,7 +158,7 @@ class NormalizationScorecardMixin:
         """Plot candidate-level sample-structure preservation scores."""
         if auto_summary is None:
             auto_summary = self.norm.attrs.get("selection", {}).get(
-                "candidate_summary"
+                "candidate_results"
             )
         if not auto_summary:
             return None

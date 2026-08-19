@@ -77,9 +77,17 @@ def _report_input() -> ReportInput:
                     "selected_method": "KNN",
                     "selected_label": "KNN",
                     "is_auto": False,
-                },
-                "candidate_metrics": {
-                    "KNN": {"nrmse_low": 0.12, "nrmse_total": 0.08}
+                    "candidate_results": [
+                        {
+                            "method": "KNN",
+                            "selected": True,
+                            "status": "ok",
+                            "nrmse_low": 0.12,
+                            "nrmse_total": 0.08,
+                            "jsd_total": 0.125,
+                            "wasserstein_normalized": 0.375,
+                        }
+                    ],
                 },
             },
             "normalization": {
@@ -132,10 +140,12 @@ def test_reporter_renders_markdown_from_report_input(tmp_path: Path) -> None:
     assert "QUANTILE" in comprehensive
     assert "**Deterministic Substitution for MNAR Features**\n\nFor" in comprehensive
     assert "**Configured MAR Imputation Method**\n\nFor" in comprehensive
+    assert "Jensen-Shannon distance of **0.125**" in comprehensive
+    assert "normalized Wasserstein distance of **0.375**" in comprehensive
 
 
-def test_candidate_dashboard_follows_distribution_fidelity(tmp_path: Path) -> None:
-    """Place AUTO candidate reconstruction details after fidelity metrics."""
+def test_imputation_dashboards_follow_selection_evidence(tmp_path: Path) -> None:
+    """Place candidate dashboard before the selected-method dashboard."""
     report_input = _report_input()
     selection = report_input.pipeline_metrics["missing_value_imputation"][
         "selection"
@@ -150,6 +160,87 @@ def test_candidate_dashboard_follows_distribution_fidelity(tmp_path: Path) -> No
         encoding="utf-8"
     )
     assert comprehensive.index("Masked-Value Distribution Fidelity") < (
-        comprehensive.index("MAR Imputation Candidate NRMSE Dashboard")
+        comprehensive.index("MAR Imputation Candidate Comparison")
+    )
+    assert comprehensive.index("MAR Imputation Candidate Comparison") < (
+        comprehensive.index("MAR Imputation Dashboard: KNN")
+    )
+    assert comprehensive.index("MAR Imputation Candidate Dashboard") < (
+        comprehensive.index("MAR Imputation Dashboard: KNN")
     )
     assert "Imputation_Candidate_Dashboard_KNN.svg" in comprehensive
+    assert "KNN (selected)" in comprehensive
+
+
+def test_auto_normalization_renders_candidate_comparison(tmp_path: Path) -> None:
+    """Render a compact AUTO comparison from the unified candidate contract."""
+    report_input = _report_input()
+    selection = report_input.pipeline_metrics["normalization"]["selection"]
+    selection.update(
+        {
+            "requested_method": "AUTO",
+            "is_auto": True,
+            "selected_score": 0.71,
+            "selection_margin": 0.05,
+            "candidate_results": [
+                {
+                    "method": "ROBUST_LOG_ONLY",
+                    "selected": False,
+                    "status": "ok",
+                    "overall_score": 0.5,
+                    "rle_alignment_change_score": 0.5,
+                    "variance_stabilization_score": 0.5,
+                    "qc_structure_change_score": 0.5,
+                    "sample_structure_score": 0.5,
+                },
+                {
+                    "method": "PQN",
+                    "selected": True,
+                    "status": "ok",
+                    "overall_score": 0.71,
+                    "rle_alignment_change_score": 1.0,
+                    "variance_stabilization_score": 0.5,
+                    "qc_structure_change_score": 0.86,
+                    "sample_structure_score": 0.46,
+                },
+            ],
+        }
+    )
+
+    reporter = NarrativeStatsReporter(base_dir=str(tmp_path))
+    reporter.generate_markdown(report_input, report_folder="report")
+
+    comprehensive = (tmp_path / "report" / "Report_Comprehensive.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Normalization Candidate Comparison" in comprehensive
+    assert "PQN (selected)" in comprehensive
+
+
+def test_reporter_does_not_render_missing_metrics_as_zero(tmp_path: Path) -> None:
+    """Show unavailable correction and VSN metrics without numeric fallbacks."""
+    report_input = _report_input()
+    report_input.pipeline_metrics["signal_correction"]["stages_executed"].append(
+        {
+            "stage_name": "Final correction",
+            "algorithm": "LOESS",
+            "parameters": {},
+        }
+    )
+    report_input.pipeline_metrics["normalization"]["strategies"][
+        "normalization_method"
+    ] = "VSN"
+
+    reporter = NarrativeStatsReporter(base_dir=str(tmp_path))
+    reporter.generate_markdown(report_input, report_folder="report")
+
+    report_dir = tmp_path / "report"
+    brief = (report_dir / "Report_Brief.md").read_text(encoding="utf-8")
+    comprehensive = (report_dir / "Report_Comprehensive.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "QC RSD metrics are unavailable" in brief
+    assert "without a reportable QC RSD summary" in comprehensive
+    assert "0.000e+00" not in comprehensive
+    assert "structural scale factor of **N/A**" in comprehensive

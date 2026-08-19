@@ -1239,14 +1239,63 @@ class MetaboIntImputer(model.MetaboInt):
                 return float("nan")
             return round(float(val), 4)
 
-        raw_mets = self.attrs.get("candidate_metrics", {})
-        perf_dict = {}
-        for cand, mets in raw_mets.items():
-            perf_dict[cand] = {
-                "nrmse_low": _safe_round(mets.get("nrmse_low")),
-                "nrmse_high": _safe_round(mets.get("nrmse_high")),
-                "nrmse_total": _safe_round(mets.get("nrmse_total")),
+        raw_results = self.attrs.get("candidate_results", {})
+        candidate_results = []
+        candidate_metric_keys = (
+            "nrmse_low",
+            "nrmse_high",
+            "nrmse_total",
+            "jsd_total",
+            "wasserstein_total",
+            "wasserstein_normalized",
+            "reconstruction_score",
+            "distribution_preservation_score",
+            "jsd_score",
+            "wasserstein_score",
+            "sample_structure_score",
+            "trustworthiness",
+            "distance_rank_preservation",
+            "distance_scale_preservation",
+            "auto_score",
+        )
+        for method, metrics in raw_results.items():
+            metrics = metrics if isinstance(metrics, dict) else {}
+            record = {
+                "method": method,
+                "selected": method == selected_method,
+                "status": "ok",
             }
+            record.update(
+                {
+                    metric: _safe_round(metrics.get(metric))
+                    for metric in candidate_metric_keys
+                }
+            )
+            candidate_results.append(record)
+
+        is_auto = bool(self.attrs.get("is_auto", False))
+        selected_score = next(
+            (
+                record["auto_score"]
+                for record in candidate_results
+                if record["selected"]
+            ),
+            None,
+        )
+        valid_scores = sorted(
+            (
+                score
+                for record in candidate_results
+                if (score := record.get("auto_score")) is not None
+                and np.isfinite(score)
+            ),
+            reverse=True,
+        )
+        selection_margin = (
+            valid_scores[0] - valid_scores[1]
+            if is_auto and len(valid_scores) > 1
+            else None
+        )
 
         if status == "Skipped":
             idx_mar = pd.Index([])
@@ -1266,12 +1315,14 @@ class MetaboIntImputer(model.MetaboInt):
                 "mnar_method": mnar_meth,
                 "mnar_fraction": reported_mnar_frac,
             },
-            "candidate_metrics": perf_dict,
             "selection": {
                 "requested_method": requested_method,
                 "selected_method": selected_method,
                 "selected_label": selected_label,
-                "is_auto": bool(self.attrs.get("is_auto", False)),
+                "is_auto": is_auto,
+                "selected_score": selected_score,
+                "selection_margin": selection_margin,
+                "candidate_results": candidate_results,
             },
             "feature_distribution": {
                 "mar_count": len(idx_mar),
@@ -1322,7 +1373,7 @@ class MetaboIntImputer(model.MetaboInt):
             imputed_obj.attrs["is_auto"] = False
             imputed_obj.attrs["mnar_method"] = "Not required"
             imputed_obj.attrs["mnar_fraction"] = None
-            imputed_obj.attrs["candidate_metrics"] = {}
+            imputed_obj.attrs["candidate_results"] = {}
             imputed_obj.attrs["imputation_qa_metrics"] = {}
 
             logger.success(
@@ -1522,7 +1573,7 @@ class MetaboIntImputer(model.MetaboInt):
                 ),
                 "auto_score": m_eval.get("Auto_Score", float("nan")),
             }
-        imputed_obj.attrs["candidate_metrics"] = cand_mets
+        imputed_obj.attrs["candidate_results"] = cand_mets
 
         # =====================================================================
         # Quality Metrics and Result Assembly

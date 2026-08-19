@@ -140,3 +140,16 @@ def test_run_pipeline_with_bundled_project_data(
         ]
         == "Auto"
     )
+    selected_method = result.pipeline_metrics["missing_value_imputation"][
+        "selection"
+    ]["selected_method"]
+    candidate_results = result.pipeline_metrics["missing_value_imputation"][
+        "selection"
+    ]["candidate_results"]
+    selected_result = next(
+        candidate
+        for candidate in candidate_results
+        if candidate["method"] == selected_method
+    )
+    assert "jsd_total" in selected_result
+    assert "wasserstein_normalized" in selected_result

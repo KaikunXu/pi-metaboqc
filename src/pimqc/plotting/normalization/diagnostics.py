@@ -1026,7 +1026,7 @@ class NormalizationDiagnosticsMixin:
 
         structure_metrics: dict[str, float] | None = None
         auto_summary = self.norm.attrs.get("selection", {}).get(
-            "candidate_summary"
+            "candidate_results"
         )
         if auto_summary:
             selected_method = str(
