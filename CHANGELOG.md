@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [PEP 440](https://peps.python.org/pep-0440/) for versioning.
 
+## [1.3.1] - 2026-08-19
+
+### Fixed
+
+- **[Reports]** Fixed dashboard placement and ordering in the comprehensive report.
+- **[Reports]** Fixed imputation reports incorrectly displaying Jensen-Shannon distance and normalized Wasserstein distance as `N/A`.
+
 ## [1.3.0] - 2026-08-18
 
 > **Breaking release:** 1.3.0 refactors the processing-stage and report execution lifecycle. Processing computation, artifact export, rendering, metrics aggregation, and report generation now use explicit structured contracts. Dataset construction retains the `build_dataset(output_dir=...)` execution entry point, while its drawing implementation is separately packaged under `pimqc.plotting`. Existing custom code built against pre-1.3.0 stage or visualization APIs may require migration.
